@@ -1,10 +1,19 @@
+import Image from "next/image";
 import Link from "next/link";
 
 export default function Home() {
   return (
     <main className="mx-auto max-w-3xl px-6 py-24">
-      <h1 className="text-4xl font-semibold tracking-tight">Tawny</h1>
-      <p className="mt-3 text-[color:var(--color-muted-foreground)]">
+      <Image
+        src="/logo.jpg"
+        alt="Tawny EDR"
+        width={160}
+        height={160}
+        priority
+        className="mb-8 rounded-lg"
+      />
+      <h1 className="sr-only">Tawny</h1>
+      <p className="mt-3 text-lg text-[color:var(--color-muted-foreground)]">
         Quiet eyes on every endpoint.
       </p>
 

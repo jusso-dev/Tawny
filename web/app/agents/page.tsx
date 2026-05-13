@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import Image from "next/image";
 import Link from "next/link";
 import { auth } from "@/lib/auth";
 import { apiGet } from "@/lib/api";
@@ -26,11 +27,20 @@ export default async function AgentsPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
       <header className="flex items-end justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Agents</h1>
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">
-            {agents.length} enrolled
-          </p>
+        <div className="flex items-center gap-3">
+          <Image
+            src="/logo.jpg"
+            alt=""
+            width={40}
+            height={40}
+            className="rounded"
+          />
+          <div>
+            <h1 className="text-2xl font-semibold">Agents</h1>
+            <p className="text-sm text-[color:var(--color-muted-foreground)]">
+              {agents.length} enrolled
+            </p>
+          </div>
         </div>
         <Link
           href="/enrollment"

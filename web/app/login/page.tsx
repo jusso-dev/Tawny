@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 
@@ -30,6 +31,14 @@ export default function LoginPage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6">
+      <Image
+        src="/logo.jpg"
+        alt="Tawny EDR"
+        width={96}
+        height={96}
+        priority
+        className="mb-6 rounded-md"
+      />
       <h1 className="text-2xl font-semibold">Sign in</h1>
       <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
         Welcome back to Tawny.

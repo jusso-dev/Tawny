@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/logo.jpg" alt="Tawny EDR" width="320" />
+</p>
+
 # Tawny
 
 > Quiet eyes on every endpoint.
