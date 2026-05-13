@@ -1,0 +1,53 @@
+# --- General ---
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# --- .NET ---
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+.vs/
+TestResults/
+*.coverage
+*.trx
+project.lock.json
+artifacts/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+.turbo/
+.pnpm-debug.log*
+.npm/
+.yarn/
+*.tsbuildinfo
+next-env.d.ts
+.vercel/
+
+# --- Zig ---
+zig-cache/
+zig-out/
+.zig-cache/
+
+# --- Docker / runtime ---
+docker/data/
+*.mdf
+*.ldf
+
+# --- Misc ---
+coverage/
+*.pem
