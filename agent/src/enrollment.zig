@@ -3,13 +3,29 @@ const builtin = @import("builtin");
 
 const Config = @import("config.zig").Config;
 
+extern "kernel32" fn GetComputerNameA(
+    name: [*]u8,
+    size: *u32,
+) callconv(.C) i32;
+
+fn getHostname(buf: []u8) ![]const u8 {
+    if (builtin.os.tag == .windows) {
+        var size: u32 = @intCast(buf.len);
+        if (GetComputerNameA(buf.ptr, &size) == 0) return error.HostnameFailed;
+        return buf[0..size];
+    }
+    const max = std.posix.HOST_NAME_MAX;
+    if (buf.len < max) return error.BufferTooSmall;
+    const fixed: *[max]u8 = @ptrCast(buf.ptr);
+    return try std.posix.gethostname(fixed);
+}
+
 /// POST /api/agents/enroll, populate cfg.agent_id and cfg.agent_jwt.
 pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !void {
     const token = cfg.enrollment_token orelse return error.NoEnrollmentToken;
 
-    const hostname_buf = try alloc.alloc(u8, 256);
-    defer alloc.free(hostname_buf);
-    const hostname = std.posix.gethostname(hostname_buf) catch "unknown";
+    var hostname_buf: [256]u8 = undefined;
+    const hostname = getHostname(&hostname_buf) catch "unknown";
 
     const arch_str = switch (builtin.target.cpu.arch) {
         .x86_64 => "x64",
