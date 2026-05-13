@@ -1,0 +1,57 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tawny-db
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-DevPassw0rd!}"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - ./data/mssql:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -Q "SELECT 1" || exit 1
+      interval: 10s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: src/Tawny.Api/Dockerfile
+    container_name: tawny-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Development"
+      ASPNETCORE_URLS: "http://+:5080"
+      ConnectionStrings__Default: "Server=db,1433;Database=Tawny;User Id=sa;Password=${MSSQL_SA_PASSWORD:-DevPassw0rd!};TrustServerCertificate=True;Encrypt=False"
+      Tawny__WebUserHmacSecret: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
+      Tawny__AgentJwt__Issuer: "tawny"
+      Tawny__AgentJwt__Audience: "tawny-agents"
+      Tawny__AgentJwt__SigningKeyPem: "/run/secrets/tawny-jwt-key"
+    ports:
+      - "5080:5080"
+    volumes:
+      - ./secrets:/run/secrets:ro
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: tawny-web
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: "production"
+      TAWNY_API_URL: "http://api:5080"
+      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-dev-only-not-secret}"
+      BETTER_AUTH_URL: "http://localhost:3000"
+      DATABASE_URL: "sqlserver://sa:${MSSQL_SA_PASSWORD:-DevPassw0rd!}@db:1433/Tawny"
+    ports:
+      - "3000:3000"

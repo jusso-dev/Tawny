@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-agent:
+    name: build agent
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - { name: windows-x64, zig: x86_64-windows-gnu, ext: ".exe" }
+          - { name: macos-arm64, zig: aarch64-macos, ext: "" }
+          - { name: macos-x64, zig: x86_64-macos, ext: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.14.0
+      - name: build
+        working-directory: agent
+        run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
+      - name: rename and hash
+        working-directory: agent/zig-out/bin
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mv "tawny-agent${{ matrix.target.ext }}" "tawny-agent-${VERSION}-${{ matrix.target.name }}${{ matrix.target.ext }}"
+          sha256sum "tawny-agent-${VERSION}-${{ matrix.target.name }}${{ matrix.target.ext }}" > "tawny-agent-${VERSION}-${{ matrix.target.name }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.target.name }}
+          path: agent/zig-out/bin/tawny-agent-*
+
+  release:
+    name: publish release
+    needs: build-agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
