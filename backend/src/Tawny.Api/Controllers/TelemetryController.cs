@@ -18,7 +18,8 @@ namespace Tawny.Api.Controllers;
 public class TelemetryController(
     TawnyDbContext db,
     AuditLogger audit,
-    IValidator<IngestEventsRequest> validator) : ControllerBase
+    IValidator<IngestEventsRequest> validator,
+    AlertRuleEvaluator alertRules) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
     private const int DefaultLimit = 50;
@@ -42,7 +43,8 @@ public class TelemetryController(
             return Unauthorized();
         }
 
-        if (!await db.Agents.AnyAsync(a => a.Id == agentId, ct))
+        var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        if (agent is null)
         {
             return NotFound();
         }
@@ -61,7 +63,7 @@ public class TelemetryController(
             OccurredAt = DateTimeOffset.FromUnixTimeSeconds(ev.OccurredAt),
             ReceivedAt = receivedAt,
             Payload = ev.Payload.GetRawText(),
-        });
+        }).ToList();
 
         db.TelemetryEvents.AddRange(events);
         audit.Add((Guid?)null, "telemetry.ingest", agentId.ToString(), new
@@ -70,6 +72,18 @@ public class TelemetryController(
             received_at = receivedAt,
         });
         await db.SaveChangesAsync(ct);
+
+        var alerts = await alertRules.EvaluateAsync(agent, events, receivedAt, ct);
+        if (alerts.Count > 0)
+        {
+            audit.Add((Guid?)null, "alert.evaluate", agentId.ToString(), new
+            {
+                alert_count = alerts.Count,
+                event_count = events.Count,
+                received_at = receivedAt,
+            });
+            await db.SaveChangesAsync(ct);
+        }
 
         return Accepted();
     }

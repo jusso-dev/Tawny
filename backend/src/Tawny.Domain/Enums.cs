@@ -35,3 +35,27 @@ public enum UserRole
     Admin = 0,
     Viewer = 1,
 }
+
+public enum AlertSeverity
+{
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    Critical = 3,
+}
+
+public enum AlertStatus
+{
+    Open = 0,
+    Acknowledged = 1,
+    Resolved = 2,
+}
+
+public enum AlertRuleOperator
+{
+    Exists = 0,
+    Equals = 1,
+    Contains = 2,
+    GreaterThan = 3,
+    LessThan = 4,
+}
