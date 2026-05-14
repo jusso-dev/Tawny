@@ -44,6 +44,17 @@ detection:
 level: high
 `;
 
+const blankYaml = `title: My Sigma Rule
+description: Describe what this rule should detect.
+logsource:
+  category: process_creation
+detection:
+  selection:
+    processes.name|contains: example
+  condition: selection
+level: medium
+`;
+
 const platforms: Array<SigmaCatalogPlatform | "any"> = ["any", "linux", "macos", "windows", "all"];
 const categories: Array<SigmaCatalogCategory | "any"> = ["any", "process", "network", "file", "identity", "system"];
 
@@ -297,14 +308,14 @@ export function SigmaImportPanel() {
 
       <form onSubmit={importRule} className="space-y-5 p-5">
         <div className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-muted)] p-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div>
+          <div className="grid gap-3">
+            <div className="max-w-2xl">
               <h3 className="text-sm font-medium">Detection catalog</h3>
               <p className="mt-1 text-xs text-[color:var(--color-muted-foreground)]">
                 Load a supported Sigma starter rule, then tune the YAML before import.
               </p>
             </div>
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] xl:min-w-[34rem]">
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
               <label className="relative block">
                 <Search
                   size={15}
@@ -377,13 +388,22 @@ export function SigmaImportPanel() {
 
         <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-            <label htmlFor="sigma-yaml" className="text-sm font-medium">
-              Rule YAML
-            </label>
-            <span className="inline-flex items-center gap-2 text-xs text-[color:var(--color-muted-foreground)]">
+            <div>
+              <label htmlFor="sigma-yaml" className="text-sm font-medium">
+                Custom Sigma rule
+              </label>
+              <p className="mt-1 text-xs text-[color:var(--color-muted-foreground)]">
+                Paste or write your own Sigma YAML. The same validation runs before import.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadYaml(blankYaml)}
+              className="inline-flex min-h-8 items-center gap-2 rounded-md border border-[color:var(--color-border)] px-2.5 text-xs hover:bg-[color:var(--color-muted)]"
+            >
               <FileCode2 size={14} />
-              Editable Sigma YAML
-            </span>
+              Start blank
+            </button>
           </div>
           <textarea
             id="sigma-yaml"
