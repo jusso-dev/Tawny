@@ -152,3 +152,27 @@ In the Wazuh dashboard, search `wazuh-alerts-*` over the last 24 hours for:
 ```text
 rule.id:110500 OR tawny_alert OR "Linux Download To Temp Path"
 ```
+
+## Slack alert sink
+
+Slack alerting is disabled by default. Create a Slack incoming webhook and configure the API with:
+
+```bash
+Tawny__Slack__Enabled=true
+Tawny__Slack__WebhookUrl=https://hooks.slack.com/services/...
+Tawny__Slack__Username=Tawny
+Tawny__Slack__IconEmoji=:rotating_light:
+Tawny__Slack__TimeoutSeconds=5
+```
+
+For Docker deployments, use the matching environment variables:
+
+```bash
+TAWNY_SLACK_ENABLED=true
+TAWNY_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+TAWNY_SLACK_USERNAME=Tawny
+TAWNY_SLACK_ICON_EMOJI=:rotating_light:
+TAWNY_SLACK_TIMEOUT_SECONDS=5
+```
+
+Only new alerts generated after Slack is enabled are posted. Tawny records Slack delivery state on the alert row so the dashboard can show whether the webhook send was `sent`, `failed`, `pending`, or `not_configured`.

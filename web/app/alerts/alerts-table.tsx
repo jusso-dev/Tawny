@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 
 type Severity = "low" | "medium" | "high" | "critical";
 type AlertStatus = "open" | "acknowledged" | "resolved";
+type AlertNotificationStatus = "not_configured" | "pending" | "sent" | "failed";
 type EventType =
   | "process_snapshot"
   | "network_snapshot"
@@ -34,6 +35,9 @@ export type Alert = {
   payload: unknown;
   severity: Severity;
   status: AlertStatus;
+  slack_notification_status: AlertNotificationStatus;
+  slack_notified_at: string | null;
+  slack_notification_error: string | null;
   title: string;
   description: string | null;
   created_at: string;
@@ -110,6 +114,13 @@ const statusTone: Record<AlertStatus, string> = {
   resolved: "bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)] ring-[color:var(--color-border)]",
 };
 
+const notificationTone: Record<AlertNotificationStatus, string> = {
+  not_configured: "bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)] ring-[color:var(--color-border)]",
+  pending: "bg-[color:var(--color-accent)]/12 text-[color:var(--color-accent)] ring-[color:var(--color-accent)]/25",
+  sent: "bg-[color:var(--color-success)]/12 text-[color:var(--color-success)] ring-[color:var(--color-success)]/25",
+  failed: "bg-[color:var(--color-danger)]/12 text-[color:var(--color-danger)] ring-[color:var(--color-danger)]/25",
+};
+
 const eventTypeLabels: Record<EventType, string> = {
   process_snapshot: "Process",
   network_snapshot: "Network",
@@ -122,12 +133,14 @@ const eventTypeLabels: Record<EventType, string> = {
 export function AlertsTable({ alerts }: { alerts: Alert[] }) {
   const [expanded, setExpanded] = useState<number | null>(alerts[0]?.id ?? null);
   const openCount = alerts.filter((alert) => alert.status === "open").length;
+  const slackSentCount = alerts.filter((alert) => alert.slack_notification_status === "sent").length;
 
   return (
     <section className="mt-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2 text-sm">
           <SummaryPill label="Open" value={openCount} />
+          <SummaryPill label="Slack sent" value={slackSentCount} />
           <SummaryPill label="Shown" value={alerts.length} />
         </div>
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
@@ -135,8 +148,8 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
         </p>
       </div>
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
-        <table className="w-full text-sm">
+      <div className="mt-3 overflow-x-auto rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+        <table className="w-full min-w-[58rem] text-sm">
           <thead className="bg-[color:var(--color-muted)] text-left">
             <tr>
               <th className="w-10 px-3 py-3 font-medium" aria-label="Expand" />
@@ -145,13 +158,14 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
               <th className="px-4 py-3 font-medium">Agent</th>
               <th className="px-4 py-3 font-medium">Severity</th>
               <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">Slack</th>
               <th className="px-4 py-3 font-medium">Created</th>
             </tr>
           </thead>
           <tbody>
             {alerts.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
+                <td colSpan={8} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
                   No alerts have fired yet.
                 </td>
               </tr>
@@ -222,13 +236,18 @@ function FragmentRow({
         <td className="px-4 py-3">
           <Badge tone={statusTone[alert.status]}>{alert.status}</Badge>
         </td>
+        <td className="px-4 py-3">
+          <Badge tone={notificationTone[alert.slack_notification_status]}>
+            {formatNotificationStatus(alert.slack_notification_status)}
+          </Badge>
+        </td>
         <td className="whitespace-nowrap px-4 py-3 text-[color:var(--color-muted-foreground)]">
           {formatDate(alert.created_at)}
         </td>
       </tr>
       {isExpanded ? (
         <tr className="border-t border-[color:var(--color-border)]">
-          <td colSpan={7} className="bg-[color:var(--color-background)] px-4 py-4">
+          <td colSpan={8} className="bg-[color:var(--color-background)] px-4 py-4">
             <AlertDetails alert={alert} evidence={evidence} />
           </td>
         </tr>
@@ -244,6 +263,7 @@ function AlertDetails({ alert, evidence }: { alert: Alert; evidence: EvidenceSec
         <DetailItem label="Rule predicate" value={formatPredicate(alert)} mono />
         <DetailItem label="Telemetry event" value={`#${alert.telemetry_event_id} (${alert.event_type})`} mono />
         <DetailItem label="Received" value={formatDate(alert.received_at)} />
+        <DetailItem label="Slack delivery" value={formatSlackDelivery(alert)} />
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -511,6 +531,22 @@ function stringValue(value: unknown) {
 
 function formatPredicate(alert: Alert) {
   return `${alert.rule_payload_path ?? "event"} ${alert.rule_operator}${alert.rule_match_value ? ` ${alert.rule_match_value}` : ""}`;
+}
+
+function formatNotificationStatus(status: AlertNotificationStatus) {
+  return status.replace("_", " ");
+}
+
+function formatSlackDelivery(alert: Alert) {
+  if (alert.slack_notification_status === "sent" && alert.slack_notified_at) {
+    return `Sent ${formatDate(alert.slack_notified_at)}`;
+  }
+
+  if (alert.slack_notification_status === "failed") {
+    return alert.slack_notification_error ? `Failed: ${alert.slack_notification_error}` : "Failed";
+  }
+
+  return formatNotificationStatus(alert.slack_notification_status);
 }
 
 function formatDate(value: string) {

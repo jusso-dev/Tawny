@@ -139,6 +139,16 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<int>("Severity")
                         .HasColumnType("int");
 
+                    b.Property<string>("SlackNotificationError")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<int>("SlackNotificationStatus")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("SlackNotifiedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<int>("Status")
                         .HasColumnType("int");
 

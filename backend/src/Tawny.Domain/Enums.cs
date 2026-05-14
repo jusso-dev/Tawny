@@ -52,6 +52,14 @@ public enum AlertStatus
     Resolved = 2,
 }
 
+public enum AlertNotificationStatus
+{
+    NotConfigured = 0,
+    Pending = 1,
+    Sent = 2,
+    Failed = 3,
+}
+
 public enum AlertRuleOperator
 {
     Exists = 0,
