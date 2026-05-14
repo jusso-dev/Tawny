@@ -9,10 +9,6 @@ export function middleware(req: NextRequest) {
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 
-  if (process.env.TAWNY_E2E_AUTH_BYPASS === "1") {
-    return NextResponse.next();
-  }
-
   const hasSession = req.cookies
     .getAll()
     .some((cookie) => cookie.name.endsWith(SESSION_COOKIE));
