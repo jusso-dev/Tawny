@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using FluentValidation;
 using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication;
@@ -24,6 +25,7 @@ builder.Services.Configure<WebUserAuthOptions>(opt =>
 
 builder.Services.AddSingleton<AgentJwtService>();
 builder.Services.AddTawnyInfrastructure(builder.Configuration);
+builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>

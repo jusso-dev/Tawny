@@ -6,7 +6,8 @@ const HMAC_SECRET = process.env.TAWNY_WEB_HMAC_SECRET ?? "";
 
 function sign(method: string, path: string, userId: string, role: string) {
   const ts = Math.floor(Date.now() / 1000).toString();
-  const canonical = [method.toUpperCase(), path, ts, userId, role].join("\n");
+  const signedPath = path.split("?")[0] || path;
+  const canonical = [method.toUpperCase(), signedPath, ts, userId, role].join("\n");
   const sig = createHmac("sha256", HMAC_SECRET).update(canonical).digest("hex");
   return {
     "X-User-Id": userId,
