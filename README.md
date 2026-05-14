@@ -239,12 +239,12 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - [x] Backend skeleton: enrollment, heartbeat, JWT
 - [x] Zig agent skeleton: config, enroll, heartbeat loop
 - [x] Next.js scaffold: login, agents list
-- [ ] Process collector end-to-end
-- [ ] Events ingestion + storage
-- [ ] Hangfire: MarkStaleAgents, PurgeOldEvents
-- [ ] Agent detail page with event timeline
-- [ ] Network + FIM collectors (polling)
-- [ ] Install scripts (Windows + macOS)
+- [x] Process collector end-to-end
+- [x] Events ingestion + storage
+- [x] Hangfire: MarkStaleAgents, PurgeOldEvents
+- [x] Agent detail page with event timeline
+- [x] Network + FIM collectors (polling)
+- [x] Install scripts (Windows + macOS)
 - [ ] Release workflow with cross-compiled agent artefacts
 - [ ] Docs: architecture, threat model, deployment
 
