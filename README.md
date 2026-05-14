@@ -6,7 +6,7 @@
 
 > Quiet eyes on every endpoint.
 
-Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows and macOS, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
+Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
 
 The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grade ingestion. Clean architecture, real telemetry, and a UI that looks like a product.
 
@@ -107,32 +107,26 @@ cd agent
 zig build run -- --enrollment-token wte_xxx --backend http://localhost:5080
 ```
 
-To test telemetry end to end entirely in Docker, start the synthetic telemetry agent:
+To test telemetry end to end entirely in Docker, start the real Linux agent container:
 
 ```bash
-docker/scripts/bootstrap-docker.sh --with-synthetic-agent
+docker/scripts/bootstrap-docker.sh --with-agent
 ```
 
 ```powershell
-.\docker\scripts\bootstrap-docker.ps1 -WithSyntheticAgent
+.\docker\scripts\bootstrap-docker.ps1 -WithAgent
 ```
 
-Or start it against an already-running stack:
+Or create an enrollment token in the dashboard and start it against an already-running stack:
 
 ```bash
 cd docker
-docker compose -p tawny --env-file .env --profile telemetry up -d synthetic-agent
-docker compose -p tawny --env-file .env --profile telemetry logs -f synthetic-agent
+printf 'TAWNY_AGENT_ENROLLMENT_TOKEN=wte_xxx\n' >> .env
+docker compose -p tawny --env-file .env --profile agent up -d --build agent
+docker compose -p tawny --env-file .env --profile agent logs -f agent
 ```
 
-The synthetic agent creates a real enrollment token through the API, enrolls as `tawny-docker-agent`, heartbeats every minute, and posts small system, process, network, FIM, and session telemetry batches every 5 minutes. `SYNTHETIC_AGENT_MAX_BATCHES=0` means continuous low-rate telemetry, which is the Docker default so the agent stays online for demos. It is a Docker test harness, not the production endpoint agent.
-
-You can cap it for a short test run:
-
-```bash
-SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS=30 SYNTHETIC_AGENT_MAX_BATCHES=2 \
-docker compose -p tawny --env-file docker/.env -f docker/docker-compose.yml --profile telemetry up -d synthetic-agent
-```
+The container runs the same Zig agent binary used on hosts. Its first start consumes `TAWNY_AGENT_ENROLLMENT_TOKEN`, writes a persistent config into the `agent-state` volume, and then heartbeats and posts Linux process, network, system, session, and FIM telemetry through the normal agent APIs.
 
 ## Screenshots
 
@@ -229,7 +223,11 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - [ ] Release workflow with cross-compiled agent artefacts
 - [ ] Docs: architecture, threat model, deployment
 
-Post-MVP: Linux agent (eBPF), kernel-level collection, alerting DSL, response actions, multi-tenancy, OIDC SSO.
+Post-MVP: Linux agent (eBPF), kernel-level collection, broader Sigma coverage, response actions, multi-tenancy, OIDC SSO.
+
+## Detection rules
+
+Alert rules are moving toward Sigma-compatible detection-as-code instead of a custom Tawny rule language. The current importer accepts a focused Sigma subset: `title`, `id`, `description`, `logsource`, one named `detection` selection, a single-selection `condition`, and `level`. Tawny compiles that into its event matcher and keeps the original Sigma YAML with the rule so the supported subset can grow without inventing a parallel format.
 
 ## Security notes
 

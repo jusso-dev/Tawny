@@ -60,9 +60,13 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
         {
             e.HasKey(r => r.Id);
             e.Property(r => r.Name).HasMaxLength(160).IsRequired();
+            e.Property(r => r.ExternalId).HasMaxLength(128);
+            e.Property(r => r.Description).HasColumnType("nvarchar(max)");
             e.Property(r => r.PayloadPath).HasMaxLength(256);
             e.Property(r => r.MatchValue).HasMaxLength(512);
+            e.Property(r => r.SourceDefinition).HasColumnType("nvarchar(max)");
             e.HasIndex(r => new { r.IsEnabled, r.EventType });
+            e.HasIndex(r => new { r.Format, r.ExternalId });
         });
 
         b.Entity<Alert>(e =>

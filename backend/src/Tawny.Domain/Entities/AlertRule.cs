@@ -4,11 +4,15 @@ public class AlertRule
 {
     public Guid Id { get; set; }
     public required string Name { get; set; }
+    public AlertRuleFormat Format { get; set; } = AlertRuleFormat.TawnyPredicate;
+    public string? ExternalId { get; set; }
+    public string? Description { get; set; }
     public TelemetryEventType? EventType { get; set; }
     public AlertSeverity Severity { get; set; } = AlertSeverity.Medium;
     public AlertRuleOperator Operator { get; set; } = AlertRuleOperator.Contains;
     public string? PayloadPath { get; set; }
     public string? MatchValue { get; set; }
+    public string? SourceDefinition { get; set; }
     public bool IsEnabled { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }

@@ -12,6 +12,7 @@ public enum AgentPlatform
 {
     Windows = 0,
     Macos = 1,
+    Linux = 2,
 }
 
 public enum AgentArchitecture
@@ -58,4 +59,10 @@ public enum AlertRuleOperator
     Contains = 2,
     GreaterThan = 3,
     LessThan = 4,
+}
+
+public enum AlertRuleFormat
+{
+    TawnyPredicate = 0,
+    Sigma = 1,
 }
