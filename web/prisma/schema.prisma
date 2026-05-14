@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model user {
+  id            String    @id @default(cuid()) @db.NVarChar(255)
+  name          String    @db.NVarChar(255)
+  email         String    @unique @db.NVarChar(320)
+  emailVerified Boolean   @default(false)
+  image         String?   @db.NVarChar(1024)
+  role          String    @default("Admin") @db.NVarChar(32)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      session[]
+  accounts      account[]
+}
+
+model session {
+  id        String   @id @default(cuid()) @db.NVarChar(255)
+  expiresAt DateTime
+  token     String   @unique @db.NVarChar(512)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?  @db.NVarChar(64)
+  userAgent String?  @db.NVarChar(1024)
+  userId    String   @db.NVarChar(255)
+  user      user     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model account {
+  id                    String    @id @default(cuid()) @db.NVarChar(255)
+  accountId             String    @db.NVarChar(255)
+  providerId            String    @db.NVarChar(64)
+  userId                String    @db.NVarChar(255)
+  accessToken           String?   @db.NVarChar(Max)
+  refreshToken          String?   @db.NVarChar(Max)
+  idToken               String?   @db.NVarChar(Max)
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?   @db.NVarChar(1024)
+  password              String?   @db.NVarChar(1024)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  user      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([providerId, accountId])
+}
+
+model verification {
+  id         String   @id @default(cuid()) @db.NVarChar(255)
+  identifier String   @db.NVarChar(512)
+  value      String   @db.NVarChar(Max)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}

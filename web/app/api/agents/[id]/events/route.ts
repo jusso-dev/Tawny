@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
 
 type Params = {
@@ -18,7 +19,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   const path = `/api/agents/${id}/events${query ? `?${query}` : ""}`;
 
   try {
-    const events = await apiGet(path, session.user.id, "Admin");
+    const events = await apiGet(path, session.user.id, authRole(session.user));
     return NextResponse.json(events);
   } catch {
     return NextResponse.json({ error: "Failed to load events" }, { status: 502 });

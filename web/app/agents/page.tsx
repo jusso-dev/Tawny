@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import { auth } from "@/lib/auth";
+import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -22,7 +23,7 @@ export default async function AgentsPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) redirect("/login");
 
-  const agents = await apiGet<Agent[]>("/api/agents", session.user.id, "Admin");
+  const agents = await apiGet<Agent[]>("/api/agents", session.user.id, authRole(session.user));
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
