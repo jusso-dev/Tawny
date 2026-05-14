@@ -200,6 +200,8 @@ docker/scripts/bootstrap-docker.sh --with-docker-agent
 
 The Docker agent image builds the Zig Linux binary, creates a local enrollment token through the API on first boot, persists its config in a named volume, and then sends real Linux container telemetry from procfs.
 
+Agent detail event tabs poll for fresh telemetry every two seconds by default. Use Pause to freeze the table while inspecting payloads. SSE streaming is intentionally deferred to v0.2; the current polling route is marked with `X-Tawny-Event-Feed: polling`.
+
 You can cap it for a short test run:
 
 ```bash

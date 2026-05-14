@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { Pause, Play, RefreshCcw } from "lucide-react";
+import { QueryClient, QueryClientProvider, keepPreviousData, useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/cn";
 
 type EventType =
@@ -25,18 +26,18 @@ type Tab = {
   key: string;
   label: string;
   type?: EventType;
-  live?: boolean;
 };
 
 const TABS: Tab[] = [
-  { key: "processes", label: "Processes", type: "process_snapshot", live: true },
+  { key: "processes", label: "Processes", type: "process_snapshot" },
   { key: "network", label: "Network", type: "network_snapshot" },
   { key: "fim", label: "FIM", type: "file_integrity" },
   { key: "sessions", label: "Sessions", type: "user_session" },
   { key: "raw", label: "Raw events" },
 ];
 
-const eventLimit = "12";
+const EVENT_LIMIT = "12";
+const LIVE_POLL_INTERVAL_MS = 2000;
 
 export function AgentEventsPanel({ agentId }: { agentId: string }) {
   const [queryClient] = useState(() => new QueryClient());
@@ -50,25 +51,30 @@ export function AgentEventsPanel({ agentId }: { agentId: string }) {
 
 function AgentEvents({ agentId }: { agentId: string }) {
   const [activeKey, setActiveKey] = useState(TABS[0]!.key);
+  const [isLive, setIsLive] = useState(true);
   const activeTab = useMemo(
     () => TABS.find((tab) => tab.key === activeKey) ?? TABS[0]!,
     [activeKey],
   );
 
-  const { data, error, isFetching } = useQuery({
+  const { data, error, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ["agent-events", agentId, activeTab.type ?? "all"],
     queryFn: async () => {
-      const params = new URLSearchParams({ limit: eventLimit });
+      const params = new URLSearchParams({ limit: EVENT_LIMIT });
       if (activeTab.type) params.set("type", activeTab.type);
 
       const res = await fetch(`/api/agents/${agentId}/events?${params.toString()}`);
       if (!res.ok) throw new Error(`Event request failed with ${res.status}`);
       return (await res.json()) as TelemetryEvent[];
     },
-    refetchInterval: activeTab.live ? 2000 : false,
+    placeholderData: keepPreviousData,
+    refetchInterval: isLive ? LIVE_POLL_INTERVAL_MS : false,
+    refetchIntervalInBackground: true,
+    staleTime: 1000,
   });
 
   const events = data ?? [];
+  const lastUpdated = dataUpdatedAt ? formatTime(dataUpdatedAt) : "Not loaded";
 
   return (
     <section className="mt-8">
@@ -92,10 +98,31 @@ function AgentEvents({ agentId }: { agentId: string }) {
             </button>
           ))}
         </div>
-        <p className="text-xs text-[color:var(--color-muted-foreground)]">
-          {activeTab.live ? "Live refresh every 2s" : `Latest ${eventLimit} events`}
-          {isFetching ? ", updating" : ""}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--color-muted-foreground)]">
+          <span>
+            {isLive ? "Polling every 2s" : `Latest ${EVENT_LIMIT} events`}
+            {isFetching ? ", updating" : ""}
+          </span>
+          <span aria-hidden="true">|</span>
+          <span>Updated {lastUpdated}</span>
+          <button
+            type="button"
+            onClick={() => setIsLive((current) => !current)}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] px-2.5 font-medium text-[color:var(--color-foreground)] transition-colors hover:bg-[color:var(--color-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
+          >
+            {isLive ? <Pause size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
+            {isLive ? "Pause" : "Resume"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] px-2.5 font-medium text-[color:var(--color-foreground)] transition-colors hover:bg-[color:var(--color-muted)] disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
+          >
+            <RefreshCcw size={13} aria-hidden="true" className={isFetching ? "animate-spin" : undefined} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error ? (
@@ -147,6 +174,14 @@ function formatDate(value: string) {
     second: "2-digit",
     month: "short",
     day: "numeric",
+  }).format(new Date(value));
+}
+
+function formatTime(value: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   }).format(new Date(value));
 }
 
