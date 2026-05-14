@@ -3,6 +3,7 @@ using FluentValidation;
 using Hangfire;
 using Hangfire.Dashboard;
 using Hangfire.SqlServer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -83,6 +84,13 @@ builder.Services.AddHangfire(cfg => cfg
 builder.Services.AddHangfireServer();
 
 var app = builder.Build();
+
+if (app.Configuration.GetValue<bool>("Tawny:ApplyMigrationsOnStartup"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+    await db.Database.MigrateAsync();
+}
 
 app.UseSerilogRequestLogging();
 app.UseExceptionHandler();

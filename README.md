@@ -62,13 +62,12 @@ Requirements:
 - Zig 0.14+ (only needed if you want to build the agent)
 
 ```bash
-# 1. Bring up SQL Server + API + Web
+# 1. Generate local compose secrets and opt in to startup migrations
 cd docker
-docker compose up --build
+./scripts/init-secrets.sh
 
-# 2. Apply migrations (one-off)
-cd ../backend
-dotnet ef database update --project src/Tawny.Infrastructure --startup-project src/Tawny.Api
+# 2. Bring up SQL Server + API + Web
+docker compose up --build
 
 # 3. Open the dashboard
 open http://localhost:3000
@@ -81,6 +80,13 @@ curl -X POST http://localhost:5080/api/enrollment-tokens \
 # 5. Run the agent against your local backend
 cd ../agent
 zig build run -- --enrollment-token wte_xxx --backend http://localhost:5080
+```
+
+EF migrations live in `backend/src/Tawny.Infrastructure/Migrations`. Automatic migration application is opt-in with `Tawny__ApplyMigrationsOnStartup=true` or `TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in `docker/.env`. For production, leave that flag off and run:
+
+```bash
+cd backend
+dotnet ef database update --project src/Tawny.Infrastructure --startup-project src/Tawny.Api
 ```
 
 ## Why Zig?
@@ -141,6 +147,17 @@ curl -fsSL https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/
 ```
 
 Both scripts write the platform default `config.toml`, download the latest matching release asset, verify SHA-256 when a release sidecar is present, and register the agent as a Windows service or macOS launchd job. Use `-DryRun` on Windows or `--dry-run` on macOS to inspect local actions without changing the host.
+
+## Production secrets
+
+Agent JWTs must be signed by a stable RSA private key in production. Generate one with:
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out tawny-jwt-key
+chmod 0600 tawny-jwt-key
+```
+
+Set `Tawny__AgentJwt__SigningKeyPem` to the PEM file path or the inline PEM value. In production, `AgentJwtService` refuses to start without a configured signing key. Docker compose mounts `docker/secrets` at `/run/secrets`; `docker/scripts/init-secrets.sh` creates `docker/secrets/tawny-jwt-key`, `TAWNY_WEB_HMAC_SECRET`, and `BETTER_AUTH_SECRET` for local development.
 
 See [docs/threat-model.md](docs/threat-model.md).
 
