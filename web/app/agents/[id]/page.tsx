@@ -4,6 +4,7 @@ import Link from "next/link";
 import { auth } from "@/lib/auth";
 import { apiGet } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { AgentEventsPanel } from "./events-panel";
 
 type Agent = {
   id: string;
@@ -52,11 +53,7 @@ export default async function AgentDetailPage({
         <StatusBadge status={agent.status} />
       </header>
 
-      <section className="mt-8 rounded-lg border border-[color:var(--color-border)] p-8 text-center">
-        <p className="text-sm text-[color:var(--color-muted-foreground)]">
-          Telemetry tabs (processes, network, FIM, sessions, raw events) coming next.
-        </p>
-      </section>
+      <AgentEventsPanel agentId={agent.id} />
     </main>
   );
 }

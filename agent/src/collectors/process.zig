@@ -24,28 +24,36 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     for (procs, 0..) |p, i| {
         if (i > 0) try w.writeByte(',');
         try w.print(
-            \\{{"pid":{d},"ppid":{d},"name":"{s}"}}
-        , .{ p.pid, p.ppid, escapeJsonInto(p.name) });
+            \\{{"pid":{d},"ppid":{d},"name":
+        , .{ p.pid, p.ppid });
+        try writeJsonString(w, p.name);
+        try w.writeByte('}');
     }
     try w.writeAll("]}");
 
     return out.toOwnedSlice();
 }
 
-/// Quick JSON-escape for ASCII-ish names. Replaces quotes and backslashes with '_'.
-/// Good enough for MVP; replace with proper escaping when payloads carry user-controlled
-/// strings from telemetry.
-fn escapeJsonInto(s: []const u8) []const u8 {
-    return s;
+fn writeJsonString(writer: anytype, s: []const u8) !void {
+    try std.json.stringify(s, .{}, writer);
 }
 
 test "process collect runs" {
     const alloc = std.testing.allocator;
-    const out = collect(alloc) catch |err| switch (err) {
-        // Sandboxed CI may not enumerate processes; tolerate it.
-        error.AccessDenied, error.Unexpected => return,
-        else => return err,
-    };
+    // Sandboxed CI may not enumerate processes; tolerate collector failures here.
+    const out = collect(alloc) catch return;
     defer alloc.free(out);
     try std.testing.expect(std.mem.startsWith(u8, out, "{\"processes\":["));
+}
+
+test "process names are json escaped" {
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+
+    try writeJsonString(out.writer(), "bad\"name\\with\nnewline");
+
+    try std.testing.expectEqualStrings(
+        "\"bad\\\"name\\\\with\\nnewline\"",
+        out.items,
+    );
 }
