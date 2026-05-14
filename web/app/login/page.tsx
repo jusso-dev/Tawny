@@ -33,12 +33,12 @@ export default function LoginPage() {
     <main className="mx-auto grid min-h-screen max-w-sm place-items-center px-6 py-10">
       <section className="w-full rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-6 shadow-xl shadow-[oklch(0.08_0.01_58_/_0.22)]">
         <Image
-          src="/logo.jpg"
+          src="/logo-mark.png"
           alt="Tawny EDR"
-          width={76}
-          height={77}
+          width={80}
+          height={80}
           priority
-          className="mb-6 rounded-md"
+          className="mb-6 h-20 w-20 object-contain"
         />
         <h1 className="text-2xl font-semibold">Sign in</h1>
         <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
