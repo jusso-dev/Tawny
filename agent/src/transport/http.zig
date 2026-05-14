@@ -7,6 +7,14 @@ pub const HeartbeatPayload = struct {
     buffer_depth: usize,
 };
 
+pub const HeartbeatResult = struct {
+    rotated_jwt: ?[]u8 = null,
+
+    pub fn deinit(self: *HeartbeatResult, alloc: std.mem.Allocator) void {
+        if (self.rotated_jwt) |jwt| alloc.free(jwt);
+    }
+};
+
 pub const Client = struct {
     allocator: std.mem.Allocator,
     base_url: []const u8,
@@ -25,13 +33,27 @@ pub const Client = struct {
         _ = self;
     }
 
-    pub fn heartbeat(self: *Client, p: HeartbeatPayload) !void {
+    pub fn heartbeat(self: *Client, p: HeartbeatPayload) !HeartbeatResult {
         const body = try std.fmt.allocPrint(self.allocator,
             \\{{"agent_version":"{s}","uptime_seconds":{d},"buffer_depth":{d}}}
         , .{ p.agent_version, p.uptime_seconds, p.buffer_depth });
         defer self.allocator.free(body);
 
-        try self.post("/api/agents/heartbeat", body);
+        const response = try self.post("/api/agents/heartbeat", body);
+        defer self.allocator.free(response);
+
+        const Parsed = struct {
+            rotated_jwt: ?[]const u8 = null,
+        };
+        const parsed = std.json.parseFromSlice(Parsed, self.allocator, response, .{
+            .ignore_unknown_fields = true,
+        }) catch return .{};
+        defer parsed.deinit();
+
+        if (parsed.value.rotated_jwt) |jwt| {
+            return .{ .rotated_jwt = try self.allocator.dupe(u8, jwt) };
+        }
+        return .{};
     }
 
     pub fn flushEvents(self: *Client, buf: *buffer_mod.Buffer) !void {
@@ -48,11 +70,12 @@ pub const Client = struct {
         }
         try body.appendSlice("]}");
 
-        try self.post("/api/agents/events", body.items);
+        const response = try self.post("/api/agents/events", body.items);
+        defer self.allocator.free(response);
         buf.clear();
     }
 
-    fn post(self: *Client, path: []const u8, body: []const u8) !void {
+    fn post(self: *Client, path: []const u8, body: []const u8) ![]u8 {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.base_url, path });
         defer self.allocator.free(url);
 
@@ -82,8 +105,9 @@ pub const Client = struct {
         const status_int = @intFromEnum(res.status);
         if (status_int >= 200 and status_int < 300) {
             self.backoff_seconds = 1;
-            return;
+            return resp.toOwnedSlice();
         }
+        self.backoff_seconds = @min(self.backoff_seconds * 2, 300);
         return error.HttpError;
     }
 };

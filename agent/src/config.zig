@@ -15,10 +15,12 @@ pub const Config = struct {
     fim_interval_seconds: u32 = 300,
     max_in_memory_events: usize = 1000,
     fim_paths: [][]u8 = &.{},
+    spill_path: []u8,
     config_path: []u8,
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.backend_url);
+        self.allocator.free(self.spill_path);
         self.allocator.free(self.config_path);
         if (self.enrollment_token) |t| self.allocator.free(t);
         if (self.agent_id) |t| self.allocator.free(t);
@@ -47,6 +49,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     var cfg = Config{
         .allocator = alloc,
         .backend_url = try alloc.dupe(u8, "http://localhost:5080"),
+        .spill_path = try std.fmt.allocPrint(alloc, "{s}.spool", .{path}),
         .config_path = path,
     };
 
@@ -91,6 +94,9 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             cfg.fim_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_in_memory_events")) {
             cfg.max_in_memory_events = try std.fmt.parseInt(usize, val, 10);
+        } else if (std.mem.eql(u8, key, "spill_path")) {
+            alloc.free(cfg.spill_path);
+            cfg.spill_path = try alloc.dupe(u8, val);
         } else if (std.mem.eql(u8, key, "fim_path")) {
             try appendFimPath(&cfg, val);
         } else if (std.mem.eql(u8, key, "fim_paths")) {
@@ -106,40 +112,57 @@ pub fn save(cfg: *const Config) !void {
     const dir = std.fs.path.dirname(cfg.config_path) orelse ".";
     std.fs.cwd().makePath(dir) catch {};
 
-    var file = try std.fs.cwd().createFile(cfg.config_path, .{ .truncate = true });
-    defer file.close();
-    var w = file.writer();
+    const tmp_path = try std.fmt.allocPrint(cfg.allocator, "{s}.tmp", .{cfg.config_path});
+    defer cfg.allocator.free(tmp_path);
 
-    try w.print("[backend]\nurl = \"{s}\"\n\n", .{cfg.backend_url});
-    if (cfg.agent_id) |id| try w.print("agent_id = \"{s}\"\n", .{id});
-    if (cfg.agent_jwt) |j| try w.print("agent_jwt = \"{s}\"\n", .{j});
+    {
+        var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var w = file.writer();
 
-    try w.print(
-        \\
-        \\[collection]
-        \\heartbeat_interval_seconds = {d}
-        \\process_interval_seconds = {d}
-        \\network_interval_seconds = {d}
-        \\users_interval_seconds = {d}
-        \\system_interval_seconds = {d}
-        \\fim_interval_seconds = {d}
-        \\max_in_memory_events = {d}
-        \\fim_paths = [
-    , .{
-        cfg.heartbeat_interval_seconds,
-        cfg.process_interval_seconds,
-        cfg.network_interval_seconds,
-        cfg.users_interval_seconds,
-        cfg.system_interval_seconds,
-        cfg.fim_interval_seconds,
-        cfg.max_in_memory_events,
-    });
+        try w.print("[backend]\nurl = \"{s}\"\n\n", .{cfg.backend_url});
+        if (cfg.agent_id) |id| try w.print("agent_id = \"{s}\"\n", .{id});
+        if (cfg.agent_jwt) |j| try w.print("agent_jwt = \"{s}\"\n", .{j});
 
-    for (cfg.fim_paths, 0..) |path, i| {
-        if (i > 0) try w.writeAll(", ");
-        try std.json.stringify(path, .{}, w);
+        try w.print(
+            \\
+            \\[collection]
+            \\heartbeat_interval_seconds = {d}
+            \\process_interval_seconds = {d}
+            \\network_interval_seconds = {d}
+            \\users_interval_seconds = {d}
+            \\system_interval_seconds = {d}
+            \\fim_interval_seconds = {d}
+            \\max_in_memory_events = {d}
+            \\spill_path =
+        , .{
+            cfg.heartbeat_interval_seconds,
+            cfg.process_interval_seconds,
+            cfg.network_interval_seconds,
+            cfg.users_interval_seconds,
+            cfg.system_interval_seconds,
+            cfg.fim_interval_seconds,
+            cfg.max_in_memory_events,
+        });
+        try w.writeByte(' ');
+        try std.json.stringify(cfg.spill_path, .{}, w);
+        try w.writeAll("\nfim_paths = [");
+
+        for (cfg.fim_paths, 0..) |path, i| {
+            if (i > 0) try w.writeAll(", ");
+            try std.json.stringify(path, .{}, w);
+        }
+        try w.writeAll("]\n");
+        try file.sync();
     }
-    try w.writeAll("]\n");
+
+    std.fs.cwd().rename(tmp_path, cfg.config_path) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            std.fs.cwd().deleteFile(cfg.config_path) catch {};
+            try std.fs.cwd().rename(tmp_path, cfg.config_path);
+        },
+        else => return err,
+    };
 }
 
 fn appendFimPaths(cfg: *Config, raw: []const u8) !void {
@@ -162,6 +185,7 @@ test "fim paths parser accepts arrays and repeated paths" {
     var cfg = Config{
         .allocator = std.testing.allocator,
         .backend_url = try std.testing.allocator.dupe(u8, "http://localhost:5080"),
+        .spill_path = try std.testing.allocator.dupe(u8, "events.spool"),
         .config_path = try std.testing.allocator.dupe(u8, "config.toml"),
     };
     defer cfg.deinit();
