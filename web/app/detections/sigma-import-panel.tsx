@@ -1,0 +1,442 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { parse, YAMLParseError } from "yaml";
+import { z } from "zod";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  FileCode2,
+  Loader2,
+  Upload,
+} from "lucide-react";
+
+type ValidationResult = {
+  errors: string[];
+  warnings: string[];
+  summary: {
+    title?: string;
+    condition?: string;
+    field?: string;
+    modifier?: string;
+    level?: string;
+  };
+};
+
+type ExampleRule = {
+  name: string;
+  description: string;
+  yaml: string;
+};
+
+const defaultYaml = `title: Suspicious Process Name
+id: 8c6f0f07-5a44-4c41-83cc-2e0e0f6ef9f1
+description: Detects a suspicious process name from Tawny process telemetry.
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    processes.name|contains: suspicious.exe
+  condition: selection
+level: high
+`;
+
+const examples: ExampleRule[] = [
+  {
+    name: "Process contains",
+    description: "Match a process name or command fragment.",
+    yaml: defaultYaml,
+  },
+  {
+    name: "Multi-value shell",
+    description: "Use a YAML list to match any one value.",
+    yaml: `title: Suspicious Shell Process
+id: 5d7f8f0e-aaaa-4f5b-8d10-2b2bb1f2a111
+description: Detects common shell process names.
+logsource:
+  category: process_creation
+detection:
+  selection:
+    processes.name:
+      - powershell.exe
+      - cmd.exe
+      - bash
+  condition: selection
+level: medium
+`,
+  },
+  {
+    name: "High port",
+    description: "Compare a numeric telemetry field.",
+    yaml: `title: Unusual Destination Port
+id: 5c20b282-6026-41bb-b7dd-2e4f9e41ec74
+description: Detects outbound connections to high destination ports.
+logsource:
+  category: network_connection
+detection:
+  selection:
+    connections.remote_port|gt: 49151
+  condition: selection
+level: low
+`,
+  },
+];
+
+const supportedModifiers = new Set(["contains", "exists", "gt", "lt"]);
+const displayedModifiers = "contains, exists, gt, lt";
+const supportedLevels = new Set(["informational", "low", "medium", "high", "critical"]);
+
+const scalarSchema = z.union([z.string(), z.number(), z.boolean()]).transform((value) => String(value).trim());
+
+const requiredScalarSchema = scalarSchema.refine((value) => value.length > 0, {
+  message: "Required value cannot be empty.",
+});
+
+const logsourceSchema = z.record(scalarSchema);
+
+const sigmaRootSchema = z.object({
+  title: requiredScalarSchema,
+  id: scalarSchema.optional(),
+  description: scalarSchema.optional(),
+  logsource: logsourceSchema.optional(),
+  detection: z.record(z.unknown()),
+  level: scalarSchema.optional(),
+});
+
+const selectionValueSchema = z.union([requiredScalarSchema, z.array(requiredScalarSchema).min(1)]);
+const selectionSchema = z.record(selectionValueSchema);
+
+type SigmaRoot = z.infer<typeof sigmaRootSchema>;
+
+function formatZodIssues(error: z.ZodError) {
+  return error.issues.map((issue) => {
+    const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+    return `${path}${issue.message}`;
+  });
+}
+
+function parseFieldPredicate(raw: string, errors: string[]) {
+  const [field, ...modifiers] = raw.split("|");
+  const modifier = modifiers.at(-1);
+
+  if (!field) {
+    errors.push("The selection field cannot be empty.");
+  }
+
+  if (modifiers.length > 1) {
+    errors.push("Use at most one field modifier.");
+  }
+
+  if (modifier && !supportedModifiers.has(modifier.toLowerCase())) {
+    errors.push(`Unsupported modifier "${modifier}". Use ${displayedModifiers}, or no modifier for equality.`);
+  }
+
+  return {
+    field,
+    modifier,
+  };
+}
+
+function validateParsedSigmaRule(rule: SigmaRoot): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const summary: ValidationResult["summary"] = {
+    title: rule.title,
+  };
+
+  if (rule.level) {
+    const normalized = rule.level.toLowerCase();
+    if (!supportedLevels.has(normalized)) {
+      errors.push("Use one of these levels: informational, low, medium, high, critical.");
+    } else {
+      summary.level = normalized === "informational" ? "low" : normalized;
+    }
+  } else {
+    warnings.push("No level set. Tawny will import the rule as medium severity.");
+  }
+
+  if (!rule.logsource) {
+    warnings.push("No logsource set. The rule will evaluate against every telemetry event type.");
+  }
+
+  const conditionResult = requiredScalarSchema.safeParse(rule.detection.condition);
+  if (!conditionResult.success) {
+    errors.push("Add detection.condition and set it to the selection name.");
+    return { errors, warnings, summary };
+  }
+
+  const condition = conditionResult.data;
+  summary.condition = condition;
+  if (condition.includes(" ")) {
+    errors.push("Use a single selection name for condition, for example condition: selection.");
+  }
+
+  const selectionResult = selectionSchema.safeParse(rule.detection[condition]);
+  if (!selectionResult.success) {
+    errors.push(`Add a detection.${condition} selection block with scalar values or a YAML list.`);
+    return { errors, warnings, summary };
+  }
+
+  const fieldNames = Object.keys(selectionResult.data);
+  if (fieldNames.length === 0) {
+    errors.push("Add exactly one field predicate inside the selection.");
+    return { errors, warnings, summary };
+  }
+
+  if (fieldNames.length > 1) {
+    errors.push("Only one field predicate per Sigma selection is supported right now.");
+  }
+
+  const fieldName = fieldNames[0];
+  if (!fieldName) {
+    errors.push("Add exactly one field predicate inside the selection.");
+    return { errors, warnings, summary };
+  }
+
+  const { field, modifier } = parseFieldPredicate(fieldName, errors);
+  summary.field = field;
+  summary.modifier = modifier ?? "equals";
+
+  return { errors, warnings, summary };
+}
+
+function validateSigmaRule(yaml: string): ValidationResult {
+  const summary: ValidationResult["summary"] = {};
+
+  if (yaml.trim().length === 0) {
+    return {
+      errors: ["Paste a Sigma YAML rule before importing."],
+      warnings: [],
+      summary,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parse(yaml);
+  } catch (err) {
+    const message =
+      err instanceof YAMLParseError
+        ? err.message.replace(/^.*?:\s*/, "")
+        : "YAML could not be parsed.";
+    return {
+      errors: [message],
+      warnings: [],
+      summary,
+    };
+  }
+
+  const rootResult = sigmaRootSchema.safeParse(parsed);
+  if (!rootResult.success) {
+    return {
+      errors: formatZodIssues(rootResult.error),
+      warnings: [],
+      summary,
+    };
+  }
+
+  return validateParsedSigmaRule(rootResult.data);
+}
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex min-h-9 items-center gap-2 rounded-md border border-[color:var(--color-border)] px-3 text-sm hover:bg-[color:var(--color-muted)]"
+    >
+      {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+export function SigmaImportPanel() {
+  const router = useRouter();
+  const [ruleYaml, setRuleYaml] = useState(defaultYaml);
+  const [enabled, setEnabled] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const validation = useMemo(() => validateSigmaRule(ruleYaml), [ruleYaml]);
+  const canSubmit = validation.errors.length === 0 && ruleYaml.trim().length > 0 && !pending;
+
+  async function importRule(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    if (!canSubmit) return;
+
+    setPending(true);
+    try {
+      const res = await fetch("/api/alert-rules/sigma", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rule_yaml: ruleYaml, is_enabled: enabled }),
+      });
+      const body = (await res.json().catch(() => null)) as { name?: string; error?: string } | null;
+      if (!res.ok) {
+        throw new Error(body?.error ?? `Import failed with ${res.status}`);
+      }
+
+      setSuccess(`Imported ${body?.name ?? validation.summary.title ?? "Sigma rule"}.`);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import Sigma rule.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+      <div className="flex flex-col gap-3 border-b border-[color:var(--color-border)] px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="font-semibold">Import Sigma rule</h2>
+          <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
+            Paste a supported Sigma YAML rule and review the compiled predicate before importing.
+          </p>
+        </div>
+        <CopyButton value={ruleYaml} />
+      </div>
+
+      <form onSubmit={importRule} className="space-y-5 p-5">
+        <div>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+            <label htmlFor="sigma-yaml" className="text-sm font-medium">
+              Rule YAML
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {examples.map((example) => (
+                <button
+                  key={example.name}
+                  type="button"
+                  onClick={() => {
+                    setRuleYaml(example.yaml);
+                    setError(null);
+                    setSuccess(null);
+                  }}
+                  title={example.description}
+                  className="inline-flex min-h-8 items-center gap-2 rounded-md border border-[color:var(--color-border)] px-2.5 text-xs hover:bg-[color:var(--color-muted)]"
+                >
+                  <FileCode2 size={14} />
+                  {example.name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <textarea
+            id="sigma-yaml"
+            value={ruleYaml}
+            onChange={(event) => {
+              setRuleYaml(event.target.value);
+              setError(null);
+              setSuccess(null);
+            }}
+            spellCheck={false}
+            className="min-h-[24rem] w-full resize-y rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 py-3 font-mono text-xs leading-6 outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
+          />
+        </div>
+
+        <ValidationPanel validation={validation} />
+
+        <label className="flex items-center gap-3 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => setEnabled(event.target.checked)}
+            className="h-4 w-4 accent-[color:var(--color-accent)]"
+          />
+          Enable after import
+        </label>
+
+        {error && (
+          <p className="rounded-md border border-[color:var(--color-danger)]/35 bg-[color:var(--color-danger)]/10 px-3 py-2 text-sm text-[color:var(--color-danger)]">
+            {error}
+          </p>
+        )}
+        {success && (
+          <p className="rounded-md border border-[color:var(--color-success)]/35 bg-[color:var(--color-success)]/10 px-3 py-2 text-sm text-[color:var(--color-success)]">
+            {success}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-[color:var(--color-accent)] px-4 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {pending ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+          {pending ? "Importing..." : "Import rule"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function ValidationPanel({ validation }: { validation: ValidationResult }) {
+  const valid = validation.errors.length === 0;
+  const hasSummary = Boolean(validation.summary.title || validation.summary.field);
+
+  return (
+    <div className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-muted)] p-4">
+      <div className="flex items-center gap-2">
+        {valid ? (
+          <CheckCircle2 size={17} className="text-[color:var(--color-success)]" />
+        ) : (
+          <AlertTriangle size={17} className="text-[color:var(--color-danger)]" />
+        )}
+        <h3 className="text-sm font-medium">{valid ? "Ready to import" : "Fix validation issues"}</h3>
+      </div>
+
+      {hasSummary && (
+        <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+          <SummaryItem label="Title" value={validation.summary.title} />
+          <SummaryItem label="Condition" value={validation.summary.condition} />
+          <SummaryItem label="Field" value={validation.summary.field} />
+          <SummaryItem label="Modifier" value={validation.summary.modifier} />
+          <SummaryItem label="Severity" value={validation.summary.level} />
+        </dl>
+      )}
+
+      {(validation.errors.length > 0 || validation.warnings.length > 0) && (
+        <div className="mt-3 space-y-2 text-sm">
+          {validation.errors.map((message) => (
+            <p key={message} className="text-[color:var(--color-danger)]">
+              {message}
+            </p>
+          ))}
+          {validation.warnings.map((message) => (
+            <p key={message} className="text-[color:var(--color-muted-foreground)]">
+              {message}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryItem({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+
+  return (
+    <div>
+      <dt className="text-[color:var(--color-muted-foreground)]">{label}</dt>
+      <dd className="mt-0.5 break-words font-mono text-[color:var(--color-foreground)]">{value}</dd>
+    </div>
+  );
+}

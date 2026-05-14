@@ -260,6 +260,36 @@ level: high
         alert.Severity.Should().Be(AlertSeverity.High);
     }
 
+    [Fact]
+    public async Task ImportSigmaRule_RejectsUnsupportedModifier()
+    {
+        await factory.ResetDatabaseAsync();
+        const string ruleYaml = """
+title: Unsupported Sigma Modifier
+detection:
+  selection:
+    processes.name|startswith: suspicious.exe
+  condition: selection
+level: high
+""";
+
+        var client = factory.CreateClient();
+        using var importReq = new HttpRequestMessage(HttpMethod.Post, "/api/alert-rules/sigma")
+        {
+            Content = JsonContent.Create(new
+            {
+                rule_yaml = ruleYaml,
+            }),
+        };
+        importReq.AddWebUserSignature("/api/alert-rules/sigma");
+
+        var importRes = await client.SendAsync(importReq);
+
+        importRes.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await importRes.Content.ReadAsStringAsync();
+        body.Should().Contain("Unsupported Sigma field modifier");
+    }
+
     private sealed record EnrollBody(
         [property: JsonPropertyName("agent_id")] Guid AgentId,
         [property: JsonPropertyName("jwt")] string Jwt);

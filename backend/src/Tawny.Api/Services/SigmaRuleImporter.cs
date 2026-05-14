@@ -113,17 +113,26 @@ public class SigmaRuleImporter
     private static (string Field, AlertRuleOperator Operator) ParseField(string raw)
     {
         var parts = raw.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0 || string.IsNullOrWhiteSpace(parts[0]))
+        {
+            throw new SigmaRuleException("Sigma selection field is required.");
+        }
+
+        if (parts.Length > 2)
+        {
+            throw new SigmaRuleException("Only one Sigma field modifier is supported for now.");
+        }
+
         var field = parts[0].Trim();
         var modifier = parts.Length > 1 ? parts[^1] : "";
         var op = modifier.ToLowerInvariant() switch
         {
+            "" => AlertRuleOperator.Equals,
             "exists" => AlertRuleOperator.Exists,
             "contains" => AlertRuleOperator.Contains,
-            "startswith" => AlertRuleOperator.Contains,
-            "endswith" => AlertRuleOperator.Contains,
             "gt" => AlertRuleOperator.GreaterThan,
             "lt" => AlertRuleOperator.LessThan,
-            _ => AlertRuleOperator.Equals,
+            _ => throw new SigmaRuleException($"Unsupported Sigma field modifier '{modifier}'."),
         };
         return (field, op);
     }
