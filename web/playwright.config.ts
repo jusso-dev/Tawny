@@ -23,7 +23,7 @@ export default defineConfig({
       TAWNY_WEB_HMAC_SECRET: "test-hmac-secret",
       BETTER_AUTH_SECRET: "test-better-auth-secret",
       BETTER_AUTH_URL: "http://127.0.0.1:3000",
-      DATABASE_URL: "sqlserver://sa:DevPassw0rd!@127.0.0.1:1433/Tawny",
+      DATABASE_URL: "sqlserver://127.0.0.1:1433;database=Tawny;user=sa;password=DevPassw0rd!;encrypt=false;trustServerCertificate=true",
     },
   },
 });

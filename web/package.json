@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs",
     "db:migrate": "prisma migrate deploy",
     "seed": "node scripts/bootstrap-admin.mjs"
   },

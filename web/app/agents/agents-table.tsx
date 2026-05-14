@@ -43,7 +43,7 @@ export function AgentsTable({ agents }: { agents: Agent[] }) {
 
   return (
     <div
-      className="mt-8 overflow-hidden rounded-lg border border-[color:var(--color-border)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
+      className="mt-5 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
       tabIndex={0}
       onKeyDown={onKeyDown}
       aria-label="Agents table"
@@ -63,7 +63,7 @@ export function AgentsTable({ agents }: { agents: Agent[] }) {
             <tr>
               <td colSpan={5} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
                 No agents yet.{" "}
-                <Link href="/enrollment" className="underline">
+                <Link href="/enrollment" className="text-[color:var(--color-accent)] underline underline-offset-4">
                   Create an enrollment token
                 </Link>{" "}
                 to onboard your first endpoint.
@@ -73,21 +73,23 @@ export function AgentsTable({ agents }: { agents: Agent[] }) {
           {agents.map((agent, index) => (
             <tr
               key={agent.id}
-              className={`border-t border-[color:var(--color-border)] ${
-                index === activeIndex ? "bg-[color:var(--color-muted)]/70" : ""
+              className={`border-t border-[color:var(--color-border)] transition-colors ${
+                index === activeIndex ? "bg-[color:var(--color-muted)]/70" : "hover:bg-[color:var(--color-muted)]/45"
               }`}
               aria-selected={index === activeIndex}
               onMouseEnter={() => setActiveIndex(index)}
             >
               <td className="px-4 py-3">
-                <Link href={`/agents/${agent.id}`} className="font-medium hover:underline">
+                <Link href={`/agents/${agent.id}`} className="font-medium hover:text-[color:var(--color-accent)]">
                   {agent.hostname}
                 </Link>
               </td>
               <td className="px-4 py-3 text-[color:var(--color-muted-foreground)]">
                 {agent.operating_system} {agent.os_version} ({agent.architecture})
               </td>
-              <td className="px-4 py-3 font-mono text-xs">{agent.agent_version}</td>
+              <td className="px-4 py-3 font-mono text-xs text-[color:var(--color-muted-foreground)]">
+                {agent.agent_version}
+              </td>
               <td className="px-4 py-3">
                 <StatusBadge status={agent.status} />
               </td>

@@ -36,6 +36,8 @@ const TABS: Tab[] = [
   { key: "raw", label: "Raw events" },
 ];
 
+const eventLimit = "12";
+
 export function AgentEventsPanel({ agentId }: { agentId: string }) {
   const [queryClient] = useState(() => new QueryClient());
 
@@ -56,7 +58,7 @@ function AgentEvents({ agentId }: { agentId: string }) {
   const { data, error, isFetching } = useQuery({
     queryKey: ["agent-events", agentId, activeTab.type ?? "all"],
     queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50" });
+      const params = new URLSearchParams({ limit: eventLimit });
       if (activeTab.type) params.set("type", activeTab.type);
 
       const res = await fetch(`/api/agents/${agentId}/events?${params.toString()}`);
@@ -70,40 +72,42 @@ function AgentEvents({ agentId }: { agentId: string }) {
 
   return (
     <section className="mt-8">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--color-border)]">
-        <div className="flex gap-1 overflow-x-auto">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-1 overflow-x-auto rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-1">
           {TABS.map((tab) => (
             <button
               key={tab.key}
               type="button"
               onClick={() => setActiveKey(tab.key)}
+              aria-pressed={tab.key === activeTab.key}
+              data-active={tab.key === activeTab.key ? "true" : undefined}
               className={cn(
-                "whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium",
+                "min-h-9 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                 tab.key === activeTab.key
-                  ? "border-[color:var(--color-accent)] text-[color:var(--color-foreground)]"
-                  : "border-transparent text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]",
+                  ? "bg-[color:var(--color-muted)] text-[color:var(--color-foreground)]"
+                  : "text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]",
               )}
             >
               {tab.label}
             </button>
           ))}
         </div>
-        <p className="pb-2 text-xs text-[color:var(--color-muted-foreground)]">
-          {activeTab.live ? "Live refresh every 2s" : "Latest 50 events"}
-          {isFetching ? " · updating" : ""}
+        <p className="text-xs text-[color:var(--color-muted-foreground)]">
+          {activeTab.live ? "Live refresh every 2s" : `Latest ${eventLimit} events`}
+          {isFetching ? ", updating" : ""}
         </p>
       </div>
 
       {error ? (
-        <div className="mt-6 rounded-md border border-[color:var(--color-danger)]/40 bg-[color:var(--color-danger)]/10 p-4 text-sm text-[color:var(--color-danger)]">
+        <div className="mt-5 rounded-md border border-[color:var(--color-danger)]/40 bg-[color:var(--color-danger)]/10 p-4 text-sm text-[color:var(--color-danger)]">
           Events could not be loaded.
         </div>
       ) : events.length === 0 && !isFetching ? (
-        <div className="mt-6 rounded-md border border-[color:var(--color-border)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
+        <div className="mt-5 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
           No {activeTab.label.toLowerCase()} telemetry has arrived yet.
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-lg border border-[color:var(--color-border)]">
+        <div className="mt-5 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
           <table className="w-full text-sm">
             <thead className="bg-[color:var(--color-muted)] text-left">
               <tr>
@@ -122,7 +126,7 @@ function AgentEvents({ agentId }: { agentId: string }) {
                     {formatType(event.type)}
                   </td>
                   <td className="px-4 py-3">
-                    <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded bg-[color:var(--color-muted)] p-3 text-xs leading-relaxed text-[color:var(--color-muted-foreground)]">
+                    <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[color:var(--color-muted)] p-3 text-xs leading-relaxed text-[color:var(--color-muted-foreground)]">
                       {summarizePayload(event)}
                     </pre>
                   </td>

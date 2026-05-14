@@ -57,30 +57,135 @@ tawny/
 Requirements:
 
 - Docker 24+
-- .NET 10 SDK
-- Node 22+ and pnpm 10+
-- Zig 0.14+ (only needed if you want to build the agent)
+- macOS Apple Silicon: enable Docker Desktop's x86/amd64 emulation/Rosetta support for SQL Server, or pass `--platform linux/amd64`
+- .NET 10 SDK, Node 22 + pnpm 10, and Zig 0.14+ only if you want to work outside Docker or build the agent locally
 
 ```bash
-# 1. Generate local compose secrets and opt in to startup migrations
-cd docker
-./scripts/init-secrets.sh
+# macOS / Linux
+docker/scripts/bootstrap-docker.sh
 
-# 2. Bring up SQL Server + API + Web
-docker compose up --build
+# macOS Apple Silicon, if SQL Server needs amd64 emulation
+docker/scripts/bootstrap-docker.sh --platform linux/amd64
+```
 
-# 3. Open the dashboard
-open http://localhost:3000
+```powershell
+# Windows PowerShell
+.\docker\scripts\bootstrap-docker.ps1
+```
 
-# 4. Create an enrollment token (via the dashboard or curl)
-curl -X POST http://localhost:5080/api/enrollment-tokens \
-  -H "X-User-Id: bootstrap" -H "X-User-Role: Admin" \
-  -H "X-Signature: $(scripts/sign.sh)"
+The bootstrap scripts generate local secrets, start SQL Server + API + Web, apply API and web database migrations, seed the first admin user when the database is empty, and verify the local HTTP endpoints. They default to web `3000`, API `5080`, and SQL Server `1433`, but automatically pick the next available host port when one is already in use.
 
-# 5. Run the agent against your local backend
-cd ../agent
+Open the dashboard at the URL printed by the script. It is usually:
+
+```text
+http://localhost:3000
+```
+
+Default local login:
+
+```text
+Email: admin@example.com
+Password: ChangeMe123!
+```
+
+Override the local admin during bootstrap:
+
+```bash
+BOOTSTRAP_ADMIN_EMAIL='you@example.com' \
+BOOTSTRAP_ADMIN_PASSWORD='better-local-password' \
+docker/scripts/bootstrap-docker.sh
+```
+
+```powershell
+.\docker\scripts\bootstrap-docker.ps1 -AdminEmail "you@example.com" -AdminPassword "better-local-password"
+```
+
+Create an enrollment token from the `/enrollment` page, then run the agent against your local backend:
+
+```bash
+cd agent
 zig build run -- --enrollment-token wte_xxx --backend http://localhost:5080
 ```
+
+To test telemetry end to end entirely in Docker, start the synthetic telemetry agent:
+
+```bash
+docker/scripts/bootstrap-docker.sh --with-synthetic-agent
+```
+
+```powershell
+.\docker\scripts\bootstrap-docker.ps1 -WithSyntheticAgent
+```
+
+Or start it against an already-running stack:
+
+```bash
+cd docker
+docker compose -p tawny --env-file .env --profile telemetry up -d synthetic-agent
+docker compose -p tawny --env-file .env --profile telemetry logs -f synthetic-agent
+```
+
+The synthetic agent creates a real enrollment token through the API, enrolls as `tawny-docker-agent`, heartbeats every minute, and posts small system, process, network, FIM, and session telemetry batches every 5 minutes. `SYNTHETIC_AGENT_MAX_BATCHES=0` means continuous low-rate telemetry, which is the Docker default so the agent stays online for demos. It is a Docker test harness, not the production endpoint agent.
+
+You can cap it for a short test run:
+
+```bash
+SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS=30 SYNTHETIC_AGENT_MAX_BATCHES=2 \
+docker compose -p tawny --env-file docker/.env -f docker/docker-compose.yml --profile telemetry up -d synthetic-agent
+```
+
+## Screenshots
+
+Generate README-ready product screenshots from the running Docker stack:
+
+```bash
+cd web
+pnpm screenshots:readme
+```
+
+The script logs in with the local bootstrap admin, forces dark mode by default, and writes screenshots to `docs/screenshots/`. To capture light mode as well:
+
+```bash
+TAWNY_SCREENSHOT_THEME=light TAWNY_SCREENSHOT_OUT_DIR=docs/screenshots/light pnpm screenshots:readme
+```
+
+### Dark Mode
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+![Agents](docs/screenshots/agents.png)
+
+![Agent detail](docs/screenshots/agent-detail-processes.png)
+
+![Network events](docs/screenshots/agent-detail-network.png)
+
+![FIM events](docs/screenshots/agent-detail-fim.png)
+
+![Session events](docs/screenshots/agent-detail-sessions.png)
+
+![Raw events](docs/screenshots/agent-detail-raw-events.png)
+
+![Enrollment](docs/screenshots/enrollment.png)
+
+### Light Mode
+
+![Light dashboard](docs/screenshots/light/dashboard.png)
+
+![Light command palette](docs/screenshots/light/command-palette.png)
+
+![Light agents](docs/screenshots/light/agents.png)
+
+![Light agent detail](docs/screenshots/light/agent-detail-processes.png)
+
+![Light network events](docs/screenshots/light/agent-detail-network.png)
+
+![Light FIM events](docs/screenshots/light/agent-detail-fim.png)
+
+![Light session events](docs/screenshots/light/agent-detail-sessions.png)
+
+![Light raw events](docs/screenshots/light/agent-detail-raw-events.png)
+
+![Light enrollment](docs/screenshots/light/enrollment.png)
 
 EF migrations live in `backend/src/Tawny.Infrastructure/Migrations`. Automatic migration application is opt-in with `Tawny__ApplyMigrationsOnStartup=true` or `TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in `docker/.env`. For production, leave that flag off and run:
 

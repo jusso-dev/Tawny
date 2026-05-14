@@ -25,10 +25,28 @@ type VolumePoint = {
 
 export function StatusDonut({ data }: { data: StatusPoint[] }) {
   const total = data.reduce((sum, point) => sum + point.value, 0);
+  const activeData = data.filter((point) => point.value > 0);
   if (total === 0) {
     return (
-      <div className="grid h-56 place-items-center rounded-lg border border-dashed border-[color:var(--color-border)] text-sm text-[color:var(--color-muted-foreground)]">
+      <div className="grid h-56 place-items-center rounded-lg border border-dashed border-[color:var(--color-border)] bg-[color:var(--color-muted)]/35 text-sm text-[color:var(--color-muted-foreground)]">
         No agents enrolled.
+      </div>
+    );
+  }
+
+  if (activeData.length === 1) {
+    const point = activeData[0]!;
+    return (
+      <div className="grid h-56 place-items-center">
+        <div
+          className="grid size-36 place-items-center rounded-full border-[28px]"
+          style={{ borderColor: point.color }}
+        >
+          <div className="text-center">
+            <div className="text-2xl font-semibold">{point.value}</div>
+            <div className="text-xs text-[color:var(--color-muted-foreground)]">{point.name}</div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -37,14 +55,21 @@ export function StatusDonut({ data }: { data: StatusPoint[] }) {
     <div className="h-56">
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
-          <Pie data={data} dataKey="value" nameKey="name" innerRadius={58} outerRadius={86} paddingAngle={2}>
-            {data.map((entry) => (
+          <Pie
+            data={activeData}
+            dataKey="value"
+            nameKey="name"
+            innerRadius={58}
+            outerRadius={86}
+            paddingAngle={activeData.length > 1 ? 2 : 0}
+          >
+            {activeData.map((entry) => (
               <Cell key={entry.name} fill={entry.color} />
             ))}
           </Pie>
           <Tooltip
             contentStyle={{
-              background: "var(--color-background)",
+              background: "var(--color-card)",
               border: "1px solid var(--color-border)",
               borderRadius: 8,
               color: "var(--color-foreground)",
@@ -60,7 +85,7 @@ export function VolumeSparkline({ data }: { data: VolumePoint[] }) {
   const empty = data.every((point) => point.count === 0);
   if (empty) {
     return (
-      <div className="grid h-56 place-items-center rounded-lg border border-dashed border-[color:var(--color-border)] text-sm text-[color:var(--color-muted-foreground)]">
+      <div className="grid h-56 place-items-center rounded-lg border border-dashed border-[color:var(--color-border)] bg-[color:var(--color-muted)]/35 text-sm text-[color:var(--color-muted-foreground)]">
         No events in the last 24 hours.
       </div>
     );
@@ -79,7 +104,7 @@ export function VolumeSparkline({ data }: { data: VolumePoint[] }) {
           <YAxis hide domain={[0, "dataMax"]} />
           <Tooltip
             contentStyle={{
-              background: "var(--color-background)",
+              background: "var(--color-card)",
               border: "1px solid var(--color-border)",
               borderRadius: 8,
               color: "var(--color-foreground)",

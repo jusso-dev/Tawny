@@ -45,6 +45,8 @@ zig-out/
 
 # --- Docker / runtime ---
 docker/data/
+docker/secrets/*
+!docker/secrets/.gitkeep
 *.mdf
 *.ldf
 

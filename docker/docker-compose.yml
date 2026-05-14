@@ -7,7 +7,7 @@ services:
       MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-DevPassw0rd!}"
       MSSQL_PID: "Developer"
     ports:
-      - "1433:1433"
+      - "${MSSQL_PORT:-1433}:1433"
     volumes:
       - ./data/mssql:/var/opt/mssql
     healthcheck:
@@ -37,7 +37,7 @@ services:
       Tawny__AgentJwt__SigningKeyPem: "/run/secrets/tawny-jwt-key"
       Tawny__AgentJwt__RequireConfiguredSigningKey: "true"
     ports:
-      - "5080:5080"
+      - "${TAWNY_API_PORT:-5080}:5080"
     volumes:
       - ./secrets:/run/secrets:ro
 
@@ -53,8 +53,37 @@ services:
       TAWNY_API_URL: "http://api:5080"
       TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-dev-only-not-secret}"
-      BETTER_AUTH_URL: "http://localhost:3000"
-      DATABASE_URL: "sqlserver://sa:${MSSQL_SA_PASSWORD:-DevPassw0rd!}@db:1433/Tawny"
-      NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL: "http://localhost:5080"
+      BETTER_AUTH_URL: "http://localhost:${TAWNY_WEB_PORT:-3000}"
+      DATABASE_URL: "sqlserver://db:1433;database=Tawny;user=sa;password=${MSSQL_SA_PASSWORD:-DevPassw0rd!};encrypt=false;trustServerCertificate=true"
+      NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL: "http://localhost:${TAWNY_API_PORT:-5080}"
     ports:
-      - "3000:3000"
+      - "${TAWNY_WEB_PORT:-3000}:3000"
+
+  synthetic-agent:
+    image: node:22-alpine
+    container_name: tawny-synthetic-agent
+    profiles:
+      - telemetry
+    depends_on:
+      - api
+    working_dir: /app
+    command: ["node", "synthetic-agent.mjs"]
+    environment:
+      TAWNY_API_URL: "http://api:5080"
+      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
+      SYNTHETIC_AGENT_HOSTNAME: "${SYNTHETIC_AGENT_HOSTNAME:-tawny-docker-agent}"
+      SYNTHETIC_AGENT_VERSION: "${SYNTHETIC_AGENT_VERSION:-synthetic-docker-0.1.0}"
+      SYNTHETIC_AGENT_OS: "${SYNTHETIC_AGENT_OS:-macos}"
+      SYNTHETIC_AGENT_OS_VERSION: "${SYNTHETIC_AGENT_OS_VERSION:-synthetic-container}"
+      SYNTHETIC_AGENT_ARCH: "${SYNTHETIC_AGENT_ARCH:-arm64}"
+      SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS: "${SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS:-300}"
+      SYNTHETIC_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${SYNTHETIC_AGENT_HEARTBEAT_INTERVAL_SECONDS:-60}"
+      SYNTHETIC_AGENT_MAX_BATCHES: "${SYNTHETIC_AGENT_MAX_BATCHES:-0}"
+      SYNTHETIC_AGENT_STATE_PATH: "/state/agent.json"
+    volumes:
+      - ./synthetic-agent:/app:ro
+      - synthetic-agent-state:/state
+    restart: unless-stopped
+
+volumes:
+  synthetic-agent-state:
