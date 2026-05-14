@@ -21,6 +21,7 @@ public class EnrollmentOptions
 [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
 public class EnrollmentTokensController(
     TawnyDbContext db,
+    AuditLogger audit,
     IOptions<EnrollmentOptions> options) : ControllerBase
 {
     [HttpPost]
@@ -41,6 +42,12 @@ public class EnrollmentTokensController(
             CreatedByUserId = userId,
         };
         db.EnrollmentTokens.Add(token);
+        audit.Add(User, "enrollment_token.create", token.Id.ToString(), new
+        {
+            token.ExpiresAt,
+            token.CreatedByUserId,
+            req.LifetimeHours,
+        });
         await db.SaveChangesAsync(ct);
 
         return Ok(new CreateEnrollmentTokenResponse(token.Id, raw, token.ExpiresAt));
@@ -63,6 +70,13 @@ public class EnrollmentTokensController(
         var deleted = await db.EnrollmentTokens
             .Where(t => t.Id == id && t.UsedAt == null)
             .ExecuteDeleteAsync(ct);
-        return deleted == 0 ? NotFound() : NoContent();
+        if (deleted == 0)
+        {
+            return NotFound();
+        }
+
+        audit.Add(User, "enrollment_token.revoke", id.ToString());
+        await db.SaveChangesAsync(ct);
+        return NoContent();
     }
 }

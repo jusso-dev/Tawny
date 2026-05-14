@@ -2,9 +2,11 @@ using System.Text.Json;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
+using Tawny.Api.Services;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
@@ -15,6 +17,7 @@ namespace Tawny.Api.Controllers;
 [Route("api/agents")]
 public class TelemetryController(
     TawnyDbContext db,
+    AuditLogger audit,
     IValidator<IngestEventsRequest> validator) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
@@ -23,6 +26,7 @@ public class TelemetryController(
 
     [HttpPost("events")]
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.AgentJwt)]
+    [EnableRateLimiting("agent-events")]
     [RequestSizeLimit(MaxRequestBytes)]
     public async Task<IActionResult> Ingest(
         [FromBody] IngestEventsRequest req,
@@ -60,6 +64,11 @@ public class TelemetryController(
         });
 
         db.TelemetryEvents.AddRange(events);
+        audit.Add((Guid?)null, "telemetry.ingest", agentId.ToString(), new
+        {
+            event_count = req.Events.Count,
+            received_at = receivedAt,
+        });
         await db.SaveChangesAsync(ct);
 
         return Accepted();

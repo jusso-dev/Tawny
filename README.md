@@ -134,6 +134,8 @@ Post-MVP: Linux agent (eBPF), kernel-level collection, alerting DSL, response ac
 - SQL Server creds live in env vars; use Key Vault or similar in production.
 - The agent runs as the local user in MVP, not as root or SYSTEM. Telemetry is limited accordingly.
 
+Production deployments must terminate TLS before traffic reaches the API or web containers. See [docs/production.md](docs/production.md) for a Caddy reverse proxy sample, rate-limit behavior, audit logging notes, and the OS keystore path for agent JWTs.
+
 ## Agent install scripts
 
 The dashboard enrollment page templates the supported one-liners:
