@@ -10,6 +10,67 @@ Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system
 
 The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grade ingestion. Clean architecture, real telemetry, and a UI that looks like a product.
 
+## Screenshots
+
+<details open>
+<summary><strong>Dark mode gallery</strong></summary>
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+![Command palette](docs/screenshots/command-palette.png)
+
+![Agents](docs/screenshots/agents.png)
+
+![Agent detail](docs/screenshots/agent-detail-processes.png)
+
+![Network events](docs/screenshots/agent-detail-network.png)
+
+![FIM events](docs/screenshots/agent-detail-fim.png)
+
+![Session events](docs/screenshots/agent-detail-sessions.png)
+
+![Raw events](docs/screenshots/agent-detail-raw-events.png)
+
+![Enrollment](docs/screenshots/enrollment.png)
+
+</details>
+
+<details>
+<summary><strong>Light mode gallery</strong></summary>
+
+![Light dashboard](docs/screenshots/light/dashboard.png)
+
+![Light command palette](docs/screenshots/light/command-palette.png)
+
+![Light agents](docs/screenshots/light/agents.png)
+
+![Light agent detail](docs/screenshots/light/agent-detail-processes.png)
+
+![Light network events](docs/screenshots/light/agent-detail-network.png)
+
+![Light FIM events](docs/screenshots/light/agent-detail-fim.png)
+
+![Light session events](docs/screenshots/light/agent-detail-sessions.png)
+
+![Light raw events](docs/screenshots/light/agent-detail-raw-events.png)
+
+![Light enrollment](docs/screenshots/light/enrollment.png)
+
+</details>
+
+Generate README-ready product screenshots from the running Docker stack:
+
+```bash
+cd web
+pnpm screenshots:readme
+```
+
+The script logs in with the local bootstrap admin, forces dark mode by default, and writes screenshots to `docs/screenshots/`. To capture light mode as well:
+
+```bash
+TAWNY_SCREENSHOT_THEME=light TAWNY_SCREENSHOT_OUT_DIR=docs/screenshots/light pnpm screenshots:readme
+```
+
 ## Why "Tawny"?
 
 Tawny is named after the tawny frogmouth, an Australian nocturnal bird famous for sitting perfectly still on a branch and being mistaken for part of the tree. It watches everything around it, makes no noise, and only acts when it needs to. That is roughly the job description of a good EDR agent: blend in, observe quietly, raise the alarm when something is worth your attention.
@@ -133,59 +194,6 @@ You can cap it for a short test run:
 SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS=30 SYNTHETIC_AGENT_MAX_BATCHES=2 \
 docker compose -p tawny --env-file docker/.env -f docker/docker-compose.yml --profile telemetry up -d synthetic-agent
 ```
-
-## Screenshots
-
-Generate README-ready product screenshots from the running Docker stack:
-
-```bash
-cd web
-pnpm screenshots:readme
-```
-
-The script logs in with the local bootstrap admin, forces dark mode by default, and writes screenshots to `docs/screenshots/`. To capture light mode as well:
-
-```bash
-TAWNY_SCREENSHOT_THEME=light TAWNY_SCREENSHOT_OUT_DIR=docs/screenshots/light pnpm screenshots:readme
-```
-
-### Dark Mode
-
-![Dashboard](docs/screenshots/dashboard.png)
-
-![Agents](docs/screenshots/agents.png)
-
-![Agent detail](docs/screenshots/agent-detail-processes.png)
-
-![Network events](docs/screenshots/agent-detail-network.png)
-
-![FIM events](docs/screenshots/agent-detail-fim.png)
-
-![Session events](docs/screenshots/agent-detail-sessions.png)
-
-![Raw events](docs/screenshots/agent-detail-raw-events.png)
-
-![Enrollment](docs/screenshots/enrollment.png)
-
-### Light Mode
-
-![Light dashboard](docs/screenshots/light/dashboard.png)
-
-![Light command palette](docs/screenshots/light/command-palette.png)
-
-![Light agents](docs/screenshots/light/agents.png)
-
-![Light agent detail](docs/screenshots/light/agent-detail-processes.png)
-
-![Light network events](docs/screenshots/light/agent-detail-network.png)
-
-![Light FIM events](docs/screenshots/light/agent-detail-fim.png)
-
-![Light session events](docs/screenshots/light/agent-detail-sessions.png)
-
-![Light raw events](docs/screenshots/light/agent-detail-raw-events.png)
-
-![Light enrollment](docs/screenshots/light/enrollment.png)
 
 EF migrations live in `backend/src/Tawny.Infrastructure/Migrations`. Automatic migration application is opt-in with `Tawny__ApplyMigrationsOnStartup=true` or `TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in `docker/.env`. For production, leave that flag off and run:
 
