@@ -3,17 +3,19 @@ import { createHmac } from "node:crypto";
 
 const API_URL = process.env.TAWNY_API_URL ?? "http://localhost:5080";
 const HMAC_SECRET = process.env.TAWNY_WEB_HMAC_SECRET ?? "";
+const TENANT_ID = process.env.TAWNY_TENANT_ID ?? "00000000-0000-0000-0000-000000000001";
 
 function sign(method: string, path: string, userId: string, role: string) {
   const ts = Math.floor(Date.now() / 1000).toString();
   const signedPath = path.split("?")[0] || path;
   // `userId` must be the persisted Better Auth user id. The API maps it to
   // ClaimTypes.NameIdentifier through the HMAC handler for audit attribution.
-  const canonical = [method.toUpperCase(), signedPath, ts, userId, role].join("\n");
+  const canonical = [method.toUpperCase(), signedPath, ts, userId, role, TENANT_ID].join("\n");
   const sig = createHmac("sha256", HMAC_SECRET).update(canonical).digest("hex");
   return {
     "X-User-Id": userId,
     "X-User-Role": role,
+    "X-Tenant-Id": TENANT_ID,
     "X-Timestamp": ts,
     "X-Signature": sig,
   };

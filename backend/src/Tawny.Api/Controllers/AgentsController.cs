@@ -45,6 +45,7 @@ public class AgentsController(
         var agent = new Agent
         {
             Id = Guid.NewGuid(),
+            TenantId = token.TenantId,
             Hostname = req.Hostname,
             OperatingSystem = ParseOs(req.Os),
             OsVersion = req.OsVersion,
@@ -60,7 +61,7 @@ public class AgentsController(
         token.UsedByAgentId = agent.Id;
 
         db.Agents.Add(agent);
-        audit.Add((Guid?)null, "agent.enroll", agent.Id.ToString(), new
+        audit.Add((Guid?)null, agent.TenantId, "agent.enroll", agent.Id.ToString(), new
         {
             agent.Hostname,
             token_id = token.Id,
@@ -68,7 +69,7 @@ public class AgentsController(
         });
         await db.SaveChangesAsync(ct);
 
-        var (jwtToken, exp) = jwt.Issue(agent.Id);
+        var (jwtToken, exp) = jwt.Issue(agent.Id, agent.TenantId);
         log.LogInformation("Agent {AgentId} enrolled (hostname={Hostname})", agent.Id, agent.Hostname);
 
         return Ok(new EnrollResponse(agent.Id, jwtToken, exp, new EnrollConfig(60)));
@@ -80,12 +81,12 @@ public class AgentsController(
         [FromBody] HeartbeatRequest req,
         CancellationToken ct)
     {
-        if (!TryGetAgentId(out var agentId))
+        if (!TryGetAgentId(out var agentId) || !User.TryGetTenantId(out var tenantId))
         {
             return Unauthorized();
         }
 
-        var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId, ct);
+        var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == agentId && a.TenantId == tenantId, ct);
         if (agent is null)
         {
             return NotFound();
@@ -95,7 +96,7 @@ public class AgentsController(
         agent.LastHeartbeatAt = DateTimeOffset.UtcNow;
         agent.Status = AgentStatus.Online;
         agent.AgentVersion = req.AgentVersion;
-        audit.Add((Guid?)null, "agent.heartbeat", agent.Id.ToString(), new
+        audit.Add((Guid?)null, tenantId, "agent.heartbeat", agent.Id.ToString(), new
         {
             req.AgentVersion,
             req.BufferDepth,
@@ -120,6 +121,7 @@ public class AgentsController(
     public async Task<ActionResult<IReadOnlyList<AgentSummary>>> List(CancellationToken ct)
     {
         var agents = await db.Agents
+            .Where(a => a.TenantId == User.GetTenantId())
             .OrderByDescending(a => a.LastHeartbeatAt)
             .Select(a => new AgentSummary(
                 a.Id, a.Hostname, a.OperatingSystem, a.OsVersion,
@@ -133,7 +135,7 @@ public class AgentsController(
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
     public async Task<ActionResult<AgentSummary>> Get(Guid id, CancellationToken ct)
     {
-        var a = await db.Agents.FirstOrDefaultAsync(x => x.Id == id, ct);
+        var a = await db.Agents.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == User.GetTenantId(), ct);
         if (a is null) return NotFound();
         return Ok(new AgentSummary(
             a.Id, a.Hostname, a.OperatingSystem, a.OsVersion,
