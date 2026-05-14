@@ -127,6 +127,18 @@ docker compose -p tawny --env-file .env --profile telemetry logs -f synthetic-ag
 
 The synthetic agent creates a real enrollment token through the API, enrolls as `tawny-docker-agent`, heartbeats every minute, and posts small system, process, network, FIM, and session telemetry batches every 5 minutes. `SYNTHETIC_AGENT_MAX_BATCHES=0` means continuous low-rate telemetry, which is the Docker default so the agent stays online for demos. It is a Docker test harness, not the production endpoint agent.
 
+To run the real Linux endpoint agent in Docker instead:
+
+```bash
+docker/scripts/bootstrap-docker.sh --with-docker-agent
+```
+
+```powershell
+.\docker\scripts\bootstrap-docker.ps1 -WithDockerAgent
+```
+
+The Docker agent image builds the Zig Linux binary, creates a local enrollment token through the API on first boot, persists its config in a named volume, and then sends real Linux container telemetry from procfs.
+
 You can cap it for a short test run:
 
 ```bash

@@ -6,7 +6,8 @@ param(
     [string]$ProjectName = $(if ($env:TAWNY_DOCKER_PROJECT) { $env:TAWNY_DOCKER_PROJECT } else { "tawny" }),
     [string]$Platform = $(if ($env:DOCKER_DEFAULT_PLATFORM) { $env:DOCKER_DEFAULT_PLATFORM } else { "" }),
     [switch]$NoBuild,
-    [switch]$WithSyntheticAgent
+    [switch]$WithSyntheticAgent,
+    [switch]$WithDockerAgent
 )
 
 $ErrorActionPreference = "Stop"
@@ -160,6 +161,11 @@ function Invoke-ComposeTelemetry {
     & docker compose -p $ProjectName --env-file $EnvFile -f $ComposeFile --profile telemetry @Args
 }
 
+function Invoke-ComposeAgent {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    & docker compose -p $ProjectName --env-file $EnvFile -f $ComposeFile --profile agent @Args
+}
+
 function Wait-ForUrl {
     param(
         [string]$Url,
@@ -262,6 +268,15 @@ if ($WithSyntheticAgent) {
     Invoke-ComposeTelemetry up -d synthetic-agent
 }
 
+if ($WithDockerAgent) {
+    Write-Step "Starting Docker Linux agent"
+    if ($NoBuild) {
+        Invoke-ComposeAgent up -d docker-agent
+    } else {
+        Invoke-ComposeAgent up -d --build docker-agent
+    }
+}
+
 Write-Host ""
 Write-Host "Tawny is running."
 Write-Host ""
@@ -276,4 +291,5 @@ Write-Host ""
 Write-Host "Useful commands:"
 Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName logs -f api web db"
 Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName --profile telemetry logs -f synthetic-agent"
+Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName --profile agent logs -f docker-agent"
 Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName down"
