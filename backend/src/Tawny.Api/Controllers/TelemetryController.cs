@@ -19,7 +19,8 @@ public class TelemetryController(
     TawnyDbContext db,
     AuditLogger audit,
     IValidator<IngestEventsRequest> validator,
-    AlertRuleEvaluator alertRules) : ControllerBase
+    AlertRuleEvaluator alertRules,
+    IAlertSink alertSink) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
     private const int DefaultLimit = 50;
@@ -84,6 +85,11 @@ public class TelemetryController(
                 received_at = receivedAt,
             });
             await db.SaveChangesAsync(ct);
+            await alertSink.PublishAsync(
+                agent,
+                alerts,
+                events.ToDictionary(e => e.Id),
+                ct);
         }
 
         return Accepted();

@@ -36,6 +36,14 @@ services:
       Tawny__AgentJwt__Audience: "tawny-agents"
       Tawny__AgentJwt__SigningKeyPem: "/run/secrets/tawny-jwt-key"
       Tawny__AgentJwt__RequireConfiguredSigningKey: "true"
+      Tawny__Wazuh__Enabled: "${TAWNY_WAZUH_ENABLED:-false}"
+      Tawny__Wazuh__Host: "${TAWNY_WAZUH_HOST:-}"
+      Tawny__Wazuh__Port: "${TAWNY_WAZUH_PORT:-514}"
+      Tawny__Wazuh__Protocol: "${TAWNY_WAZUH_PROTOCOL:-udp}"
+      Tawny__Wazuh__Facility: "${TAWNY_WAZUH_FACILITY:-16}"
+      Tawny__Wazuh__AppName: "${TAWNY_WAZUH_APP_NAME:-tawny}"
+      Tawny__Wazuh__Hostname: "${TAWNY_WAZUH_HOSTNAME:-}"
+      Tawny__Wazuh__MaxMessageBytes: "${TAWNY_WAZUH_MAX_MESSAGE_BYTES:-8192}"
     ports:
       - "${TAWNY_API_PORT:-5080}:5080"
     volumes:

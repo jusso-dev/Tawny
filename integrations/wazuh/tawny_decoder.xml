@@ -1,0 +1,9 @@
+<!--
+  Install on the Wazuh manager as:
+  /var/ossec/etc/decoders/tawny_decoder.xml
+-->
+<decoder name="tawny-json">
+  <program_name>^tawny$</program_name>
+  <prematch>"integration":"tawny"</prematch>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

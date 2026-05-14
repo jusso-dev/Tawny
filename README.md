@@ -8,7 +8,7 @@
 
 Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
 
-The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grade ingestion. Clean architecture, real telemetry, and a UI that looks like a product.
+The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, Wazuh alert forwarding, and a UI that looks like a product.
 
 ## Screenshots
 
@@ -18,6 +18,10 @@ The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grad
 ![Dashboard](docs/screenshots/dashboard.png)
 
 ![Command palette](docs/screenshots/command-palette.png)
+
+![Detections](docs/screenshots/detections.png)
+
+![Alerts](docs/screenshots/alerts.png)
 
 ![Agents](docs/screenshots/agents.png)
 
@@ -42,6 +46,10 @@ The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grad
 
 ![Light command palette](docs/screenshots/light/command-palette.png)
 
+![Light detections](docs/screenshots/light/detections.png)
+
+![Light alerts](docs/screenshots/light/alerts.png)
+
 ![Light agents](docs/screenshots/light/agents.png)
 
 ![Light agent detail](docs/screenshots/light/agent-detail-processes.png)
@@ -55,6 +63,15 @@ The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grad
 ![Light raw events](docs/screenshots/light/agent-detail-raw-events.png)
 
 ![Light enrollment](docs/screenshots/light/enrollment.png)
+
+</details>
+
+<details open>
+<summary><strong>Wazuh integration</strong></summary>
+
+![Wazuh Tawny events](docs/screenshots/integrations/wazuh-tawny-events.png)
+
+![Wazuh Tawny event fields](docs/screenshots/integrations/wazuh-tawny-event-detail.png)
 
 </details>
 
@@ -236,6 +253,21 @@ Post-MVP: Linux agent (eBPF), kernel-level collection, broader Sigma coverage, r
 ## Detection rules
 
 Alert rules are moving toward Sigma-compatible detection-as-code instead of a custom Tawny rule language. The current importer accepts a focused Sigma subset: `title`, `id`, `description`, `logsource`, one named `detection` selection, a single-selection `condition`, and `level`. Tawny compiles that into its event matcher and keeps the original Sigma YAML with the rule so the supported subset can grow without inventing a parallel format.
+
+## Wazuh sink
+
+Tawny can forward generated alerts to Wazuh over syslog. Enable the sink by pointing the API at a Wazuh manager or syslog listener:
+
+```bash
+TAWNY_WAZUH_ENABLED=true
+TAWNY_WAZUH_HOST=wazuh-manager.example.com
+TAWNY_WAZUH_PORT=514
+TAWNY_WAZUH_PROTOCOL=udp
+```
+
+Each alert is emitted as one syslog event with a flat JSON body containing Tawny tenant, agent, alert, rule, telemetry event, and matched telemetry payload fields. Configure Wazuh to accept syslog input from the Tawny API host, then install the decoder/rules in `integrations/wazuh/` so Tawny events appear as Wazuh alerts.
+
+In Docker-based Wazuh deployments, check `/var/ossec/logs/ossec.log` after the first send. If Wazuh logs `Message from 'x.x.x.x' not allowed`, add that exact IP to the Wazuh syslog `<allowed-ips>` list and restart the manager container.
 
 ## Security notes
 
