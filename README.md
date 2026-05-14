@@ -123,10 +123,24 @@ Post-MVP: Linux agent (eBPF), kernel-level collection, alerting DSL, response ac
 ## Security notes
 
 - Agent JWTs are bearer tokens. Anyone with the file on disk can impersonate the agent. Mitigate later with the OS keystore.
-- No code signing on agent binaries yet. The SHA256 of every release is published.
+- No Authenticode signing or macOS notarisation is in place yet. The install scripts verify release SHA-256 sidecar files when available, and both scripts accept an explicit `--sha256` / `-Sha256` value for pinned deployments.
 - Enrollment tokens are single-use and short-lived. Rotate the signing key if leaked.
 - SQL Server creds live in env vars; use Key Vault or similar in production.
 - The agent runs as the local user in MVP, not as root or SYSTEM. Telemetry is limited accordingly.
+
+## Agent install scripts
+
+The dashboard enrollment page templates the supported one-liners:
+
+```powershell
+irm https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install.ps1 | iex; Install-TawnyAgent -BackendUrl 'https://api.example.com' -EnrollmentToken 'wte_xxx'
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install.sh | sudo bash -s -- --backend-url 'https://api.example.com' --enrollment-token 'wte_xxx'
+```
+
+Both scripts write the platform default `config.toml`, download the latest matching release asset, verify SHA-256 when a release sidecar is present, and register the agent as a Windows service or macOS launchd job. Use `-DryRun` on Windows or `--dry-run` on macOS to inspect local actions without changing the host.
 
 See [docs/threat-model.md](docs/threat-model.md).
 
