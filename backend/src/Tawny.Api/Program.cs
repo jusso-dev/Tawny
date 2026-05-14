@@ -29,6 +29,7 @@ builder.Services.Configure<WebUserAuthOptions>(opt =>
 builder.Services.AddSingleton<AgentJwtService>();
 builder.Services.AddTawnyInfrastructure(builder.Configuration);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
@@ -66,22 +67,25 @@ builder.Services
 builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<MarkStaleAgentsJob>();
-builder.Services.AddScoped<PurgeOldEventsJob>();
-builder.Services.AddScoped<BackupTelemetryJob>();
-builder.Services.AddHttpClient<CheckAgentReleasesJob>();
+if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
+{
+    builder.Services.AddScoped<PurgeOldEventsJob>();
+    builder.Services.AddScoped<BackupTelemetryJob>();
+    builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
-builder.Services.AddHangfire(cfg => cfg
-    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UseSqlServerStorage(
-        builder.Configuration.GetConnectionString("Default"),
-        new SqlServerStorageOptions
-        {
-            PrepareSchemaIfNecessary = true,
-            QueuePollInterval = TimeSpan.FromSeconds(5),
-        }));
-builder.Services.AddHangfireServer();
+    builder.Services.AddHangfire(cfg => cfg
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UseSqlServerStorage(
+            builder.Configuration.GetConnectionString("Default"),
+            new SqlServerStorageOptions
+            {
+                PrepareSchemaIfNecessary = true,
+                QueuePollInterval = TimeSpan.FromSeconds(5),
+            }));
+    builder.Services.AddHangfireServer();
+}
 
 var app = builder.Build();
 
@@ -101,19 +105,22 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHangfireDashboard("/hangfire", new DashboardOptions
+if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
 {
-    Authorization = [new HangfireWebUserAuthorizationFilter()],
-});
+    app.MapHangfireDashboard("/hangfire", new DashboardOptions
+    {
+        Authorization = [new HangfireWebUserAuthorizationFilter()],
+    });
 
-RecurringJob.AddOrUpdate<MarkStaleAgentsJob>(
-    "mark-stale-agents", j => j.ExecuteAsync(default), Cron.Minutely);
-RecurringJob.AddOrUpdate<PurgeOldEventsJob>(
-    "purge-old-events", j => j.ExecuteAsync(default), "0 2 * * *");
-RecurringJob.AddOrUpdate<BackupTelemetryJob>(
-    "backup-telemetry", j => j.ExecuteAsync(default), "0 3 * * *");
-RecurringJob.AddOrUpdate<CheckAgentReleasesJob>(
-    "check-agent-releases", j => j.ExecuteAsync(default), Cron.Hourly);
+    RecurringJob.AddOrUpdate<MarkStaleAgentsJob>(
+        "mark-stale-agents", j => j.ExecuteAsync(default), Cron.Minutely);
+    RecurringJob.AddOrUpdate<PurgeOldEventsJob>(
+        "purge-old-events", j => j.ExecuteAsync(default), "0 2 * * *");
+    RecurringJob.AddOrUpdate<BackupTelemetryJob>(
+        "backup-telemetry", j => j.ExecuteAsync(default), "0 3 * * *");
+    RecurringJob.AddOrUpdate<CheckAgentReleasesJob>(
+        "check-agent-releases", j => j.ExecuteAsync(default), Cron.Hourly);
+}
 
 app.Run();
 

@@ -41,6 +41,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
 
   agent:
     name: agent (Zig)
@@ -56,6 +58,7 @@ jobs:
       - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
+      - run: zig build test
       - uses: actions/upload-artifact@v4
         with:
           name: tawny-agent-builds

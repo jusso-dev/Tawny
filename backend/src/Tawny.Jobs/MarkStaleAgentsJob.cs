@@ -5,33 +5,49 @@ using Tawny.Infrastructure;
 
 namespace Tawny.Jobs;
 
-public class MarkStaleAgentsJob(TawnyDbContext db, ILogger<MarkStaleAgentsJob> log)
+public class MarkStaleAgentsJob(
+    TawnyDbContext db,
+    TimeProvider timeProvider,
+    ILogger<MarkStaleAgentsJob> log)
 {
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan OfflineAfter = TimeSpan.FromMinutes(15);
 
     public async Task ExecuteAsync(CancellationToken ct = default)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = timeProvider.GetUtcNow();
         var staleCutoff = now - StaleAfter;
         var offlineCutoff = now - OfflineAfter;
 
-        var stale = await db.Agents
+        var staleAgents = await db.Agents
             .Where(a => a.Status == AgentStatus.Online
                 && a.LastHeartbeatAt != null
                 && a.LastHeartbeatAt <= staleCutoff
                 && a.LastHeartbeatAt > offlineCutoff)
-            .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, AgentStatus.Stale), ct);
+            .ToListAsync(ct);
 
-        var offline = await db.Agents
+        var offlineAgents = await db.Agents
             .Where(a => a.Status != AgentStatus.Offline
                 && a.LastHeartbeatAt != null
                 && a.LastHeartbeatAt <= offlineCutoff)
-            .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, AgentStatus.Offline), ct);
+            .ToListAsync(ct);
 
-        if (stale > 0 || offline > 0)
+        foreach (var agent in staleAgents)
         {
-            log.LogInformation("Agent status sweep: stale={Stale} offline={Offline}", stale, offline);
+            agent.Status = AgentStatus.Stale;
+        }
+
+        foreach (var agent in offlineAgents)
+        {
+            agent.Status = AgentStatus.Offline;
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        if (staleAgents.Count > 0 || offlineAgents.Count > 0)
+        {
+            log.LogInformation("Agent status sweep: stale={Stale} offline={Offline}",
+                staleAgents.Count, offlineAgents.Count);
         }
     }
 }

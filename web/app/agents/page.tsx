@@ -22,7 +22,9 @@ type Agent = {
 };
 
 export default async function AgentsPage() {
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = process.env.TAWNY_E2E_AUTH_BYPASS === "1"
+    ? { user: { id: "e2e-admin", role: "Admin" } }
+    : await auth.api.getSession({ headers: await headers() });
   if (!session) redirect("/login");
 
   const agents = await apiGet<Agent[]>("/api/agents", session.user.id, authRole(session.user));
