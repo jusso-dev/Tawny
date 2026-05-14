@@ -40,6 +40,8 @@ try {
 
   await login(page);
   await captureDashboard(page);
+  await captureDetections(page);
+  await captureAlerts(page);
   const agentHref = await captureAgents(page);
   if (agentHref) {
     await captureAgentDetail(page, agentHref);
@@ -79,6 +81,20 @@ async function captureAgents(page) {
   return await page.locator('tbody a[href^="/agents/"]').first().getAttribute("href").catch(() => null);
 }
 
+async function captureDetections(page) {
+  await page.goto(`${baseUrl}/detections`, { waitUntil: "networkidle" });
+  await waitForChrome(page);
+  await page.getByText("Imported rules").waitFor({ state: "visible", timeout: 10000 });
+  await screenshot(page, "detections.png");
+}
+
+async function captureAlerts(page) {
+  await page.goto(`${baseUrl}/alerts`, { waitUntil: "networkidle" });
+  await waitForChrome(page);
+  await page.getByText("Detection matches").waitFor({ state: "visible", timeout: 10000 });
+  await screenshot(page, "alerts.png");
+}
+
 async function captureAgentDetail(page, href) {
   await page.goto(`${baseUrl}${href}`, { waitUntil: "networkidle" });
   await waitForChrome(page);
@@ -94,7 +110,9 @@ async function captureAgentDetail(page, href) {
 
   for (const [tab, fileName, expectedType] of tabs) {
     await selectEventTab(page, tab);
-    await waitForEventType(page, expectedType);
+    await waitForEventType(page, expectedType).catch(() => {
+      console.warn(`No ${expectedType} event visible while capturing ${fileName}; capturing current tab state.`);
+    });
     await screenshot(page, fileName);
   }
 }

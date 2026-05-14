@@ -1,0 +1,29 @@
+<!--
+  Install on the Wazuh manager as:
+  /var/ossec/etc/rules/tawny_rules.xml
+
+  Rule IDs in the 110500 range are reserved here for this Tawny integration.
+-->
+<group name="tawny,edr,">
+  <rule id="110500" level="7">
+    <decoded_as>tawny-json</decoded_as>
+    <field name="integration">^tawny$</field>
+    <field name="event_kind">^alert$</field>
+    <description>Tawny EDR alert: $(alert_title)</description>
+    <group>tawny_alert,</group>
+  </rule>
+
+  <rule id="110501" level="10">
+    <if_sid>110500</if_sid>
+    <field name="alert_severity">^high$</field>
+    <description>Tawny EDR high severity alert: $(alert_title)</description>
+    <group>tawny_alert,tawny_high,</group>
+  </rule>
+
+  <rule id="110502" level="12">
+    <if_sid>110500</if_sid>
+    <field name="alert_severity">^critical$</field>
+    <description>Tawny EDR critical severity alert: $(alert_title)</description>
+    <group>tawny_alert,tawny_critical,</group>
+  </rule>
+</group>
