@@ -213,7 +213,6 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - Multi-tenancy
 - Real-time streaming (polling for now; SSE in v0.2)
 - Alerting rules engine
-- Response actions (kill process, isolate host)
 - Kernel-level collection (ETW, EndpointSecurity)
 - Code signing and notarisation (ship SHA256 in releases, sign later)
 
@@ -245,6 +244,7 @@ Alert rules are moving toward Sigma-compatible detection-as-code instead of a cu
 - Enrollment tokens are single-use and short-lived. Rotate the signing key if leaked.
 - SQL Server creds live in env vars; use Key Vault or similar in production.
 - The agent runs as the local user in MVP, not as root or SYSTEM. Telemetry is limited accordingly.
+- Response actions are queued through the API and dispatched on heartbeat. `kill_process` requires a positive `pid`; host isolation is represented as an action type but the current agent reports it unsupported until OS firewall handlers are implemented.
 
 Production deployments must terminate TLS before traffic reaches the API or web containers. See [docs/production.md](docs/production.md) for a Caddy reverse proxy sample, rate-limit behavior, audit logging notes, and the OS keystore path for agent JWTs.
 

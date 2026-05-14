@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -108,12 +109,37 @@ public class AgentsController(
             .Where(r => r.IsLatest && r.Platform == PlatformKey(agent))
             .FirstOrDefaultAsync(ct);
 
+        var now = DateTimeOffset.UtcNow;
+        var pendingActions = await db.ResponseActions
+            .Where(a => a.AgentId == agent.Id && a.Status == ResponseActionStatus.Pending)
+            .OrderBy(a => a.RequestedAt)
+            .Take(10)
+            .ToListAsync(ct);
+        foreach (var action in pendingActions)
+        {
+            action.Status = ResponseActionStatus.Dispatched;
+            action.DispatchedAt = now;
+        }
+
+        if (pendingActions.Count > 0)
+        {
+            audit.Add((Guid?)null, tenantId, "response_action.dispatch", agent.Id.ToString(), new
+            {
+                action_count = pendingActions.Count,
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
         return Ok(new HeartbeatResponse(
             LatestAgentVersion: latest?.Version,
             DownloadUrl: latest?.DownloadUrl,
             Sha256: latest?.Sha256,
             RotatedJwt: null,
-            JwtExpiresAt: null));
+            JwtExpiresAt: null,
+            Actions: pendingActions.Select(a => new ResponseActionCommand(
+                a.Id,
+                a.ActionType,
+                JsonSerializer.Deserialize<JsonElement>(a.PayloadJson))).ToList()));
     }
 
     [HttpGet]

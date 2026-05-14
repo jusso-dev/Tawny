@@ -66,3 +66,18 @@ public enum AlertRuleFormat
     TawnyPredicate = 0,
     Sigma = 1,
 }
+
+public enum ResponseActionType
+{
+    KillProcess = 0,
+    IsolateHost = 1,
+}
+
+public enum ResponseActionStatus
+{
+    Pending = 0,
+    Dispatched = 1,
+    Succeeded = 2,
+    Failed = 3,
+    Cancelled = 4,
+}

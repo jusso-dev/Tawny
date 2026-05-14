@@ -10,6 +10,7 @@ const network_collector = @import("collectors/network.zig");
 const users_collector = @import("collectors/users.zig");
 const system_collector = @import("collectors/system.zig");
 const fim_collector = @import("collectors/fim.zig");
+const response_actions = @import("response_actions.zig");
 
 const AGENT_VERSION = "0.1.0";
 
@@ -78,6 +79,11 @@ pub fn main() !void {
             if (heartbeat.rotated_jwt) |rotated| {
                 persistRotatedJwt(alloc, &cfg, &http, rotated) catch |err| {
                     try stderr.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
+                };
+            }
+            for (heartbeat.actions) |action| {
+                response_actions.execute(alloc, &http, action) catch |err| {
+                    try stderr.print("response action {s} failed: {s}\n", .{ action.id, @errorName(err) });
                 };
             }
         }
@@ -192,6 +198,7 @@ test "main module loads" {
     _ = users_collector;
     _ = system_collector;
     _ = fim_collector;
+    _ = response_actions;
 }
 
 fn spillIfNeeded(buf: *buffer.Buffer, path: []const u8) !void {
