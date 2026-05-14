@@ -9,4 +9,5 @@ public class AgentJwtOptions
 
     /// <summary>Path to a PEM-encoded RSA private key, or inline PEM.</summary>
     public string? SigningKeyPem { get; set; }
+    public bool RequireConfiguredSigningKey { get; set; }
 }
