@@ -15,6 +15,7 @@ namespace Tawny.Api.Controllers;
 public class AgentsController(
     TawnyDbContext db,
     AgentJwtService jwt,
+    AuditLogger audit,
     ILogger<AgentsController> log) : ControllerBase
 {
     [HttpPost("enroll")]
@@ -59,6 +60,12 @@ public class AgentsController(
         token.UsedByAgentId = agent.Id;
 
         db.Agents.Add(agent);
+        audit.Add((Guid?)null, "agent.enroll", agent.Id.ToString(), new
+        {
+            agent.Hostname,
+            token_id = token.Id,
+            remote_ip = agent.PublicIp,
+        });
         await db.SaveChangesAsync(ct);
 
         var (jwtToken, exp) = jwt.Issue(agent.Id);
@@ -84,9 +91,16 @@ public class AgentsController(
             return NotFound();
         }
 
+        var previousStatus = agent.Status;
         agent.LastHeartbeatAt = DateTimeOffset.UtcNow;
         agent.Status = AgentStatus.Online;
         agent.AgentVersion = req.AgentVersion;
+        audit.Add((Guid?)null, "agent.heartbeat", agent.Id.ToString(), new
+        {
+            req.AgentVersion,
+            req.BufferDepth,
+            previous_status = previousStatus,
+        });
         await db.SaveChangesAsync(ct);
 
         var latest = await db.AgentReleases

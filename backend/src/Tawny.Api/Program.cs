@@ -6,10 +6,13 @@ using Hangfire.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System.Threading.RateLimiting;
 using Tawny.Api.Auth;
 using Tawny.Api.Controllers;
+using Tawny.Api.Services;
 using Tawny.Infrastructure;
 using Tawny.Jobs;
 
@@ -30,6 +33,33 @@ builder.Services.AddSingleton<AgentJwtService>();
 builder.Services.AddTawnyInfrastructure(builder.Configuration);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<AuditLogger>();
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("agent-events", httpContext =>
+    {
+        var agentId = httpContext.User.FindFirst("agent_id")?.Value
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+        return RateLimitPartition.GetTokenBucketLimiter(agentId, _ => new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 120,
+            TokensPerPeriod = 120,
+            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        });
+    });
+    options.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            error = "event_ingest_rate_limited",
+            detail = "Too many telemetry ingest requests for this agent.",
+        }, cancellationToken: ct);
+    };
+});
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
@@ -103,6 +133,7 @@ app.UseStatusCodePages();
 app.MapOpenApi();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapControllers();
 if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
