@@ -11,6 +11,8 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<User> Users => Set<User>();
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
     public DbSet<TelemetryEvent> TelemetryEvents => Set<TelemetryEvent>();
+    public DbSet<AlertRule> AlertRules => Set<AlertRule>();
+    public DbSet<Alert> Alerts => Set<Alert>();
     public DbSet<AgentRelease> AgentReleases => Set<AgentRelease>();
     public DbSet<AuditLog> AuditLog => Set<AuditLog>();
 
@@ -90,6 +92,40 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasIndex(t => new { t.TenantId, t.AgentId, t.EventType, t.OccurredAt })
                 .IsDescending(false, false, false, true);
             e.HasIndex(t => new { t.TenantId, t.ReceivedAt });
+        });
+
+        b.Entity<AlertRule>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Name).HasMaxLength(160).IsRequired();
+            e.Property(r => r.ExternalId).HasMaxLength(128);
+            e.Property(r => r.Description).HasColumnType("nvarchar(max)");
+            e.Property(r => r.PayloadPath).HasMaxLength(256);
+            e.Property(r => r.MatchValue).HasMaxLength(512);
+            e.Property(r => r.SourceDefinition).HasColumnType("nvarchar(max)");
+            e.HasIndex(r => new { r.IsEnabled, r.EventType });
+            e.HasIndex(r => new { r.Format, r.ExternalId });
+        });
+
+        b.Entity<Alert>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.Property(a => a.Title).HasMaxLength(255).IsRequired();
+            e.Property(a => a.Description).HasColumnType("nvarchar(max)");
+            e.HasOne(a => a.AlertRule)
+                .WithMany(r => r.Alerts)
+                .HasForeignKey(a => a.AlertRuleId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(a => a.Agent)
+                .WithMany()
+                .HasForeignKey(a => a.AgentId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(a => a.TelemetryEvent)
+                .WithMany()
+                .HasForeignKey(a => a.TelemetryEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(a => new { a.Status, a.CreatedAt });
+            e.HasIndex(a => new { a.AgentId, a.CreatedAt });
         });
 
         b.Entity<AgentRelease>(e =>

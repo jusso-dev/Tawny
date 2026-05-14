@@ -1,10 +1,12 @@
 const std = @import("std");
 
-const Digest = [32]u8;
+const Sha1Digest = [20]u8;
+const Sha256Digest = [32]u8;
 
 const WatchedFile = struct {
     path: []u8,
-    hash: Digest,
+    sha1: Sha1Digest,
+    sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
 };
@@ -22,13 +24,15 @@ pub const Watcher = struct {
 
         for (paths) |path| {
             const snapshot = snapshotFile(path) catch Snapshot{
-                .hash = std.mem.zeroes(Digest),
+                .sha1 = std.mem.zeroes(Sha1Digest),
+                .sha256 = std.mem.zeroes(Sha256Digest),
                 .size_bytes = 0,
                 .exists = false,
             };
             try watcher.files.append(.{
                 .path = try alloc.dupe(u8, path),
-                .hash = snapshot.hash,
+                .sha1 = snapshot.sha1,
+                .sha256 = snapshot.sha256,
                 .size_bytes = snapshot.size_bytes,
                 .exists = snapshot.exists,
             });
@@ -51,27 +55,32 @@ pub const Watcher = struct {
 
         for (self.files.items) |*file| {
             const next = snapshotFile(file.path) catch Snapshot{
-                .hash = std.mem.zeroes(Digest),
+                .sha1 = std.mem.zeroes(Sha1Digest),
+                .sha256 = std.mem.zeroes(Sha256Digest),
                 .size_bytes = 0,
                 .exists = false,
             };
 
             const changed = file.exists != next.exists or
-                !std.mem.eql(u8, &file.hash, &next.hash) or
+                !std.mem.eql(u8, &file.sha1, &next.sha1) or
+                !std.mem.eql(u8, &file.sha256, &next.sha256) or
                 file.size_bytes != next.size_bytes;
             if (!changed) continue;
 
             const payload = try formatChange(
                 self.allocator,
                 file.path,
-                file.hash,
-                next.hash,
+                file.sha1,
+                next.sha1,
+                file.sha256,
+                next.sha256,
                 next.size_bytes,
                 next.exists,
             );
             try payloads.append(payload);
 
-            file.hash = next.hash;
+            file.sha1 = next.sha1;
+            file.sha256 = next.sha256;
             file.size_bytes = next.size_bytes;
             file.exists = next.exists;
         }
@@ -81,7 +90,8 @@ pub const Watcher = struct {
 };
 
 const Snapshot = struct {
-    hash: Digest,
+    sha1: Sha1Digest,
+    sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
 };
@@ -91,18 +101,23 @@ fn snapshotFile(path: []const u8) !Snapshot {
     defer file.close();
 
     const stat = try file.stat();
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var sha1 = std.crypto.hash.Sha1.init(.{});
+    var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [8192]u8 = undefined;
     while (true) {
         const n = try file.read(&buf);
         if (n == 0) break;
-        hasher.update(buf[0..n]);
+        sha1.update(buf[0..n]);
+        sha256.update(buf[0..n]);
     }
 
-    var digest: Digest = undefined;
-    hasher.final(&digest);
+    var sha1_digest: Sha1Digest = undefined;
+    var sha256_digest: Sha256Digest = undefined;
+    sha1.final(&sha1_digest);
+    sha256.final(&sha256_digest);
     return .{
-        .hash = digest,
+        .sha1 = sha1_digest,
+        .sha256 = sha256_digest,
         .size_bytes = stat.size,
         .exists = true,
     };
@@ -111,8 +126,10 @@ fn snapshotFile(path: []const u8) !Snapshot {
 fn formatChange(
     alloc: std.mem.Allocator,
     path: []const u8,
-    old_hash: Digest,
-    new_hash: Digest,
+    old_sha1: Sha1Digest,
+    new_sha1: Sha1Digest,
+    old_sha256: Sha256Digest,
+    new_sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
 ) ![]u8 {
@@ -123,8 +140,15 @@ fn formatChange(
     try w.writeAll("{\"path\":");
     try std.json.stringify(path, .{}, w);
     try w.print(
-        ",\"old_sha256\":\"{}\",\"new_sha256\":\"{}\",\"size_bytes\":{d},\"exists\":{any}}}",
-        .{ std.fmt.fmtSliceHexLower(&old_hash), std.fmt.fmtSliceHexLower(&new_hash), size_bytes, exists },
+        ",\"old_sha1\":\"{}\",\"new_sha1\":\"{}\",\"old_sha256\":\"{}\",\"new_sha256\":\"{}\",\"size_bytes\":{d},\"exists\":{any}}}",
+        .{
+            std.fmt.fmtSliceHexLower(&old_sha1),
+            std.fmt.fmtSliceHexLower(&new_sha1),
+            std.fmt.fmtSliceHexLower(&old_sha256),
+            std.fmt.fmtSliceHexLower(&new_sha256),
+            size_bytes,
+            exists,
+        },
     );
 
     return out.toOwnedSlice();

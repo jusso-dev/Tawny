@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Tawny.Infrastructure;
 
@@ -11,9 +12,11 @@ using Tawny.Infrastructure;
 namespace Tawny.Infrastructure.Migrations
 {
     [DbContext(typeof(TawnyDbContext))]
-    partial class TawnyDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260514054523_AddSigmaAlertRuleMetadata")]
+    partial class AddSigmaAlertRuleMetadata
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -69,16 +72,11 @@ namespace Tawny.Infrastructure.Migrations
                         .HasDefaultValue("[]")
                         .HasColumnName("Tags");
 
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Hostname");
+                    b.HasIndex("Hostname");
 
-                    b.HasIndex("TenantId", "LastHeartbeatAt");
+                    b.HasIndex("LastHeartbeatAt");
 
                     b.ToTable("Agents");
                 });
@@ -246,17 +244,12 @@ namespace Tawny.Infrastructure.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
                     b.Property<Guid?>("UserId")
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "OccurredAt");
+                    b.HasIndex("OccurredAt");
 
                     b.ToTable("AuditLog");
                 });
@@ -276,11 +269,6 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
                     b.Property<string>("TokenHash")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -296,8 +284,6 @@ namespace Tawny.Infrastructure.Migrations
 
                     b.HasIndex("TokenHash")
                         .IsUnique();
-
-                    b.HasIndex("TenantId", "CreatedAt");
 
                     b.ToTable("EnrollmentTokens");
                 });
@@ -326,57 +312,14 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .HasColumnType("datetimeoffset");
 
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
                     b.HasKey("Id");
 
-                    b.HasIndex("AgentId");
+                    b.HasIndex("ReceivedAt");
 
-                    b.HasIndex("TenantId", "ReceivedAt");
-
-                    b.HasIndex("TenantId", "AgentId", "EventType", "OccurredAt")
-                        .IsDescending(false, false, false, true);
+                    b.HasIndex("AgentId", "EventType", "OccurredAt")
+                        .IsDescending(false, false, true);
 
                     b.ToTable("TelemetryEvents");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.Tenant", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("Slug")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Slug")
-                        .IsUnique();
-
-                    b.ToTable("Tenants");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = new Guid("00000000-0000-0000-0000-000000000001"),
-                            CreatedAt = new DateTimeOffset(new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
-                            Name = "Default tenant",
-                            Slug = "default"
-                        });
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.User", b =>
@@ -401,50 +344,12 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<int>("Role")
                         .HasColumnType("int");
 
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Email")
+                    b.HasIndex("Email")
                         .IsUnique();
 
                     b.ToTable("Users");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.Agent", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("Agents")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.AuditLog", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("AuditLog")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.EnrollmentToken", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("EnrollmentTokens")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.Alert", b =>
@@ -482,44 +387,12 @@ namespace Tawny.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("TelemetryEvents")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("Agent");
-
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.User", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("Users")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.Agent", b =>
                 {
                     b.Navigation("Events");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.Tenant", b =>
-                {
-                    b.Navigation("Agents");
-
-                    b.Navigation("AuditLog");
-
-                    b.Navigation("EnrollmentTokens");
-
-                    b.Navigation("TelemetryEvents");
-
-                    b.Navigation("Users");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.AlertRule", b =>

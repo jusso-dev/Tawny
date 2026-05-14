@@ -6,6 +6,7 @@ param(
     [string]$ProjectName = $(if ($env:TAWNY_DOCKER_PROJECT) { $env:TAWNY_DOCKER_PROJECT } else { "tawny" }),
     [string]$Platform = $(if ($env:DOCKER_DEFAULT_PLATFORM) { $env:DOCKER_DEFAULT_PLATFORM } else { "" }),
     [switch]$NoBuild,
+    [switch]$WithAgent,
     [switch]$WithSyntheticAgent,
     [switch]$WithDockerAgent
 )
@@ -156,14 +157,38 @@ function Invoke-Compose {
     & docker compose -p $ProjectName --env-file $EnvFile -f $ComposeFile @Args
 }
 
-function Invoke-ComposeTelemetry {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    & docker compose -p $ProjectName --env-file $EnvFile -f $ComposeFile --profile telemetry @Args
-}
-
 function Invoke-ComposeAgent {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
     & docker compose -p $ProjectName --env-file $EnvFile -f $ComposeFile --profile agent @Args
+}
+
+function New-AgentEnrollmentToken {
+    param([int]$ApiPort)
+
+    $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+    $userId = "00000000-0000-0000-0000-000000000000"
+    $role = "Admin"
+    $path = "/api/enrollment-tokens"
+    $canonical = "POST`n$path`n$timestamp`n$userId`n$role"
+    $secret = Get-EnvFileValue "TAWNY_WEB_HMAC_SECRET"
+
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new([System.Text.Encoding]::UTF8.GetBytes($secret))
+    try {
+        $signatureBytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canonical))
+    } finally {
+        $hmac.Dispose()
+    }
+    $signature = -join ($signatureBytes | ForEach-Object { $_.ToString("x2") })
+
+    $headers = @{
+        "X-User-Id" = $userId
+        "X-User-Role" = $role
+        "X-Timestamp" = $timestamp
+        "X-Signature" = $signature
+    }
+    $body = @{ lifetime_hours = 24 } | ConvertTo-Json -Compress
+    $response = Invoke-RestMethod -Uri "http://localhost:$ApiPort$path" -Method Post -Headers $headers -Body $body -ContentType "application/json"
+    return $response.token
 }
 
 function Wait-ForUrl {
@@ -263,18 +288,10 @@ Write-Step "Verifying HTTP endpoints"
 Wait-ForUrl "http://localhost:${ApiPort}/api/health" "API health"
 Wait-ForUrl "http://localhost:${WebPort}" "web app"
 
-if ($WithSyntheticAgent) {
-    Write-Step "Starting synthetic telemetry agent"
-    Invoke-ComposeTelemetry up -d synthetic-agent
-}
-
-if ($WithDockerAgent) {
-    Write-Step "Starting Docker Linux agent"
-    if ($NoBuild) {
-        Invoke-ComposeAgent up -d docker-agent
-    } else {
-        Invoke-ComposeAgent up -d --build docker-agent
-    }
+if ($WithAgent -or $WithSyntheticAgent -or $WithDockerAgent) {
+    Write-Step "Starting real Linux agent container"
+    Set-EnvValue "TAWNY_AGENT_ENROLLMENT_TOKEN" (New-AgentEnrollmentToken -ApiPort $ApiPort)
+    Invoke-ComposeAgent up -d --build agent
 }
 
 Write-Host ""
@@ -290,6 +307,5 @@ Write-Host "  Password: $AdminPassword"
 Write-Host ""
 Write-Host "Useful commands:"
 Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName logs -f api web db"
-Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName --profile telemetry logs -f synthetic-agent"
-Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName --profile agent logs -f docker-agent"
+Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName --profile agent logs -f agent"
 Write-Host "  cd `"$DockerDir`"; docker compose -p $ProjectName down"

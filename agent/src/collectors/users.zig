@@ -71,6 +71,8 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
         try std.json.stringify(user, .{}, w);
         try w.writeAll(",\"line\":");
         try std.json.stringify(tty, .{}, w);
+        try w.writeAll(",\"raw\":");
+        try std.json.stringify(line, .{}, w);
         try w.writeByte('}');
     }
     try w.writeAll("]}");

@@ -10,6 +10,99 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     };
 }
 
+fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    var w = out.writer();
+
+    try w.writeAll("{\"source\":\"procfs\",\"connections\":[");
+    var first = true;
+    try appendProcNetRows(alloc, w, "/proc/net/tcp", "tcp", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/tcp6", "tcp6", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/udp", "udp", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/udp6", "udp6", &first);
+    try w.writeAll("]}");
+
+    return out.toOwnedSlice();
+}
+
+fn appendProcNetRows(
+    alloc: std.mem.Allocator,
+    writer: anytype,
+    path: []const u8,
+    protocol: []const u8,
+    first: *bool,
+) !void {
+    const raw = readFileAbsoluteAlloc(alloc, path, 512 * 1024) catch return;
+    defer alloc.free(raw);
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next(); // header
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (!first.*) try writer.writeByte(',');
+        first.* = false;
+
+        var fields = std.mem.tokenizeAny(u8, line, " \t\r");
+        _ = fields.next(); // slot
+        const local = fields.next() orelse "";
+        const remote = fields.next() orelse "";
+        const state = fields.next() orelse "";
+        const local_endpoint = try parseProcNetEndpoint(alloc, protocol, local);
+        defer alloc.free(local_endpoint.address);
+        const remote_endpoint = try parseProcNetEndpoint(alloc, protocol, remote);
+        defer alloc.free(remote_endpoint.address);
+
+        try writer.writeAll("{\"protocol\":");
+        try std.json.stringify(protocol, .{}, writer);
+        try writer.writeAll(",\"local_address\":");
+        try std.json.stringify(local_endpoint.address, .{}, writer);
+        try writer.print(",\"local_port\":{d}", .{local_endpoint.port});
+        try writer.writeAll(",\"remote_address\":");
+        try std.json.stringify(remote_endpoint.address, .{}, writer);
+        try writer.print(",\"remote_port\":{d}", .{remote_endpoint.port});
+        try writer.writeAll(",\"state\":");
+        try std.json.stringify(state, .{}, writer);
+        try writer.writeAll(",\"raw\":");
+        try std.json.stringify(line, .{}, writer);
+        try writer.writeByte('}');
+    }
+}
+
+const ProcNetEndpoint = struct {
+    address: []u8,
+    port: u16,
+};
+
+fn parseProcNetEndpoint(alloc: std.mem.Allocator, protocol: []const u8, endpoint: []const u8) !ProcNetEndpoint {
+    const separator = std.mem.indexOfScalar(u8, endpoint, ':') orelse return .{
+        .address = try alloc.dupe(u8, ""),
+        .port = 0,
+    };
+
+    const address_hex = endpoint[0..separator];
+    const port_hex = endpoint[separator + 1 ..];
+    const port = std.fmt.parseInt(u16, port_hex, 16) catch 0;
+
+    if (!std.mem.endsWith(u8, protocol, "6") and address_hex.len == 8) {
+        const raw = std.fmt.parseInt(u32, address_hex, 16) catch 0;
+        return .{
+            .address = try std.fmt.allocPrint(
+                alloc,
+                "{d}.{d}.{d}.{d}",
+                .{ raw & 0xff, (raw >> 8) & 0xff, (raw >> 16) & 0xff, (raw >> 24) & 0xff },
+            ),
+            .port = port,
+        };
+    }
+
+    return .{
+        .address = try alloc.dupe(u8, address_hex),
+        .port = port,
+    };
+}
+
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     const result = try std.process.Child.run(.{
         .allocator = alloc,
@@ -43,43 +136,6 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     try w.writeAll("]}");
 
     return out.toOwnedSlice();
-}
-
-fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
-    const tcp4 = linuxSocketRows(alloc, "/proc/net/tcp") catch 0;
-    const tcp6 = linuxSocketRows(alloc, "/proc/net/tcp6") catch 0;
-    const udp4 = linuxSocketRows(alloc, "/proc/net/udp") catch 0;
-    const udp6 = linuxSocketRows(alloc, "/proc/net/udp6") catch 0;
-
-    return std.fmt.allocPrint(
-        alloc,
-        "{{\"source\":\"procfs\",\"tcp4\":{d},\"tcp6\":{d},\"udp4\":{d},\"udp6\":{d}}}",
-        .{ tcp4, tcp6, udp4, udp6 },
-    );
-}
-
-fn linuxSocketRows(alloc: std.mem.Allocator, path: []const u8) !u32 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    const raw = try file.readToEndAlloc(alloc, 512 * 1024);
-    defer alloc.free(raw);
-    return countProcNetRows(raw);
-}
-
-fn countProcNetRows(raw: []const u8) u32 {
-    var count: u32 = 0;
-    var skipped_header = false;
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    while (lines.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0) continue;
-        if (!skipped_header) {
-            skipped_header = true;
-            continue;
-        }
-        count += 1;
-    }
-    return count;
 }
 
 const NO_ERROR: u32 = 0;
@@ -136,14 +192,12 @@ fn tableSize(alloc: std.mem.Allocator, comptime tcp: bool) !u32 {
     return size;
 }
 
-test "network collector module loads" {
-    _ = collect;
+fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    var file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(alloc, max_bytes);
 }
 
-test "linux proc net row counter skips header" {
-    try std.testing.expectEqual(@as(u32, 2), countProcNetRows(
-        \\  sl  local_address rem_address   st
-        \\   0: 00000000:0016 00000000:0000 0A
-        \\   1: 0100007F:1F90 0100007F:BC7A 01
-    ));
+test "network collector module loads" {
+    _ = collect;
 }

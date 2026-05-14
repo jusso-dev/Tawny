@@ -59,58 +59,29 @@ services:
     ports:
       - "${TAWNY_WEB_PORT:-3000}:3000"
 
-  synthetic-agent:
-    image: node:22-alpine
-    container_name: tawny-synthetic-agent
-    profiles:
-      - telemetry
-    depends_on:
-      - api
-    working_dir: /app
-    command: ["node", "synthetic-agent.mjs"]
-    environment:
-      TAWNY_API_URL: "http://api:5080"
-      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
-      SYNTHETIC_AGENT_HOSTNAME: "${SYNTHETIC_AGENT_HOSTNAME:-tawny-docker-agent}"
-      SYNTHETIC_AGENT_VERSION: "${SYNTHETIC_AGENT_VERSION:-synthetic-docker-0.1.0}"
-      SYNTHETIC_AGENT_OS: "${SYNTHETIC_AGENT_OS:-macos}"
-      SYNTHETIC_AGENT_OS_VERSION: "${SYNTHETIC_AGENT_OS_VERSION:-synthetic-container}"
-      SYNTHETIC_AGENT_ARCH: "${SYNTHETIC_AGENT_ARCH:-arm64}"
-      SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS: "${SYNTHETIC_AGENT_EVENT_INTERVAL_SECONDS:-300}"
-      SYNTHETIC_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${SYNTHETIC_AGENT_HEARTBEAT_INTERVAL_SECONDS:-60}"
-      SYNTHETIC_AGENT_MAX_BATCHES: "${SYNTHETIC_AGENT_MAX_BATCHES:-0}"
-      SYNTHETIC_AGENT_STATE_PATH: "/state/agent.json"
-    volumes:
-      - ./synthetic-agent:/app:ro
-      - synthetic-agent-state:/state
-    restart: unless-stopped
-
-  docker-agent:
+  agent:
     build:
-      context: ../agent
-      dockerfile: Dockerfile
-    container_name: tawny-docker-agent
-    hostname: "${TAWNY_DOCKER_AGENT_HOSTNAME:-tawny-docker-agent}"
+      context: ..
+      dockerfile: docker/agent/Dockerfile
+    container_name: tawny-agent-linux
     profiles:
       - agent
     depends_on:
       - api
     environment:
-      TAWNY_API_URL: "http://api:5080"
+      TAWNY_CONFIG: "/etc/tawny/config.toml"
       TAWNY_AGENT_BACKEND_URL: "http://api:5080"
-      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
-      TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS:-60}"
-      TAWNY_AGENT_PROCESS_INTERVAL_SECONDS: "${TAWNY_AGENT_PROCESS_INTERVAL_SECONDS:-30}"
-      TAWNY_AGENT_NETWORK_INTERVAL_SECONDS: "${TAWNY_AGENT_NETWORK_INTERVAL_SECONDS:-30}"
-      TAWNY_AGENT_USERS_INTERVAL_SECONDS: "${TAWNY_AGENT_USERS_INTERVAL_SECONDS:-300}"
-      TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS: "${TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS:-3600}"
-      TAWNY_AGENT_FIM_INTERVAL_SECONDS: "${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-300}"
+      TAWNY_AGENT_ENROLLMENT_TOKEN: "${TAWNY_AGENT_ENROLLMENT_TOKEN:-}"
+      TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS:-15}"
+      TAWNY_AGENT_PROCESS_INTERVAL_SECONDS: "${TAWNY_AGENT_PROCESS_INTERVAL_SECONDS:-15}"
+      TAWNY_AGENT_NETWORK_INTERVAL_SECONDS: "${TAWNY_AGENT_NETWORK_INTERVAL_SECONDS:-15}"
+      TAWNY_AGENT_USERS_INTERVAL_SECONDS: "${TAWNY_AGENT_USERS_INTERVAL_SECONDS:-60}"
+      TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS: "${TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS:-60}"
+      TAWNY_AGENT_FIM_INTERVAL_SECONDS: "${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-30}"
+      TAWNY_AGENT_FIM_PATHS: "${TAWNY_AGENT_FIM_PATHS:-/etc/hosts,/var/lib/tawny/watch.txt}"
     volumes:
-      - docker-agent-config:/etc/tawny
-      - docker-agent-state:/var/lib/tawny
+      - agent-state:/etc/tawny
     restart: unless-stopped
 
 volumes:
-  synthetic-agent-state:
-  docker-agent-config:
-  docker-agent-state:
+  agent-state:

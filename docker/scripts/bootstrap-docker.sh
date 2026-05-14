@@ -11,8 +11,7 @@ admin_email="${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}"
 admin_password="${BOOTSTRAP_ADMIN_PASSWORD:-ChangeMe123!}"
 admin_name="${BOOTSTRAP_ADMIN_NAME:-Tawny Admin}"
 build_arg="--build"
-with_synthetic_agent="false"
-with_docker_agent="false"
+with_agent="false"
 
 usage() {
   cat <<'EOF'
@@ -32,8 +31,9 @@ Options:
   --project-name NAME       Docker Compose project. Default: tawny
   --platform PLATFORM       Docker platform, e.g. linux/amd64 for Apple Silicon SQL Server
   --no-build                Do not rebuild api/web images
-  --with-synthetic-agent    Start the Docker synthetic telemetry agent after bootstrap
-  --with-docker-agent       Start the real Tawny Linux agent container after bootstrap
+  --with-agent              Start the real Linux agent container after bootstrap
+  --with-synthetic-agent    Alias for --with-agent
+  --with-docker-agent       Alias for --with-agent
   -h, --help                Show this help
 
 Examples:
@@ -69,12 +69,8 @@ while [[ $# -gt 0 ]]; do
       build_arg=""
       shift
       ;;
-    --with-synthetic-agent)
-      with_synthetic_agent="true"
-      shift
-      ;;
-    --with-docker-agent)
-      with_docker_agent="true"
+    --with-agent|--with-synthetic-agent|--with-docker-agent)
+      with_agent="true"
       shift
       ;;
     -h|--help)
@@ -215,12 +211,36 @@ compose() {
   docker compose -p "$project_name" --env-file "$env_file" -f "$docker_dir/docker-compose.yml" "$@"
 }
 
-compose_telemetry() {
-  docker compose -p "$project_name" --env-file "$env_file" -f "$docker_dir/docker-compose.yml" --profile telemetry "$@"
-}
-
 compose_agent() {
   docker compose -p "$project_name" --env-file "$env_file" -f "$docker_dir/docker-compose.yml" --profile agent "$@"
+}
+
+create_agent_token() {
+  local hmac_secret
+  local timestamp
+  local canonical
+  local signature
+  local response
+  local token
+
+  hmac_secret="$(read_env_value TAWNY_WEB_HMAC_SECRET)"
+  timestamp="$(date +%s)"
+  canonical="$(printf 'POST\n/api/enrollment-tokens\n%s\n00000000-0000-0000-0000-000000000000\nAdmin' "$timestamp")"
+  signature="$(printf '%s' "$canonical" | openssl dgst -sha256 -hmac "$hmac_secret" | awk '{print $2}')"
+  response="$(curl -fsS \
+    -H 'Content-Type: application/json' \
+    -H 'X-User-Id: 00000000-0000-0000-0000-000000000000' \
+    -H 'X-User-Role: Admin' \
+    -H "X-Timestamp: $timestamp" \
+    -H "X-Signature: $signature" \
+    --data '{"lifetime_hours":24}' \
+    "http://localhost:${api_port}/api/enrollment-tokens")"
+  token="$(printf '%s' "$response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+  if [[ -z "$token" ]]; then
+    echo "Could not parse enrollment token from API response: $response" >&2
+    exit 1
+  fi
+  printf '%s' "$token"
 }
 
 need_command docker
@@ -279,18 +299,10 @@ log "Verifying HTTP endpoints"
 wait_for_url "http://localhost:${api_port}/api/health" "API health"
 wait_for_url "http://localhost:${web_port}" "web app"
 
-if [[ "$with_synthetic_agent" == "true" ]]; then
-  log "Starting synthetic telemetry agent"
-  compose_telemetry up -d synthetic-agent
-fi
-
-if [[ "$with_docker_agent" == "true" ]]; then
-  log "Starting Docker Linux agent"
-  if [[ -n "$build_arg" ]]; then
-    compose_agent up -d "$build_arg" docker-agent
-  else
-    compose_agent up -d docker-agent
-  fi
+if [[ "$with_agent" == "true" ]]; then
+  log "Starting real Linux agent container"
+  set_env "TAWNY_AGENT_ENROLLMENT_TOKEN" "$(create_agent_token)"
+  compose_agent up -d --build agent
 fi
 
 cat <<EOF
@@ -307,7 +319,6 @@ Admin login:
 
 Useful commands:
   cd "$docker_dir" && docker compose -p "$project_name" logs -f api web db
-  cd "$docker_dir" && docker compose -p "$project_name" --profile telemetry logs -f synthetic-agent
-  cd "$docker_dir" && docker compose -p "$project_name" --profile agent logs -f docker-agent
+  cd "$docker_dir" && docker compose -p "$project_name" --profile agent logs -f agent
   cd "$docker_dir" && docker compose -p "$project_name" down
 EOF

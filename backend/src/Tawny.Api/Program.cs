@@ -34,6 +34,8 @@ builder.Services.AddTawnyInfrastructure(builder.Configuration);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuditLogger>();
+builder.Services.AddScoped<AlertRuleEvaluator>();
+builder.Services.AddScoped<SigmaRuleImporter>();
 builder.Services.AddRateLimiter(options =>
 {
     options.AddPolicy("agent-events", httpContext =>

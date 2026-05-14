@@ -4,6 +4,7 @@ pub const ProcessInfo = struct {
     pid: u32,
     ppid: u32,
     name: []u8,
+    command_line: []u8,
 };
 
 const c = @cImport({
@@ -30,7 +31,10 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
 
     var list = std.ArrayList(ProcessInfo).init(alloc);
     errdefer {
-        for (list.items) |p| alloc.free(p.name);
+        for (list.items) |p| {
+            alloc.free(p.name);
+            alloc.free(p.command_line);
+        }
         list.deinit();
     }
 
@@ -55,10 +59,14 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
             "unknown";
 
         const owned = try alloc.dupe(u8, name_slice);
+        errdefer alloc.free(owned);
+        const command_line = try alloc.dupe(u8, owned);
+        errdefer alloc.free(command_line);
         try list.append(.{
             .pid = @intCast(pid),
             .ppid = @intCast(info.pbi_ppid),
             .name = owned,
+            .command_line = command_line,
         });
     }
 
