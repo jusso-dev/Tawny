@@ -7,6 +7,8 @@ const HMAC_SECRET = process.env.TAWNY_WEB_HMAC_SECRET ?? "";
 function sign(method: string, path: string, userId: string, role: string) {
   const ts = Math.floor(Date.now() / 1000).toString();
   const signedPath = path.split("?")[0] || path;
+  // `userId` must be the persisted Better Auth user id. The API maps it to
+  // ClaimTypes.NameIdentifier through the HMAC handler for audit attribution.
   const canonical = [method.toUpperCase(), signedPath, ts, userId, role].join("\n");
   const sig = createHmac("sha256", HMAC_SECRET).update(canonical).digest("hex");
   return {

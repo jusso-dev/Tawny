@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { auth } from "@/lib/auth";
+import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { AgentEventsPanel } from "./events-panel";
@@ -29,7 +30,7 @@ export default async function AgentDetailPage({
   const { id } = await params;
   let agent: Agent;
   try {
-    agent = await apiGet<Agent>(`/api/agents/${id}`, session.user.id, "Admin");
+    agent = await apiGet<Agent>(`/api/agents/${id}`, session.user.id, authRole(session.user));
   } catch {
     notFound();
   }
