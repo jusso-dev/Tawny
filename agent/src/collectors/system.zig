@@ -5,6 +5,7 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
+        .linux => collectLinux(alloc),
         else => @compileError("unsupported os"),
     };
 }
@@ -38,6 +39,79 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     try w.writeByte('}');
 
     return out.toOwnedSlice();
+}
+
+fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
+    const hostname_raw = readFileAlloc(alloc, "/proc/sys/kernel/hostname", 4 * 1024) catch
+        try alloc.dupe(u8, "");
+    defer alloc.free(hostname_raw);
+    const kernel_raw = readFileAlloc(alloc, "/proc/sys/kernel/osrelease", 4 * 1024) catch
+        try alloc.dupe(u8, "");
+    defer alloc.free(kernel_raw);
+    const meminfo = readFileAlloc(alloc, "/proc/meminfo", 64 * 1024) catch
+        try alloc.dupe(u8, "");
+    defer alloc.free(meminfo);
+    const cpuinfo = readFileAlloc(alloc, "/proc/cpuinfo", 512 * 1024) catch
+        try alloc.dupe(u8, "");
+    defer alloc.free(cpuinfo);
+
+    const hostname = std.mem.trim(u8, hostname_raw, " \t\r\n");
+    const kernel = std.mem.trim(u8, kernel_raw, " \t\r\n");
+    const mem_bytes = linuxMemTotalBytes(meminfo);
+    const cpu_count = linuxCpuCount(cpuinfo);
+    const cpu_brand = linuxCpuBrand(cpuinfo);
+
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    var w = out.writer();
+
+    try w.writeAll("{\"platform\":\"linux\",\"hostname\":");
+    try std.json.stringify(hostname, .{}, w);
+    try w.writeAll(",\"kernel\":");
+    try std.json.stringify(kernel, .{}, w);
+    try w.writeAll(",\"architecture\":");
+    try std.json.stringify(@tagName(builtin.cpu.arch), .{}, w);
+    try w.print(",\"memory_bytes\":{d},\"cpu_count\":{d},\"cpu_brand\":", .{ mem_bytes, cpu_count });
+    try std.json.stringify(cpu_brand, .{}, w);
+    try w.writeByte('}');
+
+    return out.toOwnedSlice();
+}
+
+fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    var file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(alloc, max_bytes);
+}
+
+fn linuxMemTotalBytes(meminfo: []const u8) u64 {
+    var lines = std.mem.splitScalar(u8, meminfo, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "MemTotal:")) continue;
+        var fields = std.mem.tokenizeAny(u8, line["MemTotal:".len..], " \t");
+        const kb = std.fmt.parseInt(u64, fields.next() orelse "0", 10) catch 0;
+        return kb * 1024;
+    }
+    return 0;
+}
+
+fn linuxCpuCount(cpuinfo: []const u8) u32 {
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, cpuinfo, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "processor")) count += 1;
+    }
+    return count;
+}
+
+fn linuxCpuBrand(cpuinfo: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, cpuinfo, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "model name")) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        return std.mem.trim(u8, line[colon + 1 ..], " \t");
+    }
+    return "";
 }
 
 fn sysctlU64(name: [:0]const u8) !u64 {
@@ -127,4 +201,10 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
 
 test "system collector module loads" {
     _ = collect;
+}
+
+test "linux proc parsers" {
+    try std.testing.expectEqual(@as(u64, 1024 * 1024), linuxMemTotalBytes("MemTotal:        1024 kB\n"));
+    try std.testing.expectEqual(@as(u32, 2), linuxCpuCount("processor\t: 0\nprocessor\t: 1\n"));
+    try std.testing.expectEqualStrings("Sample CPU", linuxCpuBrand("model name\t: Sample CPU\n"));
 }

@@ -13,6 +13,8 @@ jobs:
       matrix:
         target:
           - { name: windows-x64, zig: x86_64-windows-gnu, ext: ".exe" }
+          - { name: linux-x64, zig: x86_64-linux-gnu, ext: "" }
+          - { name: linux-arm64, zig: aarch64-linux-gnu, ext: "" }
           - { name: macos-arm64, zig: aarch64-macos, ext: "" }
           - { name: macos-x64, zig: x86_64-macos, ext: "" }
     steps:

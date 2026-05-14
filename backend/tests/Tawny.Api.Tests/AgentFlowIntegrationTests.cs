@@ -3,8 +3,10 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Tawny.Api.Services;
+using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
 using Xunit;
@@ -82,6 +84,45 @@ public class AgentFlowIntegrationTests(TawnyWebApplicationFactory factory)
         stored.Should().ContainSingle();
         stored![0].AgentId.Should().Be(enrollBody.AgentId);
         stored[0].Type.Should().Be("process_snapshot");
+    }
+
+    [Fact]
+    public async Task Enroll_AcceptsLinuxAgents()
+    {
+        await factory.ResetDatabaseAsync();
+        var enrollmentToken = TokenHashing.NewToken();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.EnrollmentTokens.Add(new EnrollmentToken
+            {
+                Id = Guid.NewGuid(),
+                TokenHash = TokenHashing.Hash(enrollmentToken),
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                CreatedByUserId = Guid.Empty,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = factory.CreateClient();
+        var enroll = await client.PostAsJsonAsync("/api/agents/enroll", new
+        {
+            enrollment_token = enrollmentToken,
+            hostname = "linux-edr-01",
+            os = "linux",
+            os_version = "6.12",
+            arch = "arm64",
+            agent_version = "0.1.0",
+        });
+
+        enroll.EnsureSuccessStatusCode();
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var agent = await verifyDb.Agents.SingleAsync(a => a.Hostname == "linux-edr-01");
+        agent.OperatingSystem.Should().Be(AgentPlatform.Linux);
+        agent.Architecture.Should().Be(AgentArchitecture.Arm64);
     }
 
     private sealed record EnrollBody(

@@ -127,7 +127,7 @@ public partial class CheckAgentReleasesJob(
             ? assetName[..^4] + ".sha256"
             : assetName + ".sha256";
 
-    [GeneratedRegex(@"^tawny-agent-(?<version>.+)-(?<platform>windows-x64|macos-arm64|macos-x64)(?:\.exe)?$",
+    [GeneratedRegex(@"^tawny-agent-(?<version>.+)-(?<platform>windows-x64|macos-arm64|macos-x64|linux-arm64|linux-x64)(?:\.exe)?$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex AgentAssetRegex();
 

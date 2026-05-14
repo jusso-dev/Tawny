@@ -6,7 +6,7 @@ enrollment_token=""
 download_url=""
 sha256=""
 install_dir="/usr/local/tawny"
-config_path="/Library/Application Support/Tawny/config.toml"
+config_path=""
 dry_run=0
 
 usage() {
@@ -14,11 +14,11 @@ usage() {
 Usage: install.sh --backend-url URL --enrollment-token TOKEN [options]
 
 Options:
-  --download-url URL   Agent binary URL. Defaults to the latest GitHub release asset for this Mac.
+  --download-url URL   Agent binary URL. Defaults to the latest GitHub release asset for this host.
   --sha256 HASH        Expected SHA-256. Defaults to the latest release .sha256 sidecar when available.
   --install-dir DIR    Binary install directory. Default: /usr/local/tawny
-  --config-path PATH   Config file path. Default: /Library/Application Support/Tawny/config.toml
-  --dry-run            Print actions without writing files, downloading, or registering launchd.
+  --config-path PATH   Config file path. Default: /Library/Application Support/Tawny/config.toml on macOS, /etc/tawny/config.toml on Linux
+  --dry-run            Print actions without writing files, downloading, or registering the service.
 USAGE
 }
 
@@ -39,6 +39,26 @@ done
 if [[ -z "$backend_url" || -z "$enrollment_token" ]]; then
   usage >&2
   exit 2
+fi
+
+os_name="$(uname -s)"
+case "$os_name" in
+  Darwin)
+    os_family="macos"
+    default_config_path="/Library/Application Support/Tawny/config.toml"
+    ;;
+  Linux)
+    os_family="linux"
+    default_config_path="/etc/tawny/config.toml"
+    ;;
+  *)
+    echo "Unsupported operating system: $os_name" >&2
+    exit 1
+    ;;
+esac
+
+if [[ -z "$config_path" ]]; then
+  config_path="$default_config_path"
 fi
 
 run() {
@@ -73,10 +93,12 @@ PY
 }
 
 arch="$(uname -m)"
-case "$arch" in
-  arm64|aarch64) platform="macos-arm64" ;;
-  x86_64|amd64) platform="macos-x64" ;;
-  *) echo "Unsupported macOS architecture: $arch" >&2; exit 1 ;;
+case "$os_family:$arch" in
+  macos:arm64|macos:aarch64) platform="macos-arm64" ;;
+  macos:x86_64|macos:amd64) platform="macos-x64" ;;
+  linux:arm64|linux:aarch64) platform="linux-arm64" ;;
+  linux:x86_64|linux:amd64) platform="linux-x64" ;;
+  *) echo "Unsupported ${os_family} architecture: $arch" >&2; exit 1 ;;
 esac
 
 if [[ -z "$download_url" && "$dry_run" -eq 0 ]]; then
@@ -95,7 +117,6 @@ fi
 
 binary_path="$install_dir/tawny-agent"
 config_dir="$(dirname "$config_path")"
-plist_path="/Library/LaunchDaemons/dev.jusso.tawny-agent.plist"
 
 run mkdir -p "$install_dir" "$config_dir"
 
@@ -110,7 +131,11 @@ if [[ -n "$sha256" ]]; then
   if [[ "$dry_run" -eq 1 ]]; then
     printf '[dry-run] verify SHA-256 %s for %s\n' "$sha256" "$binary_path"
   else
-    actual="$(shasum -a 256 "$binary_path" | awk '{print $1}')"
+    if command -v shasum >/dev/null 2>&1; then
+      actual="$(shasum -a 256 "$binary_path" | awk '{print $1}')"
+    else
+      actual="$(sha256sum "$binary_path" | awk '{print $1}')"
+    fi
     actual_lower="$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')"
     expected_lower="$(printf '%s' "$sha256" | tr '[:upper:]' '[:lower:]')"
     if [[ "$actual_lower" != "$expected_lower" ]]; then
@@ -143,10 +168,12 @@ fim_paths = []
 EOF
 fi
 
-if [[ "$dry_run" -eq 1 ]]; then
-  printf '[dry-run] write and bootstrap launchd job %s\n' "$plist_path"
-else
-  cat > "$plist_path" <<EOF
+if [[ "$os_family" == "macos" ]]; then
+  plist_path="/Library/LaunchDaemons/dev.jusso.tawny-agent.plist"
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf '[dry-run] write and bootstrap launchd job %s\n' "$plist_path"
+  else
+    cat > "$plist_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -168,9 +195,39 @@ else
 </dict>
 </plist>
 EOF
-  chown root:wheel "$plist_path"
-  chmod 0644 "$plist_path"
-  launchctl bootout system "$plist_path" >/dev/null 2>&1 || true
-  launchctl bootstrap system "$plist_path"
-  launchctl kickstart -k system/dev.jusso.tawny-agent
+    chown root:wheel "$plist_path"
+    chmod 0644 "$plist_path"
+    launchctl bootout system "$plist_path" >/dev/null 2>&1 || true
+    launchctl bootstrap system "$plist_path"
+    launchctl kickstart -k system/dev.jusso.tawny-agent
+  fi
+else
+  service_path="/etc/systemd/system/tawny-agent.service"
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf '[dry-run] write and enable systemd service %s\n' "$service_path"
+  else
+    cat > "$service_path" <<EOF
+[Unit]
+Description=Tawny endpoint agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$binary_path
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chown root:root "$service_path"
+    chmod 0644 "$service_path"
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload
+      systemctl enable --now tawny-agent.service
+    else
+      echo "systemctl not found; service file written to $service_path but not started." >&2
+    fi
+  fi
 fi

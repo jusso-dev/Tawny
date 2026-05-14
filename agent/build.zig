@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("iphlpapi");
         exe.linkSystemLibrary("wtsapi32");
         exe.linkSystemLibrary("ntdll");
-    } else if (target.result.os.tag == .macos) {
+    } else if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
         exe.linkLibC();
     }
 
@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
         unit_tests.linkSystemLibrary("iphlpapi");
         unit_tests.linkSystemLibrary("wtsapi32");
         unit_tests.linkSystemLibrary("ntdll");
-    } else if (target.result.os.tag == .macos) {
+    } else if (target.result.os.tag == .macos or target.result.os.tag == .linux) {
         unit_tests.linkLibC();
     }
     const test_step = b.step("test", "Run unit tests");

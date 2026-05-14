@@ -6,7 +6,7 @@
 
 > Quiet eyes on every endpoint.
 
-Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows and macOS, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
+Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
 
 The MVP is intentionally small. No kernel hooks, no driver signing, no SIEM-grade ingestion. Clean architecture, real telemetry, and a UI that looks like a product.
 
@@ -21,7 +21,7 @@ The tawny frogmouth is also small, unassuming, and frequently underestimated. Th
 ```
 +------------------------+        HTTPS         +-------------------------+
 | Zig Agent              | -------------------> | .NET 10 API             |
-| (Windows / macOS)      |  JWT, batched JSON   | ASP.NET Core            |
+| (Windows/macOS/Linux)  |  JWT, batched JSON   | ASP.NET Core            |
 |                        |                      | EF Core + SQL Server    |
 +------------------------+                      | Hangfire (in-process)   |
                                                 +-----------+-------------+
@@ -196,7 +196,7 @@ dotnet ef database update --project src/Tawny.Infrastructure --startup-project s
 
 ## Why Zig?
 
-Zig produces small, static binaries and cross-compiles to Windows and macOS from one machine without a fleet of toolchains. The C interop story is excellent, which matters when you are calling `CreateToolhelp32Snapshot` on Windows and `sysctl` on macOS. No runtime, no GC, predictable memory. A good fit for an endpoint agent that has to live quietly inside other people's machines.
+Zig produces small, static binaries and cross-compiles to Windows, macOS, and Linux from one machine without a fleet of toolchains. The C interop story is excellent, which matters when you are calling `CreateToolhelp32Snapshot` on Windows, `sysctl` on macOS, and procfs-backed collectors on Linux. No runtime, no GC, predictable memory. A good fit for an endpoint agent that has to live quietly inside other people's machines.
 
 ## Why this stack?
 
@@ -207,7 +207,6 @@ Zig produces small, static binaries and cross-compiles to Windows and macOS from
 This is a portfolio MVP. To keep it shippable in a sprint, the following are explicitly out:
 
 - Multi-tenancy
-- Linux agent
 - Real-time streaming (polling for now; SSE in v0.2)
 - Alerting rules engine
 - Response actions (kill process, isolate host)
@@ -229,7 +228,7 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - [ ] Release workflow with cross-compiled agent artefacts
 - [ ] Docs: architecture, threat model, deployment
 
-Post-MVP: Linux agent (eBPF), kernel-level collection, alerting DSL, response actions, multi-tenancy, OIDC SSO.
+Post-MVP: eBPF collectors, kernel-level collection, alerting DSL, response actions, multi-tenancy, OIDC SSO.
 
 ## Security notes
 
@@ -253,7 +252,7 @@ irm https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install
 curl -fsSL https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install.sh | sudo bash -s -- --backend-url 'https://api.example.com' --enrollment-token 'wte_xxx'
 ```
 
-Both scripts write the platform default `config.toml`, download the latest matching release asset, verify SHA-256 when a release sidecar is present, and register the agent as a Windows service or macOS launchd job. Use `-DryRun` on Windows or `--dry-run` on macOS to inspect local actions without changing the host.
+Both scripts write the platform default `config.toml`, download the latest matching release asset, verify SHA-256 when a release sidecar is present, and register the agent as a Windows service, macOS launchd job, or Linux systemd service. Use `-DryRun` on Windows or `--dry-run` on macOS/Linux to inspect local actions without changing the host.
 
 ## Production secrets
 

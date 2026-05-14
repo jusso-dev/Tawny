@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const platform = switch (builtin.os.tag) {
     .windows => @import("../platform/windows.zig"),
     .macos => @import("../platform/macos.zig"),
+    .linux => @import("../platform/linux.zig"),
     else => struct {
         pub const ProcessInfo = struct {
             pid: u32,
