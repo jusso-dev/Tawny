@@ -18,8 +18,9 @@ public class AgentJwtServiceTests
             Options.Create(new AgentJwtOptions()),
             new TestHostEnvironment());
         var agentId = Guid.NewGuid();
+        var tenantId = Guid.NewGuid();
 
-        var (token, expiresAt) = service.Issue(agentId);
+        var (token, expiresAt) = service.Issue(agentId, tenantId);
         var principal = new JwtSecurityTokenHandler().ValidateToken(token, new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -32,6 +33,7 @@ public class AgentJwtServiceTests
         }, out _);
 
         principal.FindFirst("agent_id")!.Value.Should().Be(agentId.ToString());
+        principal.FindFirst(TenantClaimExtensions.TenantIdClaim)!.Value.Should().Be(tenantId.ToString());
         expiresAt.Should().BeAfter(DateTimeOffset.UtcNow);
     }
 

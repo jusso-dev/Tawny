@@ -41,7 +41,9 @@ builder.Services.AddRateLimiter(options =>
         var agentId = httpContext.User.FindFirst("agent_id")?.Value
             ?? httpContext.Connection.RemoteIpAddress?.ToString()
             ?? "anonymous";
-        return RateLimitPartition.GetTokenBucketLimiter(agentId, _ => new TokenBucketRateLimiterOptions
+        var tenantId = httpContext.User.FindFirst(TenantClaimExtensions.TenantIdClaim)?.Value
+            ?? "default";
+        return RateLimitPartition.GetTokenBucketLimiter($"{tenantId}:{agentId}", _ => new TokenBucketRateLimiterOptions
         {
             TokenLimit = 120,
             TokensPerPeriod = 120,

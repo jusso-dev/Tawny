@@ -37,12 +37,12 @@ public class TelemetryController(
             return StatusCode(StatusCodes.Status413PayloadTooLarge);
         }
 
-        if (!TryGetAgentId(out var agentId))
+        if (!TryGetAgentId(out var agentId) || !User.TryGetTenantId(out var tenantId))
         {
             return Unauthorized();
         }
 
-        if (!await db.Agents.AnyAsync(a => a.Id == agentId, ct))
+        if (!await db.Agents.AnyAsync(a => a.Id == agentId && a.TenantId == tenantId, ct))
         {
             return NotFound();
         }
@@ -56,6 +56,7 @@ public class TelemetryController(
         var receivedAt = DateTimeOffset.UtcNow;
         var events = req.Events.Select(ev => new TelemetryEvent
         {
+            TenantId = tenantId,
             AgentId = agentId,
             EventType = ev.Type,
             OccurredAt = DateTimeOffset.FromUnixTimeSeconds(ev.OccurredAt),
@@ -64,7 +65,7 @@ public class TelemetryController(
         });
 
         db.TelemetryEvents.AddRange(events);
-        audit.Add((Guid?)null, "telemetry.ingest", agentId.ToString(), new
+        audit.Add((Guid?)null, tenantId, "telemetry.ingest", agentId.ToString(), new
         {
             event_count = req.Events.Count,
             received_at = receivedAt,
@@ -83,7 +84,8 @@ public class TelemetryController(
         [FromQuery] int limit = DefaultLimit,
         CancellationToken ct = default)
     {
-        if (!await db.Agents.AnyAsync(a => a.Id == id, ct))
+        var tenantId = User.GetTenantId();
+        if (!await db.Agents.AnyAsync(a => a.Id == id && a.TenantId == tenantId, ct))
         {
             return NotFound();
         }
@@ -101,7 +103,7 @@ public class TelemetryController(
         var take = Math.Clamp(limit, 1, MaxLimit);
         var query = db.TelemetryEvents
             .AsNoTracking()
-            .Where(e => e.AgentId == id);
+            .Where(e => e.AgentId == id && e.TenantId == tenantId);
 
         if (eventType is not null)
         {

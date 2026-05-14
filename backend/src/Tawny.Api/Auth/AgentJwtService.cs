@@ -13,7 +13,7 @@ public sealed class AgentJwtService(IOptions<AgentJwtOptions> options, IHostEnvi
     private readonly Lazy<RsaSecurityKey> _signingKey = new(() =>
         LoadKey(options.Value, env.IsProduction() || options.Value.RequireConfiguredSigningKey));
 
-    public (string Token, DateTimeOffset ExpiresAt) Issue(Guid agentId)
+    public (string Token, DateTimeOffset ExpiresAt) Issue(Guid agentId, Guid tenantId)
     {
         var now = DateTimeOffset.UtcNow;
         var expires = now.AddDays(_opts.LifetimeDays);
@@ -25,6 +25,7 @@ public sealed class AgentJwtService(IOptions<AgentJwtOptions> options, IHostEnvi
             claims: [
                 new Claim(JwtRegisteredClaimNames.Sub, agentId.ToString()),
                 new Claim("agent_id", agentId.ToString()),
+                new Claim(TenantClaimExtensions.TenantIdClaim, tenantId.ToString()),
             ],
             notBefore: now.UtcDateTime,
             expires: expires.UtcDateTime,

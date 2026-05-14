@@ -45,6 +45,7 @@ public class MarkStaleAgentsJobTests
     private static Agent Agent(string hostname, AgentStatus status, DateTimeOffset heartbeat) => new()
     {
         Id = Guid.NewGuid(),
+        TenantId = TenantDefaults.DefaultTenantId,
         Hostname = hostname,
         OperatingSystem = AgentPlatform.Windows,
         OsVersion = "11",
