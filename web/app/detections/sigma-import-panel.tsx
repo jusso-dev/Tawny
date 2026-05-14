@@ -10,8 +10,14 @@ import {
   Copy,
   FileCode2,
   Loader2,
+  Search,
   Upload,
 } from "lucide-react";
+import {
+  type SigmaCatalogCategory,
+  type SigmaCatalogPlatform,
+  sigmaCatalog,
+} from "./sigma-rule-catalog";
 
 type ValidationResult = {
   errors: string[];
@@ -23,12 +29,6 @@ type ValidationResult = {
     modifier?: string;
     level?: string;
   };
-};
-
-type ExampleRule = {
-  name: string;
-  description: string;
-  yaml: string;
 };
 
 const defaultYaml = `title: Suspicious Process Name
@@ -44,46 +44,8 @@ detection:
 level: high
 `;
 
-const examples: ExampleRule[] = [
-  {
-    name: "Process contains",
-    description: "Match a process name or command fragment.",
-    yaml: defaultYaml,
-  },
-  {
-    name: "Multi-value shell",
-    description: "Use a YAML list to match any one value.",
-    yaml: `title: Suspicious Shell Process
-id: 5d7f8f0e-aaaa-4f5b-8d10-2b2bb1f2a111
-description: Detects common shell process names.
-logsource:
-  category: process_creation
-detection:
-  selection:
-    processes.name:
-      - powershell.exe
-      - cmd.exe
-      - bash
-  condition: selection
-level: medium
-`,
-  },
-  {
-    name: "High port",
-    description: "Compare a numeric telemetry field.",
-    yaml: `title: Unusual Destination Port
-id: 5c20b282-6026-41bb-b7dd-2e4f9e41ec74
-description: Detects outbound connections to high destination ports.
-logsource:
-  category: network_connection
-detection:
-  selection:
-    connections.remote_port|gt: 49151
-  condition: selection
-level: low
-`,
-  },
-];
+const platforms: Array<SigmaCatalogPlatform | "any"> = ["any", "linux", "macos", "windows", "all"];
+const categories: Array<SigmaCatalogCategory | "any"> = ["any", "process", "network", "file", "identity", "system"];
 
 const supportedModifiers = new Set(["contains", "exists", "gt", "lt"]);
 const displayedModifiers = "contains, exists, gt, lt";
@@ -269,9 +231,29 @@ export function SigmaImportPanel() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [platform, setPlatform] = useState<SigmaCatalogPlatform | "any">("any");
+  const [category, setCategory] = useState<SigmaCatalogCategory | "any">("any");
 
   const validation = useMemo(() => validateSigmaRule(ruleYaml), [ruleYaml]);
+  const filteredCatalog = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return sigmaCatalog.filter((rule) => {
+      const platformMatch = platform === "any" || rule.platform === platform || rule.platform === "all";
+      const categoryMatch = category === "any" || rule.category === category;
+      const searchMatch =
+        normalized.length === 0 ||
+        `${rule.name} ${rule.description} ${rule.platform} ${rule.category}`.toLowerCase().includes(normalized);
+      return platformMatch && categoryMatch && searchMatch;
+    });
+  }, [category, platform, query]);
   const canSubmit = validation.errors.length === 0 && ruleYaml.trim().length > 0 && !pending;
+
+  function loadYaml(yaml: string) {
+    setRuleYaml(yaml);
+    setError(null);
+    setSuccess(null);
+  }
 
   async function importRule(event: React.FormEvent) {
     event.preventDefault();
@@ -314,29 +296,94 @@ export function SigmaImportPanel() {
       </div>
 
       <form onSubmit={importRule} className="space-y-5 p-5">
+        <div className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-muted)] p-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h3 className="text-sm font-medium">Detection catalog</h3>
+              <p className="mt-1 text-xs text-[color:var(--color-muted-foreground)]">
+                Load a supported Sigma starter rule, then tune the YAML before import.
+              </p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] xl:min-w-[34rem]">
+              <label className="relative block">
+                <Search
+                  size={15}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--color-muted-foreground)]"
+                />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search detections"
+                  className="min-h-9 w-full rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] pl-9 pr-3 text-sm"
+                />
+              </label>
+              <select
+                value={platform}
+                onChange={(event) => setPlatform(event.target.value as SigmaCatalogPlatform | "any")}
+                className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-2 text-sm capitalize"
+                aria-label="Filter by operating system"
+              >
+                {platforms.map((item) => (
+                  <option key={item} value={item}>
+                    {item === "any" ? "Any OS" : item}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={category}
+                onChange={(event) => setCategory(event.target.value as SigmaCatalogCategory | "any")}
+                className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-2 text-sm capitalize"
+                aria-label="Filter by detection category"
+              >
+                {categories.map((item) => (
+                  <option key={item} value={item}>
+                    {item === "any" ? "Any category" : item}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-4 grid max-h-80 gap-2 overflow-y-auto pr-1">
+            {filteredCatalog.length === 0 ? (
+              <p className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] px-3 py-4 text-center text-sm text-[color:var(--color-muted-foreground)]">
+                No catalog detections match those filters.
+              </p>
+            ) : (
+              filteredCatalog.map((rule) => (
+                <button
+                  key={rule.id}
+                  type="button"
+                  onClick={() => loadYaml(rule.yaml)}
+                  className="grid gap-2 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] px-3 py-3 text-left hover:border-[color:var(--color-accent)]/50 sm:grid-cols-[1fr_auto]"
+                >
+                  <span>
+                    <span className="block text-sm font-medium">{rule.name}</span>
+                    <span className="mt-1 block text-xs leading-5 text-[color:var(--color-muted-foreground)]">
+                      {rule.description}
+                    </span>
+                  </span>
+                  <span className="flex flex-wrap items-center gap-1.5 text-xs capitalize text-[color:var(--color-muted-foreground)]">
+                    <span className="rounded-full bg-[color:var(--color-muted)] px-2 py-1">{rule.platform}</span>
+                    <span className="rounded-full bg-[color:var(--color-muted)] px-2 py-1">{rule.category}</span>
+                    <span className="rounded-full bg-[color:var(--color-muted)] px-2 py-1">{rule.severity}</span>
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
         <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
             <label htmlFor="sigma-yaml" className="text-sm font-medium">
               Rule YAML
             </label>
-            <div className="flex flex-wrap gap-2">
-              {examples.map((example) => (
-                <button
-                  key={example.name}
-                  type="button"
-                  onClick={() => {
-                    setRuleYaml(example.yaml);
-                    setError(null);
-                    setSuccess(null);
-                  }}
-                  title={example.description}
-                  className="inline-flex min-h-8 items-center gap-2 rounded-md border border-[color:var(--color-border)] px-2.5 text-xs hover:bg-[color:var(--color-muted)]"
-                >
-                  <FileCode2 size={14} />
-                  {example.name}
-                </button>
-              ))}
-            </div>
+            <span className="inline-flex items-center gap-2 text-xs text-[color:var(--color-muted-foreground)]">
+              <FileCode2 size={14} />
+              Editable Sigma YAML
+            </span>
           </div>
           <textarea
             id="sigma-yaml"

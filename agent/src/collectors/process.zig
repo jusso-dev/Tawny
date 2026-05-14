@@ -4,23 +4,8 @@ const builtin = @import("builtin");
 const platform = switch (builtin.os.tag) {
     .windows => @import("../platform/windows.zig"),
     .macos => @import("../platform/macos.zig"),
-    else => struct {
-        pub const ProcessInfo = struct {
-            pid: u32,
-            ppid: u32,
-            name: []u8,
-        };
-
-        pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
-            var list = std.ArrayList(ProcessInfo).init(alloc);
-            try list.append(.{
-                .pid = 1,
-                .ppid = 0,
-                .name = try alloc.dupe(u8, "test-process"),
-            });
-            return list.toOwnedSlice();
-        }
-    },
+    .linux => @import("../platform/linux.zig"),
+    else => @compileError("unsupported os"),
 };
 
 /// Return a JSON object literal describing the current process snapshot.

@@ -12,7 +12,7 @@ import { AppShell } from "@/components/app-shell";
 type Agent = {
   id: string;
   hostname: string;
-  operating_system: "windows" | "macos";
+  operating_system: "windows" | "macos" | "linux";
   os_version: string;
   agent_version: string;
   architecture: "x64" | "arm64";

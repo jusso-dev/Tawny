@@ -5,8 +5,50 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
+        .linux => collectLinux(alloc),
         else => @compileError("unsupported os"),
     };
+}
+
+fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    var w = out.writer();
+
+    try w.writeAll("{\"source\":\"procfs\",\"connections\":[");
+    var first = true;
+    try appendProcNetRows(alloc, w, "/proc/net/tcp", "tcp", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/tcp6", "tcp6", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/udp", "udp", &first);
+    try appendProcNetRows(alloc, w, "/proc/net/udp6", "udp6", &first);
+    try w.writeAll("]}");
+
+    return out.toOwnedSlice();
+}
+
+fn appendProcNetRows(
+    alloc: std.mem.Allocator,
+    writer: anytype,
+    path: []const u8,
+    protocol: []const u8,
+    first: *bool,
+) !void {
+    const raw = readFileAbsoluteAlloc(alloc, path, 512 * 1024) catch return;
+    defer alloc.free(raw);
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next(); // header
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (!first.*) try writer.writeByte(',');
+        first.* = false;
+        try writer.writeAll("{\"protocol\":");
+        try std.json.stringify(protocol, .{}, writer);
+        try writer.writeAll(",\"raw\":");
+        try std.json.stringify(line, .{}, writer);
+        try writer.writeByte('}');
+    }
 }
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
@@ -96,6 +138,12 @@ fn tableSize(alloc: std.mem.Allocator, comptime tcp: bool) !u32 {
         GetExtendedUdpTable(ptr, &size, 0, AF_INET, UDP_TABLE_OWNER_PID, 0);
     if (second != NO_ERROR) return error.NetworkTableFailed;
     return size;
+}
+
+fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    var file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(alloc, max_bytes);
 }
 
 test "network collector module loads" {
