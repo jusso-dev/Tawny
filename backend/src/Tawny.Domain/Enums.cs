@@ -59,3 +59,9 @@ public enum AlertRuleOperator
     GreaterThan = 3,
     LessThan = 4,
 }
+
+public enum AlertRuleFormat
+{
+    TawnyPredicate = 0,
+    Sigma = 1,
+}

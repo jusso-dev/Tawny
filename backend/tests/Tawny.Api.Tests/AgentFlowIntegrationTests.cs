@@ -164,6 +164,102 @@ public class AgentFlowIntegrationTests(TawnyWebApplicationFactory factory)
         alerts[0].TelemetryEventId.Should().BeGreaterThan(0);
     }
 
+    [Fact]
+    public async Task ImportedSigmaRule_CreatesAlertForMatchingTelemetry()
+    {
+        await factory.ResetDatabaseAsync();
+        const string ruleYaml = """
+title: Suspicious Process From Sigma
+id: 8c6f0f07-5a44-4c41-83cc-2e0e0f6ef9f1
+status: experimental
+description: Detects a suspicious process name from Tawny process telemetry.
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  selection:
+    processes.name|contains: suspicious.exe
+  condition: selection
+level: high
+""";
+
+        var client = factory.CreateClient();
+        using var importReq = new HttpRequestMessage(HttpMethod.Post, "/api/alert-rules/sigma")
+        {
+            Content = JsonContent.Create(new
+            {
+                rule_yaml = ruleYaml,
+            }),
+        };
+        importReq.AddWebUserSignature("/api/alert-rules/sigma");
+        var importRes = await client.SendAsync(importReq);
+        importRes.EnsureSuccessStatusCode();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            var rule = await db.AlertRules.SingleAsync();
+            rule.Format.Should().Be(AlertRuleFormat.Sigma);
+            rule.ExternalId.Should().Be("8c6f0f07-5a44-4c41-83cc-2e0e0f6ef9f1");
+            rule.EventType.Should().Be(TelemetryEventType.ProcessSnapshot);
+            rule.PayloadPath.Should().Be("processes.name");
+        }
+
+        var enrollmentToken = TokenHashing.NewToken();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.EnrollmentTokens.Add(new EnrollmentToken
+            {
+                Id = Guid.NewGuid(),
+                TokenHash = TokenHashing.Hash(enrollmentToken),
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                CreatedByUserId = Guid.Empty,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var enroll = await client.PostAsJsonAsync("/api/agents/enroll", new
+        {
+            enrollment_token = enrollmentToken,
+            hostname = "sigma-host-01",
+            os = "windows",
+            os_version = "11",
+            arch = "x64",
+            agent_version = "0.1.0",
+        });
+        enroll.EnsureSuccessStatusCode();
+        var enrollBody = await enroll.Content.ReadFromJsonAsync<EnrollBody>();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", enrollBody!.Jwt);
+        var events = await client.PostAsJsonAsync("/api/agents/events", new
+        {
+            events = new[]
+            {
+                new
+                {
+                    type = "process_snapshot",
+                    occurred_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        processes = new[]
+                        {
+                            new { name = "very-suspicious.exe", pid = 4242 },
+                        },
+                    },
+                },
+            },
+        });
+        events.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var alert = await verifyDb.Alerts.SingleAsync();
+        alert.Title.Should().Contain("Suspicious Process From Sigma");
+        alert.Severity.Should().Be(AlertSeverity.High);
+    }
+
     private sealed record EnrollBody(
         [property: JsonPropertyName("agent_id")] Guid AgentId,
         [property: JsonPropertyName("jwt")] string Jwt);

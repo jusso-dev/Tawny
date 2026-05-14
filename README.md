@@ -229,7 +229,11 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - [ ] Release workflow with cross-compiled agent artefacts
 - [ ] Docs: architecture, threat model, deployment
 
-Post-MVP: Linux agent (eBPF), kernel-level collection, alerting DSL, response actions, multi-tenancy, OIDC SSO.
+Post-MVP: Linux agent (eBPF), kernel-level collection, broader Sigma coverage, response actions, multi-tenancy, OIDC SSO.
+
+## Detection rules
+
+Alert rules are moving toward Sigma-compatible detection-as-code instead of a custom Tawny rule language. The current importer accepts a focused Sigma subset: `title`, `id`, `description`, `logsource`, one named `detection` selection, a single-selection `condition`, and `level`. Tawny compiles that into its event matcher and keeps the original Sigma YAML with the rule so the supported subset can grow without inventing a parallel format.
 
 ## Security notes
 

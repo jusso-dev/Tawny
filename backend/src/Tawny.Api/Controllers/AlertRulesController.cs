@@ -13,7 +13,10 @@ namespace Tawny.Api.Controllers;
 [ApiController]
 [Route("api/alert-rules")]
 [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
-public class AlertRulesController(TawnyDbContext db, AuditLogger audit) : ControllerBase
+public class AlertRulesController(
+    TawnyDbContext db,
+    AuditLogger audit,
+    SigmaRuleImporter sigma) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<AlertRuleResponse>>> List(CancellationToken ct)
@@ -41,6 +44,7 @@ public class AlertRulesController(TawnyDbContext db, AuditLogger audit) : Contro
         {
             Id = Guid.NewGuid(),
             Name = req.Name.Trim(),
+            Format = AlertRuleFormat.TawnyPredicate,
             EventType = req.EventType,
             Severity = req.Severity,
             Operator = req.Operator,
@@ -57,6 +61,36 @@ public class AlertRulesController(TawnyDbContext db, AuditLogger audit) : Contro
             rule.EventType,
             rule.Severity,
             rule.Operator,
+            rule.PayloadPath,
+        });
+        await db.SaveChangesAsync(ct);
+
+        return CreatedAtAction(nameof(List), new { id = rule.Id }, ToResponse(rule));
+    }
+
+    [HttpPost("sigma")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    public async Task<ActionResult<AlertRuleResponse>> ImportSigma(
+        ImportSigmaRuleRequest req,
+        CancellationToken ct)
+    {
+        AlertRule rule;
+        try
+        {
+            rule = sigma.Import(req.RuleYaml, req.IsEnabled ?? true, DateTimeOffset.UtcNow);
+        }
+        catch (SigmaRuleException ex)
+        {
+            return Problem(statusCode: 400, title: ex.Message);
+        }
+
+        db.AlertRules.Add(rule);
+        audit.Add(User, "alert_rule.import_sigma", rule.Id.ToString(), new
+        {
+            rule.Name,
+            rule.ExternalId,
+            rule.EventType,
+            rule.Severity,
             rule.PayloadPath,
         });
         await db.SaveChangesAsync(ct);
@@ -81,11 +115,15 @@ public class AlertRulesController(TawnyDbContext db, AuditLogger audit) : Contro
         }
 
         rule.Name = req.Name.Trim();
+        rule.Format = AlertRuleFormat.TawnyPredicate;
+        rule.ExternalId = null;
+        rule.Description = null;
         rule.EventType = req.EventType;
         rule.Severity = req.Severity;
         rule.Operator = req.Operator;
         rule.PayloadPath = Normalize(req.PayloadPath);
         rule.MatchValue = Normalize(req.MatchValue);
+        rule.SourceDefinition = null;
         rule.IsEnabled = req.IsEnabled;
         rule.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Add(User, "alert_rule.update", rule.Id.ToString(), new
@@ -127,11 +165,15 @@ public class AlertRulesController(TawnyDbContext db, AuditLogger audit) : Contro
     private static AlertRuleResponse ToResponse(AlertRule r) => new(
         r.Id,
         r.Name,
+        r.Format,
+        r.ExternalId,
+        r.Description,
         r.EventType,
         r.Severity,
         r.Operator,
         r.PayloadPath,
         r.MatchValue,
+        r.SourceDefinition,
         r.IsEnabled,
         r.CreatedAt,
         r.UpdatedAt);
