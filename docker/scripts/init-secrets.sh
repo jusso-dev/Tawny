@@ -34,3 +34,4 @@ ensure_env() {
 ensure_env "TAWNY_WEB_HMAC_SECRET" "$(openssl rand -hex 32)"
 ensure_env "BETTER_AUTH_SECRET" "$(openssl rand -hex 32)"
 ensure_env "TAWNY_APPLY_MIGRATIONS_ON_STARTUP" "true"
+ensure_env "MSSQL_SA_PASSWORD" "DevPassw0rd!"

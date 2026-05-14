@@ -24,7 +24,7 @@ builder.Services.Configure<AgentJwtOptions>(builder.Configuration.GetSection("Ta
 builder.Services.Configure<EnrollmentOptions>(builder.Configuration.GetSection("Tawny:Enrollment"));
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Tawny:Retention"));
 builder.Services.Configure<TelemetryBackupOptions>(builder.Configuration.GetSection("Tawny:TelemetryBackup"));
-builder.Services.Configure<WebUserAuthOptions>(opt =>
+builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
 });

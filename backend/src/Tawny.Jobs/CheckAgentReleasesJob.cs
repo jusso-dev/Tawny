@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -24,6 +25,12 @@ public partial class CheckAgentReleasesJob(
         req.Headers.Accept.ParseAdd("application/vnd.github+json");
 
         using var res = await http.SendAsync(req, ct);
+        if (res.StatusCode == HttpStatusCode.NotFound)
+        {
+            log.LogInformation("No Tawny GitHub releases found yet; skipping agent release sync.");
+            return;
+        }
+
         res.EnsureSuccessStatusCode();
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct);

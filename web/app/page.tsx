@@ -4,9 +4,9 @@ import Link from "next/link";
 import { auth } from "@/lib/auth";
 import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
-import { CommandPalette } from "@/components/command-palette";
 import { StatusDonut, VolumeSparkline } from "@/components/dashboard-charts";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { AppShell, PageHeader, PrimaryLink } from "@/components/app-shell";
+import { StatusBadge } from "@/components/ui/status-badge";
 
 type Agent = {
   id: string;
@@ -37,9 +37,10 @@ type DashboardSummary = {
 const eventTypeLabels: Record<string, string> = {
   process_snapshot: "Processes",
   network_snapshot: "Network",
-  users_snapshot: "Users",
+  user_session: "Session",
   system_info: "System",
   file_integrity: "FIM",
+  heartbeat: "Heartbeat",
 };
 
 export default async function Home() {
@@ -60,112 +61,107 @@ export default async function Home() {
   ];
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-10">
-      <CommandPalette agents={agents} />
-      <header className="flex flex-col gap-5 border-b border-[color:var(--color-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">Dashboard</p>
-          <h1 className="mt-2 text-3xl font-semibold">Tawny operations</h1>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="rounded-md border border-[color:var(--color-border)] px-3 py-2 text-xs text-[color:var(--color-muted-foreground)]">
-            Press Cmd+K to jump to an agent
-          </span>
-          <ThemeToggle />
-          <Link
-            href="/enrollment"
-            className="rounded-md bg-[color:var(--color-accent)] px-4 py-2 text-sm font-medium text-black hover:opacity-90"
-          >
-            New token
-          </Link>
-        </div>
-      </header>
+    <AppShell agents={agents} active="dashboard">
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <PageHeader
+          eyebrow="Dashboard"
+          title="Endpoint operations"
+          description="Agent health, telemetry arrival, and recent endpoint activity from the local Tawny stack."
+          actions={<PrimaryLink href="/enrollment">New token</PrimaryLink>}
+        />
 
-      <section className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">Total agents</p>
-          <p className="mt-3 text-3xl font-semibold">{summary.total_agents}</p>
-        </div>
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">Online</p>
-          <p className="mt-3 text-3xl font-semibold text-[color:var(--color-success)]">
-            {summary.online_agents}
-          </p>
-        </div>
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">Offline</p>
-          <p className="mt-3 text-3xl font-semibold text-[color:var(--color-danger)]">
-            {summary.offline_agents}
-          </p>
-        </div>
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">Events, 24h</p>
-          <p className="mt-3 text-3xl font-semibold">
-            {summary.event_volume.reduce((sum, point) => sum + point.count, 0)}
-          </p>
-        </div>
-      </section>
+        <section className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Metric label="Total agents" value={summary.total_agents} />
+          <Metric label="Online" value={summary.online_agents} tone="success" />
+          <Metric label="Offline" value={summary.offline_agents} tone="danger" />
+          <Metric
+            label="Events, 24h"
+            value={summary.event_volume.reduce((sum, point) => sum + point.count, 0)}
+          />
+        </section>
 
-      <section className="mt-6 grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Agent state</h2>
-            <Link href="/agents" className="text-sm text-[color:var(--color-muted-foreground)] hover:underline">
-              View all
-            </Link>
+        <section className="mt-5 grid gap-5 lg:grid-cols-[0.82fr_1.18fr]">
+          <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Agent state</h2>
+              <Link href="/agents" className="text-sm text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]">
+                View all
+              </Link>
+            </div>
+            <StatusDonut data={donutData} />
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {donutData.map((point) => (
+                <div key={point.name} className="flex items-center justify-between rounded-md bg-[color:var(--color-muted)] px-3 py-2">
+                  <span>{point.name}</span>
+                  <span className="font-medium">{point.value}</span>
+                </div>
+              ))}
+            </div>
           </div>
-          <StatusDonut data={donutData} />
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            {donutData.map((point) => (
-              <div key={point.name} className="flex items-center justify-between rounded-md bg-[color:var(--color-muted)] px-3 py-2">
-                <span>{point.name}</span>
-                <span className="font-medium">{point.value}</span>
-              </div>
+
+          <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Event volume</h2>
+              <span className="text-sm text-[color:var(--color-muted-foreground)]">Last 24 hours</span>
+            </div>
+            <VolumeSparkline data={summary.event_volume} />
+          </div>
+        </section>
+
+        <section className="mt-5 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+          <div className="flex items-center justify-between border-b border-[color:var(--color-border)] px-5 py-4">
+            <h2 className="font-semibold">Recent events</h2>
+            <span className="text-sm text-[color:var(--color-muted-foreground)]">
+              {summary.recent_events.length} latest
+            </span>
+          </div>
+          <div className="divide-y divide-[color:var(--color-border)]">
+            {summary.recent_events.length === 0 && (
+              <p className="px-5 py-10 text-center text-sm text-[color:var(--color-muted-foreground)]">
+                No telemetry has arrived yet.
+              </p>
+            )}
+            {summary.recent_events.map((event) => (
+              <Link
+                key={event.id}
+                href={`/agents/${event.agent_id}`}
+                className="grid gap-2 px-5 py-4 transition-colors hover:bg-[color:var(--color-muted)]/75 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="truncate font-medium">{event.hostname}</span>
+                  <span className="rounded-full bg-[color:var(--color-muted)] px-2 py-0.5 text-xs text-[color:var(--color-muted-foreground)]">
+                    {eventTypeLabels[event.type] ?? event.type.replaceAll("_", " ")}
+                  </span>
+                </span>
+                <time className="text-sm text-[color:var(--color-muted-foreground)]">
+                  {new Date(event.received_at).toLocaleString()}
+                </time>
+              </Link>
             ))}
           </div>
-        </div>
+        </section>
+      </main>
+    </AppShell>
+  );
+}
 
-        <div className="rounded-lg border border-[color:var(--color-border)] p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Event volume</h2>
-            <span className="text-sm text-[color:var(--color-muted-foreground)]">Last 24 hours</span>
-          </div>
-          <VolumeSparkline data={summary.event_volume} />
-        </div>
-      </section>
-
-      <section className="mt-6 rounded-lg border border-[color:var(--color-border)]">
-        <div className="flex items-center justify-between border-b border-[color:var(--color-border)] px-5 py-4">
-          <h2 className="font-semibold">Recent events</h2>
-          <span className="text-sm text-[color:var(--color-muted-foreground)]">
-            {summary.recent_events.length} latest
-          </span>
-        </div>
-        <div className="divide-y divide-[color:var(--color-border)]">
-          {summary.recent_events.length === 0 && (
-            <p className="px-5 py-10 text-center text-sm text-[color:var(--color-muted-foreground)]">
-              No telemetry has arrived yet.
-            </p>
-          )}
-          {summary.recent_events.map((event) => (
-            <Link
-              key={event.id}
-              href={`/agents/${event.agent_id}`}
-              className="flex flex-col gap-2 px-5 py-4 hover:bg-[color:var(--color-muted)] sm:flex-row sm:items-center sm:justify-between"
-            >
-              <span>
-                <span className="font-medium">{event.hostname}</span>
-                <span className="ml-3 text-sm text-[color:var(--color-muted-foreground)]">
-                  {eventTypeLabels[event.type] ?? event.type}
-                </span>
-              </span>
-              <time className="text-sm text-[color:var(--color-muted-foreground)]">
-                {new Date(event.received_at).toLocaleString()}
-              </time>
-            </Link>
-          ))}
-        </div>
-      </section>
-    </main>
+function Metric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: "success" | "danger";
+}) {
+  return (
+    <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-[color:var(--color-muted-foreground)]">{label}</p>
+        {tone === "success" ? <StatusBadge status="online" /> : null}
+        {tone === "danger" ? <StatusBadge status="offline" /> : null}
+      </div>
+      <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
+    </div>
   );
 }

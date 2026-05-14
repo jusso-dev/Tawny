@@ -43,13 +43,13 @@ export function ThemeToggle() {
   }
 
   return (
-    <div className="inline-flex rounded-md border border-[color:var(--color-border)] p-1">
+    <div className="inline-flex rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-1">
       {options.map(([value, Icon]) => (
         <button
           key={value}
           type="button"
           onClick={() => choose(value)}
-          className={`rounded px-2.5 py-1.5 text-sm capitalize transition-colors ${
+          className={`min-h-8 rounded px-2.5 py-1.5 text-sm capitalize transition-colors ${
             theme === value
               ? "bg-[color:var(--color-muted)] text-[color:var(--color-foreground)]"
               : "text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]"
