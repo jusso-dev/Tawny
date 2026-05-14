@@ -29,6 +29,28 @@
   }
 }
 
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-card: oklch(0.18 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.22 0 0);
+  --color-muted-foreground: oklch(0.7 0 0);
+  --color-border: oklch(0.28 0 0);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-background: oklch(0.99 0 0);
+  --color-foreground: oklch(0.15 0 0);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.15 0 0);
+  --color-muted: oklch(0.96 0 0);
+  --color-muted-foreground: oklch(0.4 0 0);
+  --color-border: oklch(0.92 0 0);
+}
+
 html, body {
   background: var(--color-background);
   color: var(--color-foreground);
