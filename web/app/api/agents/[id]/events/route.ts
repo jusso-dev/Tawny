@@ -20,7 +20,12 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   try {
     const events = await apiGet(path, session.user.id, authRole(session.user));
-    return NextResponse.json(events);
+    return NextResponse.json(events, {
+      headers: {
+        "Cache-Control": "no-store, max-age=0",
+        "X-Tawny-Event-Feed": "polling",
+      },
+    });
   } catch {
     return NextResponse.json({ error: "Failed to load events" }, { status: 502 });
   }

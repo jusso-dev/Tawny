@@ -127,6 +127,8 @@ docker compose -p tawny --env-file .env --profile telemetry logs -f synthetic-ag
 
 The synthetic agent creates a real enrollment token through the API, enrolls as `tawny-docker-agent`, heartbeats every minute, and posts small system, process, network, FIM, and session telemetry batches every 5 minutes. `SYNTHETIC_AGENT_MAX_BATCHES=0` means continuous low-rate telemetry, which is the Docker default so the agent stays online for demos. It is a Docker test harness, not the production endpoint agent.
 
+Agent detail event tabs poll for fresh telemetry every two seconds by default. Use Pause to freeze the table while inspecting payloads. SSE streaming is intentionally deferred to v0.2; the current polling route is marked with `X-Tawny-Event-Feed: polling`.
+
 You can cap it for a short test run:
 
 ```bash
