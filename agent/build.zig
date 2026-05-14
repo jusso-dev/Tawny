@@ -17,6 +17,8 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("kernel32");
         exe.linkSystemLibrary("advapi32");
         exe.linkSystemLibrary("iphlpapi");
+        exe.linkSystemLibrary("wtsapi32");
+        exe.linkSystemLibrary("ntdll");
     } else if (target.result.os.tag == .macos) {
         exe.linkLibC();
     }
@@ -35,6 +37,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    if (target.result.os.tag == .windows) {
+        unit_tests.linkLibC();
+        unit_tests.linkSystemLibrary("ws2_32");
+        unit_tests.linkSystemLibrary("kernel32");
+        unit_tests.linkSystemLibrary("advapi32");
+        unit_tests.linkSystemLibrary("iphlpapi");
+        unit_tests.linkSystemLibrary("wtsapi32");
+        unit_tests.linkSystemLibrary("ntdll");
+    } else if (target.result.os.tag == .macos) {
+        unit_tests.linkLibC();
+    }
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }
