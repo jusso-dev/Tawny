@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -30,20 +31,49 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
             .OrderByDescending(a => a.CreatedAt)
             .ThenByDescending(a => a.Id)
             .Take(take)
-            .Select(a => new AlertResponse(
+            .Select(a => new
+            {
                 a.Id,
                 a.AlertRuleId,
-                a.AlertRule!.Name,
+                RuleName = a.AlertRule!.Name,
+                RuleEventType = a.AlertRule.EventType,
+                RuleOperator = a.AlertRule.Operator,
+                RulePayloadPath = a.AlertRule.PayloadPath,
+                RuleMatchValue = a.AlertRule.MatchValue,
                 a.AgentId,
-                a.Agent!.Hostname,
+                Hostname = a.Agent!.Hostname,
                 a.TelemetryEventId,
+                EventType = a.TelemetryEvent!.EventType,
+                a.TelemetryEvent.OccurredAt,
+                a.TelemetryEvent.ReceivedAt,
+                a.TelemetryEvent.Payload,
                 a.Severity,
                 a.Status,
                 a.Title,
                 a.Description,
-                a.CreatedAt))
+                a.CreatedAt,
+            })
             .ToListAsync(ct);
 
-        return Ok(rows);
+        return Ok(rows.Select(a => new AlertResponse(
+            a.Id,
+            a.AlertRuleId,
+            a.RuleName,
+            a.RuleEventType,
+            a.RuleOperator,
+            a.RulePayloadPath,
+            a.RuleMatchValue,
+            a.AgentId,
+            a.Hostname,
+            a.TelemetryEventId,
+            a.EventType,
+            a.OccurredAt,
+            a.ReceivedAt,
+            JsonSerializer.Deserialize<JsonElement>(a.Payload),
+            a.Severity,
+            a.Status,
+            a.Title,
+            a.Description,
+            a.CreatedAt)).ToList());
     }
 }

@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Route } from "next";
-import { Activity, KeyRound, LayoutDashboard, ShieldCheck } from "lucide-react";
+import { Activity, BellRing, KeyRound, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/cn";
@@ -14,7 +14,7 @@ type ShellAgent = {
 
 type AppShellProps = {
   agents?: ShellAgent[];
-  active: "dashboard" | "agents" | "detections" | "enrollment";
+  active: "dashboard" | "agents" | "alerts" | "detections" | "enrollment";
   children: React.ReactNode;
 };
 
@@ -28,6 +28,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", key: "dashboard", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", key: "agents", icon: Activity },
+  { href: "/alerts" as Route, label: "Alerts", key: "alerts", icon: BellRing },
   { href: "/detections", label: "Detections", key: "detections", icon: ShieldCheck },
   { href: "/enrollment", label: "Enrollment", key: "enrollment", icon: KeyRound },
 ];

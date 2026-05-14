@@ -5,6 +5,7 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
+        .linux => collectLinux(alloc),
         else => @compileError("unsupported os"),
     };
 }
@@ -34,6 +35,38 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
         try w.writeAll(",\"line\":");
         try std.json.stringify(std.mem.sliceTo(&session.ut_line, 0), .{}, w);
         try w.print(",\"pid\":{d}}}", .{session.ut_pid});
+    }
+    try w.writeAll("]}");
+
+    return out.toOwnedSlice();
+}
+
+fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
+    const raw = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "who" },
+        .max_output_bytes = 128 * 1024,
+    }) catch {
+        return alloc.dupe(u8, "{\"source\":\"who\",\"sessions\":[]}");
+    };
+    defer alloc.free(raw.stdout);
+    defer alloc.free(raw.stderr);
+
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    var w = out.writer();
+
+    try w.writeAll("{\"source\":\"who\",\"sessions\":[");
+    var first = true;
+    var lines = std.mem.splitScalar(u8, raw.stdout, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (!first) try w.writeByte(',');
+        first = false;
+        try w.writeAll("{\"raw\":");
+        try std.json.stringify(line, .{}, w);
+        try w.writeByte('}');
     }
     try w.writeAll("]}");
 

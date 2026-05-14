@@ -4,23 +4,8 @@ const builtin = @import("builtin");
 const platform = switch (builtin.os.tag) {
     .windows => @import("../platform/windows.zig"),
     .macos => @import("../platform/macos.zig"),
-    else => struct {
-        pub const ProcessInfo = struct {
-            pid: u32,
-            ppid: u32,
-            name: []u8,
-        };
-
-        pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
-            var list = std.ArrayList(ProcessInfo).init(alloc);
-            try list.append(.{
-                .pid = 1,
-                .ppid = 0,
-                .name = try alloc.dupe(u8, "test-process"),
-            });
-            return list.toOwnedSlice();
-        }
-    },
+    .linux => @import("../platform/linux.zig"),
+    else => @compileError("unsupported os"),
 };
 
 /// Return a JSON object literal describing the current process snapshot.
@@ -28,7 +13,10 @@ const platform = switch (builtin.os.tag) {
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     const procs = try platform.enumerateProcesses(alloc);
     defer {
-        for (procs) |p| alloc.free(p.name);
+        for (procs) |p| {
+            alloc.free(p.name);
+            alloc.free(p.command_line);
+        }
         alloc.free(procs);
     }
 
@@ -43,6 +31,8 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
             \\{{"pid":{d},"ppid":{d},"name":
         , .{ p.pid, p.ppid });
         try writeJsonString(w, p.name);
+        try w.writeAll(",\"command_line\":");
+        try writeJsonString(w, p.command_line);
         try w.writeByte('}');
     }
     try w.writeAll("]}");

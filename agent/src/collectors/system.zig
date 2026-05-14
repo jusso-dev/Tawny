@@ -5,6 +5,7 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
+        .linux => collectLinux(alloc),
         else => @compileError("unsupported os"),
     };
 }
@@ -63,6 +64,56 @@ fn sysctlString(alloc: std.mem.Allocator, name: [:0]const u8) ![]u8 {
     defer alloc.free(buf);
     if (c.sysctlbyname(name.ptr, buf.ptr, &len, null, 0) != 0) return error.SysctlFailed;
     return alloc.dupe(u8, std.mem.sliceTo(buf[0..len], 0));
+}
+
+fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
+    const hostname_raw = readFileAbsoluteAlloc(alloc, "/proc/sys/kernel/hostname", 8 * 1024) catch
+        try alloc.dupe(u8, "unknown");
+    defer alloc.free(hostname_raw);
+    const kernel_raw = readFileAbsoluteAlloc(alloc, "/proc/sys/kernel/osrelease", 8 * 1024) catch
+        try alloc.dupe(u8, "unknown");
+    defer alloc.free(kernel_raw);
+
+    const mem_total_kb = readMemTotalKb(alloc) catch 0;
+    const cpu_count = std.Thread.getCpuCount() catch 0;
+
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    var w = out.writer();
+
+    try w.writeAll("{\"platform\":\"linux\",\"hostname\":");
+    try std.json.stringify(std.mem.trimRight(u8, hostname_raw, "\r\n"), .{}, w);
+    try w.writeAll(",\"kernel\":");
+    try std.json.stringify(std.mem.trimRight(u8, kernel_raw, "\r\n"), .{}, w);
+    try w.writeAll(",\"architecture\":");
+    try std.json.stringify(@tagName(builtin.target.cpu.arch), .{}, w);
+    try w.print(",\"memory_bytes\":{d},\"cpu_count\":{d}}}", .{
+        mem_total_kb * 1024,
+        cpu_count,
+    });
+
+    return out.toOwnedSlice();
+}
+
+fn readMemTotalKb(alloc: std.mem.Allocator) !u64 {
+    const raw = try readFileAbsoluteAlloc(alloc, "/proc/meminfo", 64 * 1024);
+    defer alloc.free(raw);
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "MemTotal:")) continue;
+        var parts = std.mem.tokenizeAny(u8, line, " \t");
+        _ = parts.next();
+        const value = parts.next() orelse return error.BadMemInfo;
+        return std.fmt.parseInt(u64, value, 10);
+    }
+    return error.BadMemInfo;
+}
+
+fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
+    var file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(alloc, max_bytes);
 }
 
 const COMPUTER_NAME_FORMAT = enum(u32) {

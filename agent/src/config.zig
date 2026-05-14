@@ -38,6 +38,9 @@ fn defaultConfigPath(alloc: std.mem.Allocator) ![]u8 {
         defer alloc.free(programdata);
         return std.fmt.allocPrint(alloc, "{s}\\Tawny\\config.toml", .{programdata});
     }
+    if (builtin.os.tag == .linux) {
+        return alloc.dupe(u8, "/etc/tawny/config.toml");
+    }
     return alloc.dupe(u8, "/Library/Application Support/Tawny/config.toml");
 }
 

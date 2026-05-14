@@ -35,6 +35,7 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
     const os_str = switch (builtin.os.tag) {
         .windows => "windows",
         .macos => "macos",
+        .linux => "linux",
         else => "unknown",
     };
 

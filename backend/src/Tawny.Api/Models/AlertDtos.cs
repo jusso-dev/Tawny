@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Tawny.Domain;
 
 namespace Tawny.Api.Models;
@@ -44,9 +45,17 @@ public record AlertResponse(
     long Id,
     Guid AlertRuleId,
     string RuleName,
+    TelemetryEventType? RuleEventType,
+    AlertRuleOperator RuleOperator,
+    string? RulePayloadPath,
+    string? RuleMatchValue,
     Guid AgentId,
     string Hostname,
     long TelemetryEventId,
+    TelemetryEventType EventType,
+    DateTimeOffset OccurredAt,
+    DateTimeOffset ReceivedAt,
+    JsonElement Payload,
     AlertSeverity Severity,
     AlertStatus Status,
     string Title,
