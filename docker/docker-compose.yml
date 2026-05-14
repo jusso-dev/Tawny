@@ -44,6 +44,11 @@ services:
       Tawny__Wazuh__AppName: "${TAWNY_WAZUH_APP_NAME:-tawny}"
       Tawny__Wazuh__Hostname: "${TAWNY_WAZUH_HOSTNAME:-}"
       Tawny__Wazuh__MaxMessageBytes: "${TAWNY_WAZUH_MAX_MESSAGE_BYTES:-8192}"
+      Tawny__Slack__Enabled: "${TAWNY_SLACK_ENABLED:-false}"
+      Tawny__Slack__WebhookUrl: "${TAWNY_SLACK_WEBHOOK_URL:-}"
+      Tawny__Slack__Username: "${TAWNY_SLACK_USERNAME:-Tawny}"
+      Tawny__Slack__IconEmoji: "${TAWNY_SLACK_ICON_EMOJI:-:rotating_light:}"
+      Tawny__Slack__TimeoutSeconds: "${TAWNY_SLACK_TIMEOUT_SECONDS:-5}"
     ports:
       - "${TAWNY_API_PORT:-5080}:5080"
     volumes:

@@ -8,6 +8,9 @@ public class Alert
     public long TelemetryEventId { get; set; }
     public AlertSeverity Severity { get; set; }
     public AlertStatus Status { get; set; } = AlertStatus.Open;
+    public AlertNotificationStatus SlackNotificationStatus { get; set; } = AlertNotificationStatus.NotConfigured;
+    public DateTimeOffset? SlackNotifiedAt { get; set; }
+    public string? SlackNotificationError { get; set; }
     public required string Title { get; set; }
     public string? Description { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

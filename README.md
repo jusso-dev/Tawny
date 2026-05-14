@@ -269,6 +269,17 @@ Each alert is emitted as one syslog event with a flat JSON body containing Tawny
 
 In Docker-based Wazuh deployments, check `/var/ossec/logs/ossec.log` after the first send. If Wazuh logs `Message from 'x.x.x.x' not allowed`, add that exact IP to the Wazuh syslog `<allowed-ips>` list and restart the manager container.
 
+## Slack sink
+
+Tawny can also post newly generated alerts to a Slack incoming webhook. Delivery state is stored on each alert as `not_configured`, `pending`, `sent`, or `failed` and is visible in the alerts table.
+
+```bash
+TAWNY_SLACK_ENABLED=true
+TAWNY_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+TAWNY_SLACK_USERNAME=Tawny
+TAWNY_SLACK_ICON_EMOJI=:rotating_light:
+```
+
 ## Security notes
 
 - Agent JWTs are bearer tokens. Anyone with the file on disk can impersonate the agent. Mitigate later with the OS keystore.

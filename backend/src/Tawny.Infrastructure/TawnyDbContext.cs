@@ -113,6 +113,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasKey(a => a.Id);
             e.Property(a => a.Title).HasMaxLength(255).IsRequired();
             e.Property(a => a.Description).HasColumnType("nvarchar(max)");
+            e.Property(a => a.SlackNotificationError).HasMaxLength(1024);
             e.HasOne(a => a.AlertRule)
                 .WithMany(r => r.Alerts)
                 .HasForeignKey(a => a.AlertRuleId)

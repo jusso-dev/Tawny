@@ -58,6 +58,9 @@ public record AlertResponse(
     JsonElement Payload,
     AlertSeverity Severity,
     AlertStatus Status,
+    AlertNotificationStatus SlackNotificationStatus,
+    DateTimeOffset? SlackNotifiedAt,
+    string? SlackNotificationError,
     string Title,
     string? Description,
     DateTimeOffset CreatedAt);

@@ -90,6 +90,7 @@ public class TelemetryController(
                 alerts,
                 events.ToDictionary(e => e.Id),
                 ct);
+            await db.SaveChangesAsync(ct);
         }
 
         return Accepted();

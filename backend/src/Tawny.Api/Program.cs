@@ -25,6 +25,7 @@ builder.Services.Configure<EnrollmentOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Tawny:Retention"));
 builder.Services.Configure<TelemetryBackupOptions>(builder.Configuration.GetSection("Tawny:TelemetryBackup"));
 builder.Services.Configure<WazuhSinkOptions>(builder.Configuration.GetSection("Tawny:Wazuh"));
+builder.Services.Configure<SlackSinkOptions>(builder.Configuration.GetSection("Tawny:Slack"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
@@ -37,7 +38,9 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AlertRuleEvaluator>();
 builder.Services.AddScoped<SigmaRuleImporter>();
-builder.Services.AddSingleton<IAlertSink, WazuhAlertSink>();
+builder.Services.AddSingleton<WazuhAlertSink>();
+builder.Services.AddHttpClient<SlackAlertSink>();
+builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
 builder.Services.AddRateLimiter(options =>
 {
     options.AddPolicy("agent-events", httpContext =>
