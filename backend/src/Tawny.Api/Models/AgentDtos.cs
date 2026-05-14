@@ -28,7 +28,8 @@ public record HeartbeatResponse(
     string? DownloadUrl,
     string? Sha256,
     string? RotatedJwt,
-    DateTimeOffset? JwtExpiresAt);
+    DateTimeOffset? JwtExpiresAt,
+    IReadOnlyList<ResponseActionCommand> Actions);
 
 public record AgentSummary(
     Guid Id,

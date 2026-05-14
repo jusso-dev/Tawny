@@ -9,6 +9,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<User> Users => Set<User>();
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
     public DbSet<TelemetryEvent> TelemetryEvents => Set<TelemetryEvent>();
+    public DbSet<ResponseAction> ResponseActions => Set<ResponseAction>();
     public DbSet<AgentRelease> AgentReleases => Set<AgentRelease>();
     public DbSet<AuditLog> AuditLog => Set<AuditLog>();
 
@@ -52,6 +53,18 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasIndex(t => new { t.AgentId, t.EventType, t.OccurredAt })
                 .IsDescending(false, false, true);
             e.HasIndex(t => t.ReceivedAt);
+        });
+
+        b.Entity<ResponseAction>(e =>
+        {
+            e.HasKey(a => a.Id);
+            e.Property(a => a.PayloadJson).HasColumnName("Payload").HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(a => a.ResultJson).HasColumnName("Result").HasColumnType("nvarchar(max)");
+            e.HasOne(a => a.Agent)
+                .WithMany()
+                .HasForeignKey(a => a.AgentId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(a => new { a.AgentId, a.Status, a.RequestedAt });
         });
 
         b.Entity<AgentRelease>(e =>
