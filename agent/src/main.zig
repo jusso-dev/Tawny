@@ -38,6 +38,7 @@ pub fn main() !void {
 
     var buf = buffer.Buffer.init(alloc, cfg.max_in_memory_events);
     defer buf.deinit();
+    try buf.replay(cfg.spill_path);
 
     var fim = try fim_collector.Watcher.init(alloc, cfg.fim_paths);
     defer fim.deinit();
@@ -57,6 +58,7 @@ pub fn main() !void {
             .occurred_at = std.time.timestamp(),
             .payload = payload,
         });
+        try spillIfNeeded(&buf, cfg.spill_path);
     } else |err| {
         try stderr.print("system collector failed: {s}\n", .{@errorName(err)});
     }
@@ -64,13 +66,20 @@ pub fn main() !void {
     while (true) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
-            http.heartbeat(.{
+            var heartbeat = http.heartbeat(.{
                 .agent_version = AGENT_VERSION,
                 .uptime_seconds = @intCast(std.time.timestamp() - start_time),
                 .buffer_depth = buf.len(),
             }) catch |err| {
                 try stderr.print("heartbeat failed: {s}\n", .{@errorName(err)});
+                continue;
             };
+            defer heartbeat.deinit(alloc);
+            if (heartbeat.rotated_jwt) |rotated| {
+                persistRotatedJwt(alloc, &cfg, &http, rotated) catch |err| {
+                    try stderr.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
+                };
+            }
         }
 
         if (process_timer.read() / std.time.ns_per_s >= cfg.process_interval_seconds) {
@@ -85,6 +94,7 @@ pub fn main() !void {
                 .occurred_at = std.time.timestamp(),
                 .payload = snap,
             });
+            try spillIfNeeded(&buf, cfg.spill_path);
         }
 
         if (network_timer.read() / std.time.ns_per_s >= cfg.network_interval_seconds) {
@@ -99,6 +109,7 @@ pub fn main() !void {
                 .occurred_at = std.time.timestamp(),
                 .payload = snap,
             });
+            try spillIfNeeded(&buf, cfg.spill_path);
         }
 
         if (users_timer.read() / std.time.ns_per_s >= cfg.users_interval_seconds) {
@@ -113,6 +124,7 @@ pub fn main() !void {
                 .occurred_at = std.time.timestamp(),
                 .payload = snap,
             });
+            try spillIfNeeded(&buf, cfg.spill_path);
         }
 
         if (system_timer.read() / std.time.ns_per_s >= cfg.system_interval_seconds) {
@@ -127,6 +139,7 @@ pub fn main() !void {
                 .occurred_at = std.time.timestamp(),
                 .payload = snap,
             });
+            try spillIfNeeded(&buf, cfg.spill_path);
         }
 
         if (fim_timer.read() / std.time.ns_per_s >= cfg.fim_interval_seconds) {
@@ -143,12 +156,25 @@ pub fn main() !void {
                     .occurred_at = std.time.timestamp(),
                     .payload = payload,
                 });
+                try spillIfNeeded(&buf, cfg.spill_path);
             }
+        }
+
+        if (buf.len() == 0) {
+            buf.replay(cfg.spill_path) catch |err| {
+                try stderr.print("buffer replay failed: {s}\n", .{@errorName(err)});
+            };
         }
 
         if (buf.len() > 0) {
             http.flushEvents(&buf) catch |err| {
                 try stderr.print("flush failed (will retry): {s}\n", .{@errorName(err)});
+                if (buf.shouldSpill()) {
+                    buf.spill(cfg.spill_path) catch |spill_err| {
+                        try stderr.print("buffer spill failed: {s}\n", .{@errorName(spill_err)});
+                    };
+                }
+                std.time.sleep(http.backoff_seconds * std.time.ns_per_s);
             };
         }
 
@@ -166,4 +192,21 @@ test "main module loads" {
     _ = users_collector;
     _ = system_collector;
     _ = fim_collector;
+}
+
+fn spillIfNeeded(buf: *buffer.Buffer, path: []const u8) !void {
+    if (buf.shouldSpill()) try buf.spill(path);
+}
+
+fn persistRotatedJwt(
+    alloc: std.mem.Allocator,
+    cfg: *config_mod.Config,
+    http: *transport.Client,
+    rotated: []const u8,
+) !void {
+    const owned = try alloc.dupe(u8, rotated);
+    if (cfg.agent_jwt) |old| alloc.free(old);
+    cfg.agent_jwt = owned;
+    http.jwt = owned;
+    try config_mod.save(cfg);
 }
