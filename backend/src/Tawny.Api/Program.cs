@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using FluentValidation;
 using Hangfire;
+using Hangfire.Dashboard;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -18,6 +19,7 @@ builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configurati
 builder.Services.Configure<AgentJwtOptions>(builder.Configuration.GetSection("Tawny:AgentJwt"));
 builder.Services.Configure<EnrollmentOptions>(builder.Configuration.GetSection("Tawny:Enrollment"));
 builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("Tawny:Retention"));
+builder.Services.Configure<TelemetryBackupOptions>(builder.Configuration.GetSection("Tawny:TelemetryBackup"));
 builder.Services.Configure<WebUserAuthOptions>(opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
@@ -64,7 +66,8 @@ builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<MarkStaleAgentsJob>();
 builder.Services.AddScoped<PurgeOldEventsJob>();
-builder.Services.AddScoped<CheckAgentReleasesJob>();
+builder.Services.AddScoped<BackupTelemetryJob>();
+builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
 builder.Services.AddHangfire(cfg => cfg
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
@@ -90,12 +93,17 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHangfireDashboard("/hangfire");
+app.MapHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = [new HangfireWebUserAuthorizationFilter()],
+});
 
 RecurringJob.AddOrUpdate<MarkStaleAgentsJob>(
     "mark-stale-agents", j => j.ExecuteAsync(default), Cron.Minutely);
 RecurringJob.AddOrUpdate<PurgeOldEventsJob>(
     "purge-old-events", j => j.ExecuteAsync(default), "0 2 * * *");
+RecurringJob.AddOrUpdate<BackupTelemetryJob>(
+    "backup-telemetry", j => j.ExecuteAsync(default), "0 3 * * *");
 RecurringJob.AddOrUpdate<CheckAgentReleasesJob>(
     "check-agent-releases", j => j.ExecuteAsync(default), Cron.Hourly);
 
