@@ -1,0 +1,105 @@
+name: security audit
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: backend vulnerable package check
+        working-directory: backend
+        run: |
+          dotnet restore
+          dotnet list package --vulnerable --include-transitive > ../backend-vulnerabilities.txt || true
+
+      - name: web vulnerable package check
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --json > ../web-audit.json || true
+
+      - name: zig dependency check
+        run: |
+          if grep -q ".dependencies = .{}" agent/build.zig.zon; then
+            echo "No third-party Zig dependencies are declared." > zig-audit.txt
+          else
+            echo "Review agent/build.zig.zon dependencies manually; no Zig vulnerability database is configured." > zig-audit.txt
+          fi
+
+      - name: prepare issue body
+        id: findings
+        run: |
+          backend_found=false
+          web_found=false
+          zig_found=false
+
+          if grep -q "has the following vulnerable packages" backend-vulnerabilities.txt; then
+            backend_found=true
+          fi
+
+          node -e "const fs = require('fs'); const audit = JSON.parse(fs.readFileSync('web-audit.json', 'utf8')); fs.writeFileSync('web-audit-count.txt', String(Object.keys(audit.vulnerabilities || {}).length));"
+          if [ "$(cat web-audit-count.txt)" != "0" ]; then
+            web_found=true
+          fi
+
+          if ! grep -q "No third-party Zig dependencies" zig-audit.txt; then
+            zig_found=true
+          fi
+
+          if [ "$backend_found" = "false" ] && [ "$web_found" = "false" ] && [ "$zig_found" = "false" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "Weekly dependency audit found actionable items."
+            echo
+            echo "## Backend"
+            echo '```'
+            cat backend-vulnerabilities.txt
+            echo '```'
+            echo
+            echo "## Web"
+            echo '```json'
+            cat web-audit.json
+            echo '```'
+            echo
+            echo "## Zig"
+            echo '```'
+            cat zig-audit.txt
+            echo '```'
+          } > audit-issue.md
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: open issue for findings
+        if: steps.findings.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Weekly dependency audit findings - $(date -u +%Y-%m-%d)" \
+            --body-file audit-issue.md

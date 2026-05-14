@@ -34,9 +34,55 @@ jobs:
           name: agent-${{ matrix.target.name }}
           path: agent/zig-out/bin/tawny-agent-*
 
+  build-api-image:
+    name: publish api image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/src/Tawny.Api/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/jusso-dev/tawny-api:${{ github.ref_name }}
+            ghcr.io/jusso-dev/tawny-api:latest
+
+  build-web-image:
+    name: publish web image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/jusso-dev/tawny-web:${{ github.ref_name }}
+            ghcr.io/jusso-dev/tawny-web:latest
+
   release:
     name: publish release
-    needs: build-agent
+    needs: [build-agent, build-api-image, build-web-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write

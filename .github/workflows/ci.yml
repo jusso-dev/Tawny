@@ -9,6 +9,25 @@ jobs:
   backend:
     name: backend (.NET 10)
     runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "DevPassw0rd!"
+          MSSQL_PID: "Developer"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'DevPassw0rd!' -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+    env:
+      ConnectionStrings__Default: "Server=localhost,1433;Database=TawnyCi;User Id=sa;Password=DevPassw0rd!;TrustServerCertificate=True;Encrypt=False"
+      Tawny__AgentJwt__SigningKeyPem: ""
+      Tawny__AgentJwt__RequireConfiguredSigningKey: "false"
     defaults:
       run:
         working-directory: backend
@@ -19,6 +38,10 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet restore
       - run: dotnet build --configuration Release --no-restore
+      - name: apply migrations to SQL Server
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.0
+          ~/.dotnet/tools/dotnet-ef database update --project src/Tawny.Infrastructure --startup-project src/Tawny.Api
       - run: dotnet test --configuration Release --no-build --verbosity normal
 
   web:
