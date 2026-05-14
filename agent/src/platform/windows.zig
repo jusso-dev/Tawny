@@ -4,6 +4,7 @@ pub const ProcessInfo = struct {
     pid: u32,
     ppid: u32,
     name: []u8,
+    command_line: []u8,
 };
 
 const TH32CS_SNAPPROCESS: u32 = 0x00000002;
@@ -37,7 +38,10 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
 
     var list = std.ArrayList(ProcessInfo).init(alloc);
     errdefer {
-        for (list.items) |p| alloc.free(p.name);
+        for (list.items) |p| {
+            alloc.free(p.name);
+            alloc.free(p.command_line);
+        }
         list.deinit();
     }
 
@@ -45,10 +49,14 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     while (true) {
         const wide_name = std.mem.sliceTo(&entry.szExeFile, 0);
         const name = try std.unicode.utf16LeToUtf8Alloc(alloc, wide_name);
+        errdefer alloc.free(name);
+        const command_line = try alloc.dupe(u8, name);
+        errdefer alloc.free(command_line);
         try list.append(.{
             .pid = entry.th32ProcessID,
             .ppid = entry.th32ParentProcessID,
             .name = name,
+            .command_line = command_line,
         });
         if (Process32NextW(snap, &entry) == 0) break;
     }

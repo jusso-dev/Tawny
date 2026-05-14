@@ -28,6 +28,20 @@ type AlertRule = {
   updated_at: string;
 };
 
+type Alert = {
+  id: number;
+  alert_rule_id: string;
+  rule_name: string;
+  agent_id: string;
+  hostname: string;
+  telemetry_event_id: number;
+  severity: "low" | "medium" | "high" | "critical";
+  status: "open" | "acknowledged" | "resolved";
+  title: string;
+  description: string | null;
+  created_at: string;
+};
+
 const severityTone: Record<AlertRule["severity"], string> = {
   low: "bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)] ring-[color:var(--color-border)]",
   medium: "bg-[color:var(--color-accent)]/12 text-[color:var(--color-accent)] ring-[color:var(--color-accent)]/25",
@@ -35,13 +49,20 @@ const severityTone: Record<AlertRule["severity"], string> = {
   critical: "bg-[color:var(--color-danger)]/12 text-[color:var(--color-danger)] ring-[color:var(--color-danger)]/25",
 };
 
+const statusTone: Record<Alert["status"], string> = {
+  open: "bg-[color:var(--color-danger)]/12 text-[color:var(--color-danger)] ring-[color:var(--color-danger)]/25",
+  acknowledged: "bg-[color:var(--color-warning)]/12 text-[color:var(--color-warning)] ring-[color:var(--color-warning)]/25",
+  resolved: "bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)] ring-[color:var(--color-border)]",
+};
+
 export default async function DetectionsPage() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) redirect("/login");
 
   const role = authRole(session.user);
-  const [rules, agents] = await Promise.all([
+  const [rules, alerts, agents] = await Promise.all([
     apiGet<AlertRule[]>("/api/alert-rules", session.user.id, role),
+    apiGet<Alert[]>("/api/alerts?limit=20", session.user.id, role),
     apiGet<Agent[]>("/api/agents", session.user.id, role),
   ]);
 
@@ -73,6 +94,76 @@ export default async function DetectionsPage() {
             </div>
           </section>
         </div>
+
+        <section className="mt-8">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold uppercase text-[color:var(--color-muted-foreground)]">
+                Recent alerts
+              </h2>
+              <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
+                Latest rule matches from live telemetry.
+              </p>
+            </div>
+            <span className="text-sm text-[color:var(--color-muted-foreground)]">{alerts.length} shown</span>
+          </div>
+
+          <div className="mt-3 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+            <table className="w-full text-sm">
+              <thead className="bg-[color:var(--color-muted)] text-left">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Alert</th>
+                  <th className="px-4 py-3 font-medium">Agent</th>
+                  <th className="px-4 py-3 font-medium">Severity</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Event</th>
+                  <th className="px-4 py-3 font-medium">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
+                      No alerts have fired yet.
+                    </td>
+                  </tr>
+                )}
+                {alerts.map((alert) => (
+                  <tr key={alert.id} className="border-t border-[color:var(--color-border)] align-top">
+                    <td className="max-w-md px-4 py-3">
+                      <p className="font-medium">{alert.title}</p>
+                      <p className="mt-1 text-xs text-[color:var(--color-muted-foreground)]">
+                        {alert.description ?? alert.rule_name}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p>{alert.hostname}</p>
+                      <p className="mt-1 font-mono text-xs text-[color:var(--color-muted-foreground)]">
+                        {alert.agent_id.slice(0, 8)}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ${severityTone[alert.severity]}`}>
+                        {alert.severity}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ${statusTone[alert.status]}`}>
+                        {alert.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-[color:var(--color-muted-foreground)]">
+                      #{alert.telemetry_event_id}
+                    </td>
+                    <td className="px-4 py-3 text-[color:var(--color-muted-foreground)]">
+                      {new Date(alert.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <section className="mt-8">
           <div className="flex items-center justify-between gap-3">

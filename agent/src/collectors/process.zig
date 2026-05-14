@@ -13,7 +13,10 @@ const platform = switch (builtin.os.tag) {
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     const procs = try platform.enumerateProcesses(alloc);
     defer {
-        for (procs) |p| alloc.free(p.name);
+        for (procs) |p| {
+            alloc.free(p.name);
+            alloc.free(p.command_line);
+        }
         alloc.free(procs);
     }
 
@@ -28,6 +31,8 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
             \\{{"pid":{d},"ppid":{d},"name":
         , .{ p.pid, p.ppid });
         try writeJsonString(w, p.name);
+        try w.writeAll(",\"command_line\":");
+        try writeJsonString(w, p.command_line);
         try w.writeByte('}');
     }
     try w.writeAll("]}");
