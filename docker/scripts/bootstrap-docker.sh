@@ -12,6 +12,7 @@ admin_password="${BOOTSTRAP_ADMIN_PASSWORD:-ChangeMe123!}"
 admin_name="${BOOTSTRAP_ADMIN_NAME:-Tawny Admin}"
 build_arg="--build"
 with_synthetic_agent="false"
+with_docker_agent="false"
 
 usage() {
   cat <<'EOF'
@@ -32,6 +33,7 @@ Options:
   --platform PLATFORM       Docker platform, e.g. linux/amd64 for Apple Silicon SQL Server
   --no-build                Do not rebuild api/web images
   --with-synthetic-agent    Start the Docker synthetic telemetry agent after bootstrap
+  --with-docker-agent       Start the real Tawny Linux agent container after bootstrap
   -h, --help                Show this help
 
 Examples:
@@ -69,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-synthetic-agent)
       with_synthetic_agent="true"
+      shift
+      ;;
+    --with-docker-agent)
+      with_docker_agent="true"
       shift
       ;;
     -h|--help)
@@ -213,6 +219,10 @@ compose_telemetry() {
   docker compose -p "$project_name" --env-file "$env_file" -f "$docker_dir/docker-compose.yml" --profile telemetry "$@"
 }
 
+compose_agent() {
+  docker compose -p "$project_name" --env-file "$env_file" -f "$docker_dir/docker-compose.yml" --profile agent "$@"
+}
+
 need_command docker
 need_command openssl
 need_command curl
@@ -274,6 +284,15 @@ if [[ "$with_synthetic_agent" == "true" ]]; then
   compose_telemetry up -d synthetic-agent
 fi
 
+if [[ "$with_docker_agent" == "true" ]]; then
+  log "Starting Docker Linux agent"
+  if [[ -n "$build_arg" ]]; then
+    compose_agent up -d "$build_arg" docker-agent
+  else
+    compose_agent up -d docker-agent
+  fi
+fi
+
 cat <<EOF
 
 Tawny is running.
@@ -289,5 +308,6 @@ Admin login:
 Useful commands:
   cd "$docker_dir" && docker compose -p "$project_name" logs -f api web db
   cd "$docker_dir" && docker compose -p "$project_name" --profile telemetry logs -f synthetic-agent
+  cd "$docker_dir" && docker compose -p "$project_name" --profile agent logs -f docker-agent
   cd "$docker_dir" && docker compose -p "$project_name" down
 EOF
