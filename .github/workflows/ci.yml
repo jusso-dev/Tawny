@@ -77,6 +77,8 @@ jobs:
         with:
           version: 0.14.0
       - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall
+      - run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSmall
+      - run: zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
       - run: zig build test

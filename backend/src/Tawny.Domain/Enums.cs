@@ -12,6 +12,7 @@ public enum AgentPlatform
 {
     Windows = 0,
     Macos = 1,
+    Linux = 2,
 }
 
 public enum AgentArchitecture

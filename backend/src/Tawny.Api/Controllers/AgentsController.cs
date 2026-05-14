@@ -153,6 +153,7 @@ public class AgentsController(
     {
         "windows" => AgentPlatform.Windows,
         "macos" => AgentPlatform.Macos,
+        "linux" => AgentPlatform.Linux,
         _ => throw new ArgumentException($"Unsupported os: {os}"),
     };
 

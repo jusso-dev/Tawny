@@ -85,5 +85,32 @@ services:
       - synthetic-agent-state:/state
     restart: unless-stopped
 
+  docker-agent:
+    build:
+      context: ../agent
+      dockerfile: Dockerfile
+    container_name: tawny-docker-agent
+    hostname: "${TAWNY_DOCKER_AGENT_HOSTNAME:-tawny-docker-agent}"
+    profiles:
+      - agent
+    depends_on:
+      - api
+    environment:
+      TAWNY_API_URL: "http://api:5080"
+      TAWNY_AGENT_BACKEND_URL: "http://api:5080"
+      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
+      TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS:-60}"
+      TAWNY_AGENT_PROCESS_INTERVAL_SECONDS: "${TAWNY_AGENT_PROCESS_INTERVAL_SECONDS:-30}"
+      TAWNY_AGENT_NETWORK_INTERVAL_SECONDS: "${TAWNY_AGENT_NETWORK_INTERVAL_SECONDS:-30}"
+      TAWNY_AGENT_USERS_INTERVAL_SECONDS: "${TAWNY_AGENT_USERS_INTERVAL_SECONDS:-300}"
+      TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS: "${TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS:-3600}"
+      TAWNY_AGENT_FIM_INTERVAL_SECONDS: "${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-300}"
+    volumes:
+      - docker-agent-config:/etc/tawny
+      - docker-agent-state:/var/lib/tawny
+    restart: unless-stopped
+
 volumes:
   synthetic-agent-state:
+  docker-agent-config:
+  docker-agent-state:
