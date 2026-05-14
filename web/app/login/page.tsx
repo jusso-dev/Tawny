@@ -35,7 +35,7 @@ export default function LoginPage() {
         src="/logo.jpg"
         alt="Tawny EDR"
         width={96}
-        height={96}
+        height={97}
         priority
         className="mb-6 rounded-md"
       />
