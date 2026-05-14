@@ -10,7 +10,11 @@ pub const Config = struct {
     heartbeat_interval_seconds: u32 = 60,
     process_interval_seconds: u32 = 30,
     network_interval_seconds: u32 = 30,
+    users_interval_seconds: u32 = 300,
+    system_interval_seconds: u32 = 3600,
+    fim_interval_seconds: u32 = 300,
     max_in_memory_events: usize = 1000,
+    fim_paths: [][]u8 = &.{},
     config_path: []u8,
 
     pub fn deinit(self: *Config) void {
@@ -19,6 +23,8 @@ pub const Config = struct {
         if (self.enrollment_token) |t| self.allocator.free(t);
         if (self.agent_id) |t| self.allocator.free(t);
         if (self.agent_jwt) |t| self.allocator.free(t);
+        for (self.fim_paths) |p| self.allocator.free(p);
+        if (self.fim_paths.len > 0) self.allocator.free(self.fim_paths);
     }
 };
 
@@ -77,6 +83,18 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             cfg.process_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "network_interval_seconds")) {
             cfg.network_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "users_interval_seconds")) {
+            cfg.users_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "system_interval_seconds")) {
+            cfg.system_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "fim_interval_seconds")) {
+            cfg.fim_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "max_in_memory_events")) {
+            cfg.max_in_memory_events = try std.fmt.parseInt(usize, val, 10);
+        } else if (std.mem.eql(u8, key, "fim_path")) {
+            try appendFimPath(&cfg, val);
+        } else if (std.mem.eql(u8, key, "fim_paths")) {
+            try appendFimPaths(&cfg, val);
         }
     }
 
@@ -102,12 +120,59 @@ pub fn save(cfg: *const Config) !void {
         \\heartbeat_interval_seconds = {d}
         \\process_interval_seconds = {d}
         \\network_interval_seconds = {d}
-        \\
+        \\users_interval_seconds = {d}
+        \\system_interval_seconds = {d}
+        \\fim_interval_seconds = {d}
+        \\max_in_memory_events = {d}
+        \\fim_paths = [
     , .{
         cfg.heartbeat_interval_seconds,
         cfg.process_interval_seconds,
         cfg.network_interval_seconds,
+        cfg.users_interval_seconds,
+        cfg.system_interval_seconds,
+        cfg.fim_interval_seconds,
+        cfg.max_in_memory_events,
     });
+
+    for (cfg.fim_paths, 0..) |path, i| {
+        if (i > 0) try w.writeAll(", ");
+        try std.json.stringify(path, .{}, w);
+    }
+    try w.writeAll("]\n");
+}
+
+fn appendFimPaths(cfg: *Config, raw: []const u8) !void {
+    var iter = std.mem.splitScalar(u8, raw, ',');
+    while (iter.next()) |part| {
+        const trimmed = std.mem.trim(u8, part, " \t\r\n[]\"");
+        if (trimmed.len > 0) try appendFimPath(cfg, trimmed);
+    }
+}
+
+fn appendFimPath(cfg: *Config, path: []const u8) !void {
+    var next = try cfg.allocator.alloc([]u8, cfg.fim_paths.len + 1);
+    for (cfg.fim_paths, 0..) |existing, i| next[i] = existing;
+    next[cfg.fim_paths.len] = try cfg.allocator.dupe(u8, path);
+    if (cfg.fim_paths.len > 0) cfg.allocator.free(cfg.fim_paths);
+    cfg.fim_paths = next;
+}
+
+test "fim paths parser accepts arrays and repeated paths" {
+    var cfg = Config{
+        .allocator = std.testing.allocator,
+        .backend_url = try std.testing.allocator.dupe(u8, "http://localhost:5080"),
+        .config_path = try std.testing.allocator.dupe(u8, "config.toml"),
+    };
+    defer cfg.deinit();
+
+    try appendFimPaths(&cfg, "\"/etc/hosts\", \"/tmp/a\"");
+    try appendFimPath(&cfg, "/var/log/system.log");
+
+    try std.testing.expectEqual(@as(usize, 3), cfg.fim_paths.len);
+    try std.testing.expectEqualStrings("/etc/hosts", cfg.fim_paths[0]);
+    try std.testing.expectEqualStrings("/tmp/a", cfg.fim_paths[1]);
+    try std.testing.expectEqualStrings("/var/log/system.log", cfg.fim_paths[2]);
 }
 
 test "default config path" {

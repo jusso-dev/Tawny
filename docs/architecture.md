@@ -10,7 +10,7 @@ A single static binary (~hundreds of KB) per platform. Cross-compiled from one m
 2. **Collect** snapshots at fixed intervals from a small set of OS sources (processes, network connections, logged-in users, system info, file integrity).
 3. **Ship** batches over HTTPS, buffering locally when the backend is unreachable.
 
-Platform-specific code lives in `agent/src/platform/` and is selected at compile time. Collectors call into the platform module; the rest of the agent is OS-agnostic.
+Platform-specific process code lives in `agent/src/platform/` and is selected at compile time. Collector modules live in `agent/src/collectors/`; each module keeps its own OS-specific syscall or command boundary. The macOS network collector intentionally starts with `lsof -i -P -n` as an MVP path and should move to a native `sysctl` implementation later.
 
 ### .NET 10 backend
 

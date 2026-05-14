@@ -79,6 +79,16 @@ Auth: Agent JWT. Max body 1 MB.
 
 Response: `202 Accepted`, empty body. `413` if payload exceeds 1 MB.
 
+Current agent event types:
+
+| Type | Payload |
+| --- | --- |
+| `process_snapshot` | `{ "processes": [{ "pid": 123, "ppid": 1, "name": "..." }] }` |
+| `network_snapshot` | Windows uses `iphlpapi` table snapshots; macOS currently emits `lsof -i -P -n` rows under `{ "source": "lsof", "connections": [...] }`. |
+| `user_session` | Windows uses WTS sessions; macOS uses `utmpx`. Payload shape is `{ "source": "...", "sessions": [...] }`. |
+| `system_info` | Hostname, platform, OS/kernel version, architecture, CPU, and memory facts. Emitted at startup and hourly. |
+| `file_integrity` | `{ "path": "...", "old_sha256": "...", "new_sha256": "...", "size_bytes": 123, "exists": true }` on hash or existence changes for configured `fim_paths`. |
+
 ## Dashboard endpoints
 
 ### GET `/api/agents`
