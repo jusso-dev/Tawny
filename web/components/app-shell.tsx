@@ -41,7 +41,7 @@ export function AppShell({ agents = [], active, children }: AppShellProps) {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
           <div className="flex min-w-0 items-center gap-4">
             <Link href="/" className="flex shrink-0 items-center gap-2" aria-label="Tawny dashboard">
-              <Image src="/logo.jpg" alt="" width={32} height={32} className="rounded" />
+              <Image src="/logo-mark.png" alt="" width={32} height={32} className="h-8 w-8 object-contain" />
               <span className="font-semibold tracking-tight">Tawny</span>
             </Link>
             <nav className="hidden items-center gap-1 md:flex" aria-label="Primary navigation">

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/logo.jpg" alt="Tawny EDR" width="320" />
+  <img src="web/public/logo.png" alt="Tawny EDR" width="320" />
 </p>
 
 # Tawny
