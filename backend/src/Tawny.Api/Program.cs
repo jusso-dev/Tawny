@@ -38,6 +38,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AlertRuleEvaluator>();
 builder.Services.AddScoped<SigmaRuleImporter>();
+builder.Services.AddScoped<IocRuleImporter>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();

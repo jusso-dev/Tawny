@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
 import { AppShell, PageHeader } from "@/components/app-shell";
+import { IocImportPanel } from "./ioc-import-panel";
 import { SigmaImportPanel } from "./sigma-import-panel";
 
 type Agent = {
@@ -15,7 +16,7 @@ type Agent = {
 type AlertRule = {
   id: string;
   name: string;
-  format: "tawny_predicate" | "sigma";
+  format: "tawny_predicate" | "sigma" | "ioc";
   external_id: string | null;
   description: string | null;
   event_type: string | null;
@@ -50,12 +51,16 @@ export default async function DetectionsPage() {
       <main className="mx-auto max-w-6xl px-6 py-8">
         <PageHeader
           eyebrow="Detections"
-          title="Sigma rule imports"
-          description="Import a focused Sigma subset, review compiled predicates, and keep the original YAML attached to each detection."
+          title="Detection imports"
+          description="Import Sigma rules and threat intel IoCs, review compiled predicates, and hunt across enrolled endpoints."
         />
 
-        <div className="mt-6 grid gap-5 lg:grid-cols-[1.08fr_0.92fr]">
+        <div className="mt-6 grid gap-5 xl:grid-cols-2">
           <SigmaImportPanel />
+          <IocImportPanel />
+        </div>
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <section className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
             <div className="border-b border-[color:var(--color-border)] px-5 py-4">
               <h2 className="font-semibold">Accepted Sigma subset</h2>
@@ -70,6 +75,21 @@ export default async function DetectionsPage() {
               <SubsetItem label="Values" value="One scalar value or a YAML list of scalar values" />
               <SubsetItem label="Modifiers" value="contains, exists, gt, lt" />
               <SubsetItem label="Common fields" value="processes.name, processes.command_line, connections.remote_address, path, username" />
+            </div>
+          </section>
+          <section className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+            <div className="border-b border-[color:var(--color-border)] px-5 py-4">
+              <h2 className="font-semibold">Accepted IoC sources</h2>
+              <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
+                Common advisory formats compile into normal Tawny alert rules.
+              </p>
+            </div>
+            <div className="grid gap-3 p-5 text-sm">
+              <SubsetItem label="Formats" value="STIX 2.1 indicators, OpenIOC XML, CSV, raw advisory text" />
+              <SubsetItem label="File hashes" value="SHA-256 and SHA-1 match file integrity telemetry" />
+              <SubsetItem label="Network" value="IPv4 and IPv6 match remote connection addresses" />
+              <SubsetItem label="Domains" value="Domain IoCs match process command lines until DNS telemetry is added" />
+              <SubsetItem label="Skipped" value="MD5 is reported but not imported because agents do not emit MD5" />
             </div>
           </section>
         </div>
@@ -111,7 +131,7 @@ export default async function DetectionsPage() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="rounded-full bg-[color:var(--color-muted)] px-2.5 py-1 text-xs font-medium uppercase text-[color:var(--color-muted-foreground)]">
-                        {rule.format === "sigma" ? "Sigma" : "Tawny"}
+                        {rule.format === "sigma" ? "Sigma" : rule.format === "ioc" ? "IoC" : "Tawny"}
                       </span>
                     </td>
                     <td className="px-4 py-3">

@@ -379,6 +379,151 @@ level: high
     }
 
     [Fact]
+    public async Task ImportedStixIocs_CreateRulesAndAlertForMatchingNetworkTelemetry()
+    {
+        await factory.ResetDatabaseAsync();
+        const string stix = """
+{
+  "type": "bundle",
+  "id": "bundle--9b1ad7d3-c5f3-4b2c-91c8-cb5a8912e7e1",
+  "objects": [
+    {
+      "type": "indicator",
+      "spec_version": "2.1",
+      "id": "indicator--9fe9d1b7-27e6-4a78-836f-3358e08b1f0d",
+      "name": "Advisory IoCs",
+      "pattern_type": "stix",
+      "pattern": "[ipv4-addr:value = '203.0.113.44'] OR [domain-name:value = 'payload.example.com'] OR [file:hashes.'SHA-256' = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08']"
+    }
+  ]
+}
+""";
+
+        var client = factory.CreateClient();
+        using var importReq = new HttpRequestMessage(HttpMethod.Post, "/api/alert-rules/iocs")
+        {
+            Content = JsonContent.Create(new
+            {
+                definition = stix,
+                source_format = "stix",
+            }),
+        };
+        importReq.AddWebUserSignature("/api/alert-rules/iocs");
+        var importRes = await client.SendAsync(importReq);
+        importRes.EnsureSuccessStatusCode();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            var rules = await db.AlertRules.OrderBy(r => r.PayloadPath).ToListAsync();
+            rules.Should().HaveCount(3);
+            rules.Should().OnlyContain(r => r.Format == AlertRuleFormat.Ioc);
+            rules.Should().Contain(r =>
+                r.EventType == TelemetryEventType.NetworkSnapshot &&
+                r.PayloadPath == "connections.remote_address" &&
+                r.MatchValue == "203.0.113.44");
+            rules.Should().Contain(r =>
+                r.EventType == TelemetryEventType.FileIntegrity &&
+                r.PayloadPath == "new_sha256");
+            rules.Should().Contain(r =>
+                r.EventType == TelemetryEventType.ProcessSnapshot &&
+                r.PayloadPath == "processes.command_line" &&
+                r.MatchValue == "payload.example.com");
+        }
+
+        var enrollmentToken = TokenHashing.NewToken();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.EnrollmentTokens.Add(new EnrollmentToken
+            {
+                Id = Guid.NewGuid(),
+                TenantId = TenantDefaults.DefaultTenantId,
+                TokenHash = TokenHashing.Hash(enrollmentToken),
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                CreatedByUserId = Guid.Empty,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var enroll = await client.PostAsJsonAsync("/api/agents/enroll", new
+        {
+            enrollment_token = enrollmentToken,
+            hostname = "ioc-host-01",
+            os = "macos",
+            os_version = "14",
+            arch = "arm64",
+            agent_version = "0.1.0",
+        });
+        enroll.EnsureSuccessStatusCode();
+        var enrollBody = await enroll.Content.ReadFromJsonAsync<EnrollBody>();
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", enrollBody!.Jwt);
+        var events = await client.PostAsJsonAsync("/api/agents/events", new
+        {
+            events = new[]
+            {
+                new
+                {
+                    type = "network_snapshot",
+                    occurred_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new
+                    {
+                        connections = new[]
+                        {
+                            new { remote_address = "203.0.113.44", remote_port = 443 },
+                        },
+                    },
+                },
+            },
+        });
+        events.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var alert = await verifyDb.Alerts.SingleAsync();
+        alert.Title.Should().Contain("IoC IP");
+        alert.Severity.Should().Be(AlertSeverity.High);
+    }
+
+    [Fact]
+    public async Task ImportRawIocs_ReportsSkippedMd5ButImportsSha1()
+    {
+        await factory.ResetDatabaseAsync();
+        const string raw = """
+Hash list from advisory:
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+""";
+
+        var client = factory.CreateClient();
+        using var importReq = new HttpRequestMessage(HttpMethod.Post, "/api/alert-rules/iocs")
+        {
+            Content = JsonContent.Create(new
+            {
+                definition = raw,
+                source_format = "raw",
+                severity = "critical",
+            }),
+        };
+        importReq.AddWebUserSignature("/api/alert-rules/iocs");
+
+        var importRes = await client.SendAsync(importReq);
+
+        importRes.EnsureSuccessStatusCode();
+        var body = await importRes.Content.ReadFromJsonAsync<IocImportBody>();
+        body!.Rules.Should().ContainSingle();
+        body.SkippedIndicators.Should().ContainSingle(s => s.Contains("MD5"));
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var rule = await verifyDb.AlertRules.SingleAsync();
+        rule.PayloadPath.Should().Be("new_sha1");
+        rule.Severity.Should().Be(AlertSeverity.Critical);
+    }
+
+    [Fact]
     public async Task ResponseActions_DispatchOnHeartbeatAndAcceptResult()
     {
         await factory.ResetDatabaseAsync();
@@ -489,6 +634,14 @@ level: high
 
     private sealed record HeartbeatBody(
         [property: JsonPropertyName("actions")] ResponseActionCommandBody[] Actions);
+
+    private sealed record IocImportBody(
+        [property: JsonPropertyName("rules")] AlertRuleBody[] Rules,
+        [property: JsonPropertyName("skipped_indicators")] string[] SkippedIndicators);
+
+    private sealed record AlertRuleBody(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("name")] string Name);
 
     private sealed record ResponseActionCommandBody(
         [property: JsonPropertyName("id")] Guid Id,

@@ -73,6 +73,7 @@ public enum AlertRuleFormat
 {
     TawnyPredicate = 0,
     Sigma = 1,
+    Ioc = 2,
 }
 
 public enum ResponseActionType

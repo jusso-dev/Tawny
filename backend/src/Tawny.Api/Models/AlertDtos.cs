@@ -41,6 +41,16 @@ public record ImportSigmaRuleRequest(
     string RuleYaml,
     bool? IsEnabled);
 
+public record ImportIocRulesRequest(
+    string Definition,
+    string? SourceFormat,
+    AlertSeverity? Severity,
+    bool? IsEnabled);
+
+public record ImportIocRulesResponse(
+    IReadOnlyList<AlertRuleResponse> Rules,
+    IReadOnlyList<string> SkippedIndicators);
+
 public record AlertResponse(
     long Id,
     Guid AlertRuleId,

@@ -16,7 +16,8 @@ namespace Tawny.Api.Controllers;
 public class AlertRulesController(
     TawnyDbContext db,
     AuditLogger audit,
-    SigmaRuleImporter sigma) : ControllerBase
+    SigmaRuleImporter sigma,
+    IocRuleImporter iocs) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<AlertRuleResponse>>> List(CancellationToken ct)
@@ -96,6 +97,43 @@ public class AlertRulesController(
         await db.SaveChangesAsync(ct);
 
         return CreatedAtAction(nameof(List), new { id = rule.Id }, ToResponse(rule));
+    }
+
+    [HttpPost("iocs")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    public async Task<ActionResult<ImportIocRulesResponse>> ImportIocs(
+        ImportIocRulesRequest req,
+        CancellationToken ct)
+    {
+        IocImportResult imported;
+        try
+        {
+            imported = iocs.Import(
+                req.Definition,
+                req.SourceFormat,
+                req.Severity ?? AlertSeverity.High,
+                req.IsEnabled ?? true,
+                DateTimeOffset.UtcNow);
+        }
+        catch (IocRuleException ex)
+        {
+            return Problem(statusCode: 400, title: ex.Message);
+        }
+
+        db.AlertRules.AddRange(imported.Rules);
+        audit.Add(User, "alert_rule.import_iocs", null, new
+        {
+            Count = imported.Rules.Count,
+            SourceFormat = req.SourceFormat,
+            Severity = req.Severity ?? AlertSeverity.High,
+            SkippedCount = imported.SkippedIndicators.Count,
+        });
+        await db.SaveChangesAsync(ct);
+
+        return CreatedAtAction(
+            nameof(List),
+            new { count = imported.Rules.Count },
+            new ImportIocRulesResponse(imported.Rules.Select(ToResponse).ToList(), imported.SkippedIndicators));
     }
 
     [HttpPut("{id:guid}")]

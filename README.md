@@ -254,6 +254,14 @@ Post-MVP: Linux agent (eBPF), kernel-level collection, broader Sigma coverage, r
 
 Alert rules are moving toward Sigma-compatible detection-as-code instead of a custom Tawny rule language. The current importer accepts a focused Sigma subset: `title`, `id`, `description`, `logsource`, one named `detection` selection, a single-selection `condition`, and `level`. Tawny compiles that into its event matcher and keeps the original Sigma YAML with the rule so the supported subset can grow without inventing a parallel format.
 
+The detections page also imports common advisory IoCs from STIX 2.1 indicator bundles, OpenIOC XML, CSV, and raw text. Tawny turns supported indicators into normal alert rules so enrolled agents can hunt for:
+
+- SHA-256 and SHA-1 file hashes in file integrity telemetry.
+- IPv4 and IPv6 addresses in network connection telemetry.
+- Domains in process command-line telemetry, which catches common URL/download usage until first-class DNS telemetry is added.
+
+MD5 values are reported as skipped because the agents do not currently emit MD5 file hashes.
+
 ## Wazuh sink
 
 Tawny can forward generated alerts to Wazuh over syslog. Enable the sink by pointing the API at a Wazuh manager or syslog listener:
