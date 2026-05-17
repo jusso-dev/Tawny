@@ -3,7 +3,7 @@ const std = @import("std");
 pub const Event = struct {
     event_type: []const u8,
     occurred_at: i64,
-    /// Caller-owned JSON payload (object literal). Buffer takes ownership via dupe.
+    /// Caller-owned event type and JSON payload. Buffer takes ownership via dupe.
     payload: []const u8,
 };
 
@@ -34,16 +34,21 @@ pub const Buffer = struct {
     }
 
     pub fn push(self: *Buffer, ev: Event) !void {
+        const owned_event_type = try self.allocator.dupe(u8, ev.event_type);
+        errdefer self.allocator.free(owned_event_type);
         const owned = try self.allocator.dupe(u8, ev.payload);
         try self.list.append(.{
-            .event_type = ev.event_type,
+            .event_type = owned_event_type,
             .occurred_at = ev.occurred_at,
             .payload = owned,
         });
     }
 
     pub fn clear(self: *Buffer) void {
-        for (self.list.items) |ev| self.allocator.free(ev.payload);
+        for (self.list.items) |ev| {
+            self.allocator.free(ev.event_type);
+            self.allocator.free(ev.payload);
+        }
         self.list.clearRetainingCapacity();
     }
 
@@ -136,4 +141,18 @@ test "buffer spills and replays" {
     try replayed.replay(spill_path);
     try std.testing.expectEqual(@as(usize, 3), replayed.len());
     try std.testing.expectEqual(@as(i64, 1), replayed.items()[0].occurred_at);
+    try std.testing.expectEqualStrings("x", replayed.items()[0].event_type);
+}
+
+test "buffer owns pushed event type" {
+    var b = Buffer.init(std.testing.allocator, 4);
+    defer b.deinit();
+
+    const event_type = try std.testing.allocator.dupe(u8, "process_snapshot");
+    defer std.testing.allocator.free(event_type);
+
+    try b.push(.{ .event_type = event_type, .occurred_at = 42, .payload = "{}" });
+    event_type[0] = 'x';
+
+    try std.testing.expectEqualStrings("process_snapshot", b.items()[0].event_type);
 }
