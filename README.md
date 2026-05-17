@@ -6,9 +6,9 @@
 
 > Quiet eyes on every endpoint.
 
-Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
+Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, evaluates alert rules, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
 
-The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, Wazuh alert forwarding, and a UI that looks like a product.
+The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, detection imports, Wazuh and Slack forwarding, and a UI that looks like a product.
 
 ## Screenshots
 
@@ -118,6 +118,21 @@ The tawny frogmouth is also small, unassuming, and frequently underestimated. Th
 
 See [docs/architecture.md](docs/architecture.md) for the deeper version.
 
+## Features
+
+- Cross-platform Zig agent for Windows, macOS, and Linux with enrollment, heartbeat, local buffering, and HTTPS event batching.
+- Process, network, user session, system info, and file integrity telemetry, visible through per-agent event tabs with raw payload inspection.
+- Short-lived, single-use enrollment tokens and generated install commands for Windows services, macOS launchd jobs, and Linux systemd services.
+- Multi-tenant data model and request scoping across agents, telemetry, alerts, enrollment tokens, audit logs, and response actions.
+- Alert rule evaluation on ingest with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
+- IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domain strings seen in process command lines.
+- Alert review workflow with severity, status, matched telemetry payloads, Slack delivery state, and generated Wazuh-compatible syslog events.
+- Response action queue with heartbeat dispatch and agent result reporting. `kill_process` is implemented; host isolation is modeled but waits for OS firewall handlers.
+- Hangfire jobs for stale/offline agent status, retention cleanup, telemetry backups, and GitHub release synchronization.
+- Better Auth dashboard login with email/password and optional GitHub OAuth, plus HMAC-signed server-to-API calls.
+- Docker bootstrap scripts for repeatable local development, optional real Linux agent container, SQL migrations, generated secrets, and seeded admin user.
+- CI, security audit, and release workflows for building and publishing agent artefacts with SHA-256 sidecars.
+
 ## Repo layout
 
 ```
@@ -225,13 +240,14 @@ Zig produces small, static binaries and cross-compiles to Windows, macOS, and Li
 
 ## Not in scope for MVP
 
-This is a portfolio MVP. To keep it shippable in a sprint, the following are explicitly out:
+This is still a portfolio MVP. These areas are intentionally limited or deferred:
 
-- Multi-tenancy
 - Real-time streaming (polling for now; SSE in v0.2)
-- Alerting rules engine
 - Kernel-level collection (ETW, EndpointSecurity)
 - Code signing and notarisation (ship SHA256 in releases, sign later)
+- Enterprise OIDC SSO and SCIM provisioning
+- First-class DNS telemetry; domain IoCs currently match process command lines
+- Full host isolation enforcement; the action exists but agents currently report it unsupported
 
 ## Roadmap
 
@@ -244,11 +260,19 @@ This is a portfolio MVP. To keep it shippable in a sprint, the following are exp
 - [x] Hangfire: MarkStaleAgents, PurgeOldEvents
 - [x] Agent detail page with event timeline
 - [x] Network + FIM collectors (polling)
-- [x] Install scripts (Windows + macOS)
-- [ ] Release workflow with cross-compiled agent artefacts
-- [ ] Docs: architecture, threat model, deployment
+- [x] Install scripts (Windows + macOS + Linux)
+- [x] Release workflow with cross-compiled agent artefacts
+- [x] Docs: architecture, threat model, API, deployment
+- [x] Alert rules engine with Tawny predicates
+- [x] Sigma rule imports and starter catalog
+- [x] Threat-intel IoC imports from STIX, OpenIOC, CSV, and raw text
+- [x] Wazuh alert forwarding
+- [x] Slack alert forwarding with delivery state
+- [x] Response action queue and heartbeat dispatch
+- [x] Multi-tenant persistence and request scoping
+- [x] Optional GitHub OAuth for dashboard login
 
-Post-MVP: Linux agent (eBPF), kernel-level collection, broader Sigma coverage, response actions, multi-tenancy, OIDC SSO.
+Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, DNS telemetry, enforced host isolation, Microsoft Sentinel OAuth/DCR ingestion, enterprise OIDC SSO.
 
 ## Detection rules
 
