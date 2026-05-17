@@ -71,6 +71,9 @@ public record AlertResponse(
     AlertNotificationStatus SlackNotificationStatus,
     DateTimeOffset? SlackNotifiedAt,
     string? SlackNotificationError,
+    AlertNotificationStatus SentinelNotificationStatus,
+    DateTimeOffset? SentinelNotifiedAt,
+    string? SentinelNotificationError,
     string Title,
     string? Description,
     DateTimeOffset CreatedAt);

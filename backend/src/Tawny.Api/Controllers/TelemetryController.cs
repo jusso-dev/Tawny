@@ -20,6 +20,7 @@ public class TelemetryController(
     AuditLogger audit,
     IValidator<IngestEventsRequest> validator,
     AlertRuleEvaluator alertRules,
+    ITelemetrySink telemetrySink,
     IAlertSink alertSink) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
@@ -74,6 +75,7 @@ public class TelemetryController(
             received_at = receivedAt,
         });
         await db.SaveChangesAsync(ct);
+        await telemetrySink.PublishAsync(agent, events, ct);
 
         var alerts = await alertRules.EvaluateAsync(agent, events, receivedAt, ct);
         if (alerts.Count > 0)

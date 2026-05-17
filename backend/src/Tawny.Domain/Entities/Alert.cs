@@ -11,6 +11,9 @@ public class Alert
     public AlertNotificationStatus SlackNotificationStatus { get; set; } = AlertNotificationStatus.NotConfigured;
     public DateTimeOffset? SlackNotifiedAt { get; set; }
     public string? SlackNotificationError { get; set; }
+    public AlertNotificationStatus SentinelNotificationStatus { get; set; } = AlertNotificationStatus.NotConfigured;
+    public DateTimeOffset? SentinelNotifiedAt { get; set; }
+    public string? SentinelNotificationError { get; set; }
     public required string Title { get; set; }
     public string? Description { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

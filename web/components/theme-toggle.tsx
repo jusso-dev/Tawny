@@ -23,11 +23,15 @@ function applyTheme(theme: Theme) {
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === "undefined") return "system";
-    const saved = window.localStorage.getItem(storageKey);
-    return saved === "light" || saved === "dark" ? saved : "system";
-  });
+  const [theme, setTheme] = useState<Theme>("system");
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const saved = window.localStorage.getItem(storageKey);
+      setTheme(saved === "light" || saved === "dark" ? saved : "system");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   useEffect(() => {
     applyTheme(theme);

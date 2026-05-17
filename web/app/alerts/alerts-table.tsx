@@ -38,6 +38,9 @@ export type Alert = {
   slack_notification_status: AlertNotificationStatus;
   slack_notified_at: string | null;
   slack_notification_error: string | null;
+  sentinel_notification_status: AlertNotificationStatus;
+  sentinel_notified_at: string | null;
+  sentinel_notification_error: string | null;
   title: string;
   description: string | null;
   created_at: string;
@@ -134,6 +137,7 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
   const [expanded, setExpanded] = useState<number | null>(alerts[0]?.id ?? null);
   const openCount = alerts.filter((alert) => alert.status === "open").length;
   const slackSentCount = alerts.filter((alert) => alert.slack_notification_status === "sent").length;
+  const sentinelSentCount = alerts.filter((alert) => alert.sentinel_notification_status === "sent").length;
 
   return (
     <section className="mt-6">
@@ -141,6 +145,7 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
         <div className="flex flex-wrap gap-2 text-sm">
           <SummaryPill label="Open" value={openCount} />
           <SummaryPill label="Slack sent" value={slackSentCount} />
+          <SummaryPill label="Sentinel sent" value={sentinelSentCount} />
           <SummaryPill label="Shown" value={alerts.length} />
         </div>
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
@@ -149,7 +154,7 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
       </div>
 
       <div className="mt-3 overflow-x-auto rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
-        <table className="w-full min-w-[58rem] text-sm">
+        <table className="w-full min-w-[64rem] text-sm">
           <thead className="bg-[color:var(--color-muted)] text-left">
             <tr>
               <th className="w-10 px-3 py-3 font-medium" aria-label="Expand" />
@@ -159,13 +164,14 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
               <th className="px-4 py-3 font-medium">Severity</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Slack</th>
+              <th className="px-4 py-3 font-medium">Sentinel</th>
               <th className="px-4 py-3 font-medium">Created</th>
             </tr>
           </thead>
           <tbody>
             {alerts.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
+                <td colSpan={9} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
                   No alerts have fired yet.
                 </td>
               </tr>
@@ -241,13 +247,18 @@ function FragmentRow({
             {formatNotificationStatus(alert.slack_notification_status)}
           </Badge>
         </td>
+        <td className="px-4 py-3">
+          <Badge tone={notificationTone[alert.sentinel_notification_status]}>
+            {formatNotificationStatus(alert.sentinel_notification_status)}
+          </Badge>
+        </td>
         <td className="whitespace-nowrap px-4 py-3 text-[color:var(--color-muted-foreground)]">
           {formatDate(alert.created_at)}
         </td>
       </tr>
       {isExpanded ? (
         <tr className="border-t border-[color:var(--color-border)]">
-          <td colSpan={8} className="bg-[color:var(--color-background)] px-4 py-4">
+          <td colSpan={9} className="bg-[color:var(--color-background)] px-4 py-4">
             <AlertDetails alert={alert} evidence={evidence} />
           </td>
         </tr>
@@ -259,11 +270,12 @@ function FragmentRow({
 function AlertDetails({ alert, evidence }: { alert: Alert; evidence: EvidenceSection[] }) {
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <DetailItem label="Rule predicate" value={formatPredicate(alert)} mono />
         <DetailItem label="Telemetry event" value={`#${alert.telemetry_event_id} (${alert.event_type})`} mono />
         <DetailItem label="Received" value={formatDate(alert.received_at)} />
         <DetailItem label="Slack delivery" value={formatSlackDelivery(alert)} />
+        <DetailItem label="Sentinel delivery" value={formatSentinelDelivery(alert)} />
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -547,6 +559,18 @@ function formatSlackDelivery(alert: Alert) {
   }
 
   return formatNotificationStatus(alert.slack_notification_status);
+}
+
+function formatSentinelDelivery(alert: Alert) {
+  if (alert.sentinel_notification_status === "sent" && alert.sentinel_notified_at) {
+    return `Sent ${formatDate(alert.sentinel_notified_at)}`;
+  }
+
+  if (alert.sentinel_notification_status === "failed") {
+    return alert.sentinel_notification_error ? `Failed: ${alert.sentinel_notification_error}` : "Failed";
+  }
+
+  return formatNotificationStatus(alert.sentinel_notification_status);
 }
 
 function formatDate(value: string) {

@@ -26,6 +26,7 @@ builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection("T
 builder.Services.Configure<TelemetryBackupOptions>(builder.Configuration.GetSection("Tawny:TelemetryBackup"));
 builder.Services.Configure<WazuhSinkOptions>(builder.Configuration.GetSection("Tawny:Wazuh"));
 builder.Services.Configure<SlackSinkOptions>(builder.Configuration.GetSection("Tawny:Slack"));
+builder.Services.Configure<SentinelSinkOptions>(builder.Configuration.GetSection("Tawny:Sentinel"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
@@ -41,6 +42,10 @@ builder.Services.AddScoped<SigmaRuleImporter>();
 builder.Services.AddScoped<IocRuleImporter>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
+builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProvider>();
+builder.Services.AddHttpClient<AzureMonitorLogsIngestionClient>();
+builder.Services.AddSingleton<SentinelAlertSink>();
+builder.Services.AddSingleton<ITelemetrySink, SentinelTelemetrySink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
 builder.Services.AddRateLimiter(options =>
 {

@@ -22,7 +22,8 @@ public sealed class NoopAlertSink : IAlertSink
 
 public sealed class CompositeAlertSink(
     WazuhAlertSink wazuh,
-    SlackAlertSink slack) : IAlertSink
+    SlackAlertSink slack,
+    SentinelAlertSink sentinel) : IAlertSink
 {
     public async Task PublishAsync(
         Agent agent,
@@ -32,5 +33,6 @@ public sealed class CompositeAlertSink(
     {
         await wazuh.PublishAsync(agent, alerts, telemetryEvents, ct);
         await slack.PublishAsync(agent, alerts, telemetryEvents, ct);
+        await sentinel.PublishAsync(agent, alerts, telemetryEvents, ct);
     }
 }

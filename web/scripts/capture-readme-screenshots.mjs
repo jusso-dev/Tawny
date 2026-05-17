@@ -37,10 +37,13 @@ try {
   await page.addInitScript((nextTheme) => {
     localStorage.setItem("tawny-theme", nextTheme);
   }, theme);
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
 
   await login(page);
   await captureDashboard(page);
   await captureDetections(page);
+  await captureDetectionFormats(page);
+  await captureIntegrations(page);
   await captureAlerts(page);
   const agentHref = await captureAgents(page);
   if (agentHref) {
@@ -86,6 +89,23 @@ async function captureDetections(page) {
   await waitForChrome(page);
   await page.getByText("Imported rules").waitFor({ state: "visible", timeout: 10000 });
   await screenshot(page, "detections.png");
+}
+
+async function captureDetectionFormats(page) {
+  await page.goto(`${baseUrl}/detections`, { waitUntil: "networkidle" });
+  await waitForChrome(page);
+  await page.getByText("Accepted Sigma subset").waitFor({ state: "visible", timeout: 10000 });
+  await screenshot(page, "detections-rule-formats.png");
+  await page.getByRole("button", { name: "Raw IoCs" }).click();
+  await page.getByText("sha256 1 | sha1 0 | ip 1 | domain 1").waitFor({ state: "visible", timeout: 10000 });
+  await screenshot(page, "detections-ioc-raw-format.png");
+}
+
+async function captureIntegrations(page) {
+  await page.goto(`${baseUrl}/integrations`, { waitUntil: "networkidle" });
+  await waitForChrome(page);
+  await page.getByText("Microsoft Sentinel").waitFor({ state: "visible", timeout: 10000 });
+  await screenshot(page, "integrations-sentinel.png");
 }
 
 async function captureAlerts(page) {

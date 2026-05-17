@@ -176,3 +176,74 @@ TAWNY_SLACK_TIMEOUT_SECONDS=5
 ```
 
 Only new alerts generated after Slack is enabled are posted. Tawny records Slack delivery state on the alert row so the dashboard can show whether the webhook send was `sent`, `failed`, `pending`, or `not_configured`.
+
+## Microsoft Sentinel / Azure Monitor sink
+
+Tawny can send generated alerts and, separately, raw telemetry batches to Microsoft Sentinel through the Azure Monitor Logs Ingestion API. This uses Microsoft Entra OAuth and a Data Collection Rule (DCR); Tawny does not implement the legacy Log Analytics workspace ID/shared-key collector path.
+
+Azure setup:
+
+1. Create the destination custom tables in the Log Analytics workspace, for example `TawnyAlert_CL` and `TawnyTelemetry_CL`.
+2. Create a DCR with direct logs ingestion enabled and streams that match the payload fields Tawny sends. Use DCR endpoints for new deployments. Use a Data Collection Endpoint only for Private Link or older DCR designs that do not expose a logs ingestion URI.
+3. Map the alert stream to `Custom-TawnyAlert_CL` and, if enabled, the telemetry stream to `Custom-TawnyTelemetry_CL`.
+4. Create an app registration and client secret, or use a managed identity for Azure-hosted API deployments.
+5. Grant that identity the `Monitoring Metrics Publisher` role on the DCR scope.
+6. Copy the DCR logs ingestion URI and immutable ID from the DCR overview or JSON view.
+
+Recommended alert stream fields:
+
+- `TimeGenerated`, `EventKind`, `TawnyTenantId`
+- `AgentId`, `AgentHostname`, `AgentOs`, `AgentOsVersion`, `AgentArchitecture`, `AgentVersion`
+- `AlertId`, `AlertRuleId`, `AlertTitle`, `AlertDescription`, `AlertSeverity`, `AlertStatus`, `AlertCreatedAt`
+- `TelemetryEventId`, `TelemetryEventType`, `TelemetryOccurredAt`, `TelemetryReceivedAt`, `TelemetryPayload`
+
+Recommended telemetry stream fields:
+
+- `TimeGenerated`, `EventKind`, `TawnyTenantId`
+- `AgentId`, `AgentHostname`, `AgentOs`, `AgentOsVersion`, `AgentArchitecture`, `AgentVersion`
+- `TelemetryEventId`, `TelemetryEventType`, `TelemetryOccurredAt`, `TelemetryReceivedAt`, `TelemetryPayload`
+
+Configure client-secret authentication:
+
+```bash
+Tawny__Sentinel__Enabled=true
+Tawny__Sentinel__AlertsEnabled=true
+Tawny__Sentinel__TelemetryEnabled=false
+Tawny__Sentinel__AuthenticationMode=client_secret
+Tawny__Sentinel__TenantId=00000000-0000-0000-0000-000000000000
+Tawny__Sentinel__ClientId=00000000-0000-0000-0000-000000000000
+Tawny__Sentinel__ClientSecret=...
+Tawny__Sentinel__EndpointUrl=https://<dcr-or-dce>.<region>.ingest.monitor.azure.com
+Tawny__Sentinel__DcrImmutableId=dcr-00000000000000000000000000000000
+Tawny__Sentinel__AlertStreamName=Custom-TawnyAlert_CL
+Tawny__Sentinel__TelemetryStreamName=Custom-TawnyTelemetry_CL
+Tawny__Sentinel__BatchSize=100
+Tawny__Sentinel__MaxRetries=3
+```
+
+For managed identity, assign the identity to the Tawny API host, grant it the DCR role, and switch the auth mode:
+
+```bash
+Tawny__Sentinel__AuthenticationMode=managed_identity
+Tawny__Sentinel__ClientId=<user-assigned-managed-identity-client-id-if-needed>
+```
+
+Telemetry ingestion is off by default because full agent telemetry can increase Azure Monitor ingestion cost quickly. Enable `TelemetryEnabled` only after the DCR/table schema is ready and you have chosen retention and cost controls.
+
+Tawny records Sentinel alert delivery state on each alert row as `sent`, `failed`, `pending`, or `not_configured`. Telemetry batches are high-volume, so Tawny logs delivery failures with the agent ID and batch size instead of persisting per-event delivery state.
+
+Sample KQL:
+
+```kql
+TawnyAlert_CL
+| where TimeGenerated > ago(24h)
+| summarize Alerts=count() by AlertSeverity, AgentHostname
+| order by Alerts desc
+```
+
+```kql
+TawnyTelemetry_CL
+| where TimeGenerated > ago(1h)
+| summarize Events=count() by TelemetryEventType, AgentHostname
+| order by Events desc
+```

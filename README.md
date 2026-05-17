@@ -8,7 +8,7 @@
 
 Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, evaluates alert rules, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
 
-The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, detection imports, Wazuh and Slack forwarding, and a UI that looks like a product.
+The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, detection imports, Wazuh, Slack, and Microsoft Sentinel forwarding, and a UI that looks like a product.
 
 ## Screenshots
 
@@ -268,11 +268,12 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - [x] Threat-intel IoC imports from STIX, OpenIOC, CSV, and raw text
 - [x] Wazuh alert forwarding
 - [x] Slack alert forwarding with delivery state
+- [x] Microsoft Sentinel OAuth/DCR alert and telemetry forwarding
 - [x] Response action queue and heartbeat dispatch
 - [x] Multi-tenant persistence and request scoping
 - [x] Optional GitHub OAuth for dashboard login
 
-Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, DNS telemetry, enforced host isolation, Microsoft Sentinel OAuth/DCR ingestion, enterprise OIDC SSO.
+Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, DNS telemetry, enforced host isolation, enterprise OIDC SSO.
 
 ## Detection rules
 
@@ -311,6 +312,25 @@ TAWNY_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 TAWNY_SLACK_USERNAME=Tawny
 TAWNY_SLACK_ICON_EMOJI=:rotating_light:
 ```
+
+## Microsoft Sentinel sink
+
+Tawny can send generated alerts and optional telemetry batches to Microsoft Sentinel through Azure Monitor Logs Ingestion API, using Microsoft Entra OAuth and a DCR. The shared-key Data Collector API is not used.
+
+```bash
+TAWNY_SENTINEL_ENABLED=true
+TAWNY_SENTINEL_ALERTS_ENABLED=true
+TAWNY_SENTINEL_TELEMETRY_ENABLED=false
+TAWNY_SENTINEL_TENANT_ID=00000000-0000-0000-0000-000000000000
+TAWNY_SENTINEL_CLIENT_ID=00000000-0000-0000-0000-000000000000
+TAWNY_SENTINEL_CLIENT_SECRET=...
+TAWNY_SENTINEL_ENDPOINT_URL=https://<dcr-or-dce>.<region>.ingest.monitor.azure.com
+TAWNY_SENTINEL_DCR_IMMUTABLE_ID=dcr-00000000000000000000000000000000
+TAWNY_SENTINEL_ALERT_STREAM_NAME=Custom-TawnyAlert_CL
+TAWNY_SENTINEL_TELEMETRY_STREAM_NAME=Custom-TawnyTelemetry_CL
+```
+
+Create the destination tables and DCR streams first, then assign the Tawny app registration or managed identity the `Monitoring Metrics Publisher` role on the DCR. Telemetry forwarding stays disabled by default to avoid unexpected ingestion cost. Full setup notes and sample KQL are in [docs/production.md](docs/production.md).
 
 ## Security notes
 
