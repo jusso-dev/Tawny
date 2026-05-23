@@ -63,9 +63,36 @@ public class SigmaRuleImporter
             MatchValue = predicate.MatchValue,
             SourceDefinition = yaml,
             IsEnabled = isEnabled,
+            MitreTechniquesJson = ExtractMitreTechniques(root),
             CreatedAt = now,
             UpdatedAt = now,
         };
+    }
+
+    private static string? ExtractMitreTechniques(YamlMappingNode root)
+    {
+        // Sigma rules surface techniques via `tags:` like `attack.t1059.003`.
+        // We extract everything that matches `attack.tNNNN(.NNN)?` and
+        // uppercase to the canonical ATT&CK form (e.g. T1059.003).
+        if (!root.Children.TryGetValue(new YamlScalarNode("tags"), out var tagsNode)
+            || tagsNode is not YamlSequenceNode sequence)
+        {
+            return null;
+        }
+
+        var techniques = new List<string>();
+        foreach (var item in sequence.Children.OfType<YamlScalarNode>())
+        {
+            var raw = item.Value;
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            var trimmed = raw.Trim();
+            if (!trimmed.StartsWith("attack.t", StringComparison.OrdinalIgnoreCase)) continue;
+            var id = trimmed[(trimmed.IndexOf('.') + 1)..];
+            techniques.Add(id.ToUpperInvariant());
+        }
+
+        if (techniques.Count == 0) return null;
+        return JsonSerializer.Serialize(techniques.Distinct().ToList(), JsonOptions);
     }
 
     private static CompiledPredicate CompileSelection(YamlMappingNode selection)

@@ -4,10 +4,11 @@ using Microsoft.EntityFrameworkCore;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
+using Tawny.Infrastructure.Hunting;
 
 namespace Tawny.Api.Services;
 
-public class AlertRuleEvaluator(TawnyDbContext db)
+public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppressions)
 {
     public async Task<IReadOnlyList<Alert>> EvaluateAsync(
         Agent agent,
@@ -30,7 +31,7 @@ public class AlertRuleEvaluator(TawnyDbContext db)
             return [];
         }
 
-        var alerts = new List<Alert>();
+        var candidates = new List<Alert>();
         foreach (var telemetryEvent in events)
         {
             using var payload = JsonDocument.Parse(telemetryEvent.Payload);
@@ -46,7 +47,7 @@ public class AlertRuleEvaluator(TawnyDbContext db)
                     continue;
                 }
 
-                alerts.Add(new Alert
+                candidates.Add(new Alert
                 {
                     AlertRuleId = rule.Id,
                     AgentId = agent.Id,
@@ -59,8 +60,23 @@ public class AlertRuleEvaluator(TawnyDbContext db)
             }
         }
 
-        db.Alerts.AddRange(alerts);
-        return alerts;
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        var eventsById = events.ToDictionary(e => e.Id);
+        var suppressed = await suppressions.ApplyAsync(agent.TenantId, candidates, eventsById, now, ct);
+        if (suppressed.Count == 0)
+        {
+            db.Alerts.AddRange(candidates);
+            return candidates;
+        }
+
+        var suppressedAlerts = new HashSet<Alert>(suppressed.Select(s => s.Alert));
+        var emitted = candidates.Where(c => !suppressedAlerts.Contains(c)).ToList();
+        db.Alerts.AddRange(emitted);
+        return emitted;
     }
 
     private static bool Matches(AlertRule rule, JsonElement payload)

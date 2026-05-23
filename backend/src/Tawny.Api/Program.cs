@@ -14,6 +14,7 @@ using Tawny.Api.Auth;
 using Tawny.Api.Controllers;
 using Tawny.Api.Services;
 using Tawny.Infrastructure;
+using Tawny.Infrastructure.Hunting;
 using Tawny.Jobs;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,6 +41,10 @@ builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AlertRuleEvaluator>();
 builder.Services.AddScoped<SigmaRuleImporter>();
 builder.Services.AddScoped<IocRuleImporter>();
+builder.Services.AddSingleton<HuntQueryParser>();
+builder.Services.AddScoped<HuntExecutor>();
+builder.Services.AddScoped<SuppressionEvaluator>();
+builder.Services.AddSingleton<AgentEventBroker>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
 builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProvider>();
@@ -88,7 +93,8 @@ builder.Services.AddOpenApi();
 builder.Services
     .AddAuthentication()
     .AddJwtBearer(TawnyAuthSchemes.AgentJwt, _ => { })
-    .AddScheme<WebUserAuthOptions, WebUserAuthHandler>(TawnyAuthSchemes.WebUser, _ => { });
+    .AddScheme<WebUserAuthOptions, WebUserAuthHandler>(TawnyAuthSchemes.WebUser, _ => { })
+    .AddScheme<ApiTokenAuthOptions, ApiTokenAuthHandler>(TawnyAuthSchemes.ApiToken, _ => { });
 
 builder.Services
     .AddOptions<JwtBearerOptions>(TawnyAuthSchemes.AgentJwt)
@@ -116,6 +122,7 @@ if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
 {
     builder.Services.AddScoped<PurgeOldEventsJob>();
     builder.Services.AddScoped<BackupTelemetryJob>();
+    builder.Services.AddScoped<ScheduledHuntsJob>();
     builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
     builder.Services.AddHangfire(cfg => cfg
@@ -166,6 +173,8 @@ if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
         "backup-telemetry", j => j.ExecuteAsync(default), "0 3 * * *");
     RecurringJob.AddOrUpdate<CheckAgentReleasesJob>(
         "check-agent-releases", j => j.ExecuteAsync(default), Cron.Hourly);
+    RecurringJob.AddOrUpdate<ScheduledHuntsJob>(
+        "scheduled-hunts", j => j.ExecuteAsync(default), "*/5 * * * *");
 }
 
 app.Run();

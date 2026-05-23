@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -62,6 +63,51 @@ public class DashboardController(TawnyDbContext db) : ControllerBase
             })
             .ToList();
 
+        var sevenDaysAgo = now.AddDays(-7);
+        var taggedRules = await db.AlertRules
+            .AsNoTracking()
+            .Where(r => r.MitreTechniquesJson != null)
+            .Select(r => new { r.Id, r.MitreTechniquesJson })
+            .ToListAsync(ct);
+        var techniqueByRule = new Dictionary<Guid, List<string>>();
+        foreach (var row in taggedRules)
+        {
+            var techniques = ParseTechniques(row.MitreTechniquesJson);
+            if (techniques.Count > 0)
+            {
+                techniqueByRule[row.Id] = techniques;
+            }
+        }
+
+        var heatmap = new List<DashboardMitreHeatmapEntry>();
+        if (techniqueByRule.Count > 0)
+        {
+            var ruleIds = techniqueByRule.Keys.ToList();
+            var counts = await db.Alerts
+                .AsNoTracking()
+                .Where(a => a.CreatedAt >= sevenDaysAgo
+                            && ruleIds.Contains(a.AlertRuleId)
+                            && db.Agents.Any(ag => ag.Id == a.AgentId && ag.TenantId == tenantId))
+                .GroupBy(a => a.AlertRuleId)
+                .Select(g => new { RuleId = g.Key, Count = g.Count() })
+                .ToListAsync(ct);
+
+            var perTechnique = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in counts)
+            {
+                if (!techniqueByRule.TryGetValue(c.RuleId, out var techniques)) continue;
+                foreach (var t in techniques)
+                {
+                    perTechnique[t] = perTechnique.GetValueOrDefault(t) + c.Count;
+                }
+            }
+            heatmap = perTechnique
+                .OrderByDescending(p => p.Value)
+                .Take(20)
+                .Select(p => new DashboardMitreHeatmapEntry(p.Key, p.Value))
+                .ToList();
+        }
+
         return Ok(new DashboardSummaryResponse(
             totalAgents,
             onlineAgents,
@@ -69,7 +115,15 @@ public class DashboardController(TawnyDbContext db) : ControllerBase
             staleAgents,
             unknownAgents,
             recentEvents,
-            buckets));
+            buckets,
+            heatmap));
+    }
+
+    private static List<string> ParseTechniques(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return JsonSerializer.Deserialize<List<string>>(json) ?? []; }
+        catch { return []; }
     }
 
     private static DateTimeOffset HourBucket(DateTimeOffset value)

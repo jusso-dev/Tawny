@@ -32,6 +32,10 @@ type DashboardSummary = {
     bucket_start: string;
     count: number;
   }>;
+  mitre_heatmap: Array<{
+    technique_id: string;
+    alert_count: number;
+  }>;
 };
 
 const eventTypeLabels: Record<string, string> = {
@@ -108,6 +112,26 @@ export default async function Home() {
           </div>
         </section>
 
+        {summary.mitre_heatmap.length > 0 ? (
+          <section className="mt-5 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">MITRE ATT&CK — last 7 days</h2>
+              <span className="text-sm text-[color:var(--color-muted-foreground)]">
+                {summary.mitre_heatmap.length} techniques observed
+              </span>
+            </div>
+            <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
+              Alerts that matched a tagged detection rule, grouped by technique. Tag rules in Detections, or import a Sigma rule
+              with <code className="font-mono text-xs">tags: attack.tNNNN</code>.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {summary.mitre_heatmap.map((cell) => (
+                <MitreCell key={cell.technique_id} id={cell.technique_id} count={cell.alert_count} max={summary.mitre_heatmap[0]!.alert_count} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <section className="mt-5 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
           <div className="flex items-center justify-between border-b border-[color:var(--color-border)] px-5 py-4">
             <h2 className="font-semibold">Recent events</h2>
@@ -163,5 +187,26 @@ function Metric({
       </div>
       <p className="mt-3 text-2xl font-semibold tracking-tight">{value}</p>
     </div>
+  );
+}
+
+function MitreCell({ id, count, max }: { id: string; count: number; max: number }) {
+  // Color scale: a faint accent at low counts, full accent at the top.
+  const ratio = max === 0 ? 0 : count / max;
+  const intensity = Math.max(0.18, Math.min(1, ratio));
+  return (
+    <a
+      href={`https://attack.mitre.org/techniques/${id.replace(".", "/")}/`}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="grid min-w-[7rem] gap-1 rounded-md border border-[color:var(--color-border)] px-3 py-2 transition-colors hover:border-[color:var(--color-accent)]"
+      style={{ backgroundColor: `color-mix(in srgb, var(--color-accent) ${Math.round(intensity * 100)}%, var(--color-card))` }}
+      title={`${count} alert${count === 1 ? "" : "s"} matched rules tagged ${id} in the last 7 days`}
+    >
+      <span className="font-mono text-xs font-semibold">{id}</span>
+      <span className="text-xs text-[color:var(--color-foreground)]/85">
+        {count} {count === 1 ? "alert" : "alerts"}
+      </span>
+    </a>
   );
 }

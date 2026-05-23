@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RefreshCcw } from "lucide-react";
-import { QueryClient, QueryClientProvider, keepPreviousData, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/cn";
+import { ProcessTreeView } from "./process-tree";
 
 type EventType =
   | "process_snapshot"
@@ -30,6 +31,7 @@ type Tab = {
 
 const TABS: Tab[] = [
   { key: "processes", label: "Processes", type: "process_snapshot" },
+  { key: "tree", label: "Process tree", type: "process_snapshot" },
   { key: "network", label: "Network", type: "network_snapshot" },
   { key: "fim", label: "FIM", type: "file_integrity" },
   { key: "sessions", label: "Sessions", type: "user_session" },
@@ -37,7 +39,6 @@ const TABS: Tab[] = [
 ];
 
 const EVENT_LIMIT = "12";
-const LIVE_POLL_INTERVAL_MS = 2000;
 
 export function AgentEventsPanel({ agentId }: { agentId: string }) {
   const [queryClient] = useState(() => new QueryClient());
@@ -56,6 +57,7 @@ function AgentEvents({ agentId }: { agentId: string }) {
     () => TABS.find((tab) => tab.key === activeKey) ?? TABS[0]!,
     [activeKey],
   );
+  const queryClient = useQueryClient();
 
   const { data, error, isFetching, dataUpdatedAt, refetch } = useQuery({
     queryKey: ["agent-events", agentId, activeTab.type ?? "all"],
@@ -68,13 +70,50 @@ function AgentEvents({ agentId }: { agentId: string }) {
       return (await res.json()) as TelemetryEvent[];
     },
     placeholderData: keepPreviousData,
-    refetchInterval: isLive ? LIVE_POLL_INTERVAL_MS : false,
-    refetchIntervalInBackground: true,
     staleTime: 1000,
   });
 
+  // Live updates ride on Server-Sent Events. When the agent ingests new
+  // telemetry the broker pushes one frame per event; we splice it into the
+  // cached list and prune to the displayed limit. Polling is gone.
+  const liveRef = useRef(isLive);
+  useEffect(() => {
+    liveRef.current = isLive;
+  }, [isLive]);
+
+  useEffect(() => {
+    if (!isLive) return;
+    const source = new EventSource(`/api/agents/${agentId}/events/stream`);
+    source.addEventListener("message", (event) => {
+      if (!liveRef.current) return;
+      try {
+        const next = JSON.parse(event.data) as TelemetryEvent;
+        const filterKey: TelemetryEvent["type"] | "all" = activeTab.type ?? "all";
+        if (filterKey !== "all" && next.type !== filterKey) {
+          return;
+        }
+        queryClient.setQueryData<TelemetryEvent[]>(["agent-events", agentId, filterKey], (prev) => {
+          const limit = parseInt(EVENT_LIMIT, 10);
+          const current = prev ?? [];
+          if (current.some((e) => e.id === next.id)) return current;
+          return [next, ...current].slice(0, limit);
+        });
+      } catch {
+        // ignore malformed frames
+      }
+    });
+    source.addEventListener("error", () => {
+      // The browser auto-reconnects per the retry: directive from the server.
+    });
+    return () => source.close();
+  }, [agentId, isLive, activeTab.type, queryClient]);
+
   const events = data ?? [];
   const lastUpdated = dataUpdatedAt ? formatTime(dataUpdatedAt) : "Not loaded";
+  const latestProcessSnapshot = activeTab.key === "tree"
+    ? events.find((e): e is TelemetryEvent & { payload: { processes: ProcessRow[] } } =>
+        e.type === "process_snapshot" && isProcessSnapshot(e.payload))
+    : null;
 
   return (
     <section className="mt-8">
@@ -100,7 +139,7 @@ function AgentEvents({ agentId }: { agentId: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-[color:var(--color-muted-foreground)]">
           <span>
-            {isLive ? "Polling every 2s" : `Latest ${EVENT_LIMIT} events`}
+            {isLive ? "Live stream (SSE)" : `Latest ${EVENT_LIMIT} events`}
             {isFetching ? ", updating" : ""}
           </span>
           <span aria-hidden="true">|</span>
@@ -129,6 +168,16 @@ function AgentEvents({ agentId }: { agentId: string }) {
         <div className="mt-5 rounded-md border border-[color:var(--color-danger)]/40 bg-[color:var(--color-danger)]/10 p-4 text-sm text-[color:var(--color-danger)]">
           Events could not be loaded.
         </div>
+      ) : activeTab.key === "tree" ? (
+        latestProcessSnapshot ? (
+          <div className="mt-5 overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-4">
+            <ProcessTreeView processes={latestProcessSnapshot.payload.processes} />
+          </div>
+        ) : (
+          <div className="mt-5 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
+            No process snapshot has arrived yet — switch to Processes for the table.
+          </div>
+        )
       ) : events.length === 0 && !isFetching ? (
         <div className="mt-5 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-card)] p-8 text-center text-sm text-[color:var(--color-muted-foreground)]">
           No {activeTab.label.toLowerCase()} telemetry has arrived yet.
@@ -201,10 +250,19 @@ function summarizePayload(event: TelemetryEvent) {
   return JSON.stringify(event.payload, null, 2);
 }
 
-function isProcessSnapshot(payload: unknown): payload is { processes: Array<{ name: string }> } {
+type ProcessRow = {
+  pid: number;
+  ppid?: number;
+  name: string;
+  command_line?: string;
+};
+
+function isProcessSnapshot(payload: unknown): payload is { processes: ProcessRow[] } {
   if (!payload || typeof payload !== "object" || !("processes" in payload)) {
     return false;
   }
   const processes = (payload as { processes: unknown }).processes;
   return Array.isArray(processes);
 }
+
+export type { ProcessRow };

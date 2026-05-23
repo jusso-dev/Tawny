@@ -71,3 +71,32 @@ export async function apiPost<T>(
   }
   return res.json() as Promise<T>;
 }
+
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  userId: string,
+  role: string,
+): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "PUT",
+    headers: { ...sign("PUT", path, userId, role), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new ApiError(await errorMessage(res, `API ${path} returned ${res.status}`), res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function apiDelete(path: string, userId: string, role: string): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "DELETE",
+    headers: sign("DELETE", path, userId, role),
+    cache: "no-store",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new ApiError(await errorMessage(res, `API ${path} returned ${res.status}`), res.status);
+  }
+}

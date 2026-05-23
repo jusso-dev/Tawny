@@ -16,6 +16,7 @@ public record AlertRuleResponse(
     string? MatchValue,
     string? SourceDefinition,
     bool IsEnabled,
+    IReadOnlyList<string> MitreTechniques,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
@@ -26,7 +27,8 @@ public record CreateAlertRuleRequest(
     AlertRuleOperator Operator,
     string? PayloadPath,
     string? MatchValue,
-    bool? IsEnabled);
+    bool? IsEnabled,
+    IReadOnlyList<string>? MitreTechniques);
 
 public record UpdateAlertRuleRequest(
     string Name,
@@ -35,7 +37,8 @@ public record UpdateAlertRuleRequest(
     AlertRuleOperator Operator,
     string? PayloadPath,
     string? MatchValue,
-    bool IsEnabled);
+    bool IsEnabled,
+    IReadOnlyList<string>? MitreTechniques);
 
 public record ImportSigmaRuleRequest(
     string RuleYaml,

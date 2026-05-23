@@ -14,6 +14,7 @@ public class AlertRule
     public string? MatchValue { get; set; }
     public string? SourceDefinition { get; set; }
     public bool IsEnabled { get; set; } = true;
+    public string? MitreTechniquesJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
