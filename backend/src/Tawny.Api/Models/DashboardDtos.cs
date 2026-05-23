@@ -9,7 +9,12 @@ public record DashboardSummaryResponse(
     int StaleAgents,
     int UnknownAgents,
     IReadOnlyList<DashboardRecentEvent> RecentEvents,
-    IReadOnlyList<DashboardEventVolumeBucket> EventVolume);
+    IReadOnlyList<DashboardEventVolumeBucket> EventVolume,
+    IReadOnlyList<DashboardMitreHeatmapEntry> MitreHeatmap);
+
+public record DashboardMitreHeatmapEntry(
+    string TechniqueId,
+    int AlertCount);
 
 public record DashboardRecentEvent(
     long Id,

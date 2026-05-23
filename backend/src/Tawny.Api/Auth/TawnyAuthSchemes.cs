@@ -4,4 +4,5 @@ public static class TawnyAuthSchemes
 {
     public const string AgentJwt = "AgentJwt";
     public const string WebUser = "WebUser";
+    public const string ApiToken = "ApiToken";
 }

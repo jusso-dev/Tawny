@@ -16,6 +16,10 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<ResponseAction> ResponseActions => Set<ResponseAction>();
     public DbSet<AgentRelease> AgentReleases => Set<AgentRelease>();
     public DbSet<AuditLog> AuditLog => Set<AuditLog>();
+    public DbSet<SavedHunt> SavedHunts => Set<SavedHunt>();
+    public DbSet<HuntRun> HuntRuns => Set<HuntRun>();
+    public DbSet<SuppressionRule> SuppressionRules => Set<SuppressionRule>();
+    public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -104,6 +108,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(r => r.PayloadPath).HasMaxLength(256);
             e.Property(r => r.MatchValue).HasMaxLength(512);
             e.Property(r => r.SourceDefinition).HasColumnType("nvarchar(max)");
+            e.Property(r => r.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
             e.HasIndex(r => new { r.IsEnabled, r.EventType });
             e.HasIndex(r => new { r.Format, r.ExternalId });
         });
@@ -165,6 +170,75 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
                 .HasForeignKey(a => a.TenantId)
                 .OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(a => new { a.TenantId, a.OccurredAt });
+        });
+
+        b.Entity<SavedHunt>(e =>
+        {
+            e.HasKey(h => h.Id);
+            e.Property(h => h.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(h => h.Name).HasMaxLength(160).IsRequired();
+            e.Property(h => h.Description).HasColumnType("nvarchar(max)");
+            e.Property(h => h.Query).HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(h => h.ScheduleCron).HasMaxLength(64);
+            e.Property(h => h.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
+            e.HasOne(h => h.Tenant)
+                .WithMany(t => t.SavedHunts)
+                .HasForeignKey(h => h.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(h => new { h.TenantId, h.Name }).IsUnique();
+            e.HasIndex(h => new { h.TenantId, h.IsScheduled });
+        });
+
+        b.Entity<HuntRun>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(r => r.ErrorMessage).HasMaxLength(1024);
+            e.HasOne(r => r.SavedHunt)
+                .WithMany(h => h.Runs)
+                .HasForeignKey(r => r.SavedHuntId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(r => new { r.TenantId, r.SavedHuntId, r.StartedAt })
+                .IsDescending(false, false, true);
+        });
+
+        b.Entity<SuppressionRule>(e =>
+        {
+            e.HasKey(s => s.Id);
+            e.Property(s => s.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(s => s.Name).HasMaxLength(160).IsRequired();
+            e.Property(s => s.Reason).HasColumnType("nvarchar(max)");
+            e.Property(s => s.PayloadPath).HasMaxLength(256);
+            e.Property(s => s.MatchValue).HasMaxLength(512);
+            e.HasOne(s => s.Tenant)
+                .WithMany(t => t.SuppressionRules)
+                .HasForeignKey(s => s.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(s => s.AlertRule)
+                .WithMany()
+                .HasForeignKey(s => s.AlertRuleId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(s => s.Agent)
+                .WithMany()
+                .HasForeignKey(s => s.AgentId)
+                .OnDelete(DeleteBehavior.SetNull);
+            e.HasIndex(s => new { s.TenantId, s.IsEnabled });
+            e.HasIndex(s => new { s.AlertRuleId });
+        });
+
+        b.Entity<ApiToken>(e =>
+        {
+            e.HasKey(t => t.Id);
+            e.Property(t => t.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(t => t.Name).HasMaxLength(160).IsRequired();
+            e.Property(t => t.TokenHash).HasMaxLength(128).IsRequired();
+            e.Property(t => t.TokenPrefix).HasMaxLength(16).IsRequired();
+            e.HasOne(t => t.Tenant)
+                .WithMany(t => t.ApiTokens)
+                .HasForeignKey(t => t.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(t => t.TokenHash).IsUnique();
+            e.HasIndex(t => new { t.TenantId, t.CreatedAt });
         });
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -25,9 +26,8 @@ public class AlertRulesController(
         var rows = await db.AlertRules
             .AsNoTracking()
             .OrderBy(r => r.Name)
-            .Select(r => ToResponse(r))
             .ToListAsync(ct);
-        return Ok(rows);
+        return Ok(rows.Select(ToResponse).ToList());
     }
 
     [HttpPost]
@@ -52,6 +52,7 @@ public class AlertRulesController(
             PayloadPath = Normalize(req.PayloadPath),
             MatchValue = Normalize(req.MatchValue),
             IsEnabled = req.IsEnabled ?? true,
+            MitreTechniquesJson = SerializeTechniques(req.MitreTechniques),
             CreatedAt = now,
             UpdatedAt = now,
         };
@@ -163,6 +164,7 @@ public class AlertRulesController(
         rule.MatchValue = Normalize(req.MatchValue);
         rule.SourceDefinition = null;
         rule.IsEnabled = req.IsEnabled;
+        rule.MitreTechniquesJson = SerializeTechniques(req.MitreTechniques);
         rule.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Add(User, "alert_rule.update", rule.Id.ToString(), new
         {
@@ -213,8 +215,27 @@ public class AlertRulesController(
         r.MatchValue,
         r.SourceDefinition,
         r.IsEnabled,
+        DeserializeTechniques(r.MitreTechniquesJson),
         r.CreatedAt,
         r.UpdatedAt);
+
+    private static IReadOnlyList<string> DeserializeTechniques(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return JsonSerializer.Deserialize<List<string>>(json) ?? []; }
+        catch { return []; }
+    }
+
+    private static string? SerializeTechniques(IReadOnlyList<string>? techniques)
+    {
+        if (techniques is null || techniques.Count == 0) return null;
+        var normalized = techniques
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim().ToUpperInvariant())
+            .Distinct()
+            .ToList();
+        return normalized.Count == 0 ? null : JsonSerializer.Serialize(normalized);
+    }
 
     private ActionResult<AlertRuleResponse>? ValidateRule(
         string name,

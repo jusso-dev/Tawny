@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Route } from "next";
-import { Activity, BellRing, KeyRound, LayoutDashboard, PlugZap, ShieldCheck } from "lucide-react";
+import { Activity, BellRing, Compass, FileClock, KeyRound, LayoutDashboard, PlugZap, ShieldCheck, ShieldOff, TerminalSquare } from "lucide-react";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/cn";
@@ -14,7 +14,17 @@ type ShellAgent = {
 
 type AppShellProps = {
   agents?: ShellAgent[];
-  active: "dashboard" | "agents" | "alerts" | "detections" | "integrations" | "enrollment";
+  active:
+    | "dashboard"
+    | "agents"
+    | "alerts"
+    | "detections"
+    | "hunt"
+    | "suppressions"
+    | "audit"
+    | "tokens"
+    | "integrations"
+    | "enrollment";
   children: React.ReactNode;
 };
 
@@ -29,7 +39,11 @@ const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", key: "dashboard", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", key: "agents", icon: Activity },
   { href: "/alerts" as Route, label: "Alerts", key: "alerts", icon: BellRing },
+  { href: "/hunt" as Route, label: "Hunt", key: "hunt", icon: TerminalSquare },
   { href: "/detections", label: "Detections", key: "detections", icon: ShieldCheck },
+  { href: "/suppressions" as Route, label: "Suppressions", key: "suppressions", icon: ShieldOff },
+  { href: "/audit" as Route, label: "Audit", key: "audit", icon: FileClock },
+  { href: "/api-tokens" as Route, label: "Tokens", key: "tokens", icon: Compass },
   { href: "/integrations" as Route, label: "Integrations", key: "integrations", icon: PlugZap },
   { href: "/enrollment", label: "Enrollment", key: "enrollment", icon: KeyRound },
 ];

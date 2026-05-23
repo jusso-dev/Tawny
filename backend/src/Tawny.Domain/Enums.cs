@@ -90,3 +90,16 @@ public enum ResponseActionStatus
     Failed = 3,
     Cancelled = 4,
 }
+
+public enum HuntRunStatus
+{
+    Running = 0,
+    Succeeded = 1,
+    Failed = 2,
+}
+
+public enum SuppressionScope
+{
+    AllRules = 0,
+    SpecificRule = 1,
+}

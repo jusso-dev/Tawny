@@ -21,7 +21,8 @@ public class TelemetryController(
     IValidator<IngestEventsRequest> validator,
     AlertRuleEvaluator alertRules,
     ITelemetrySink telemetrySink,
-    IAlertSink alertSink) : ControllerBase
+    IAlertSink alertSink,
+    AgentEventBroker eventBroker) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
     private const int DefaultLimit = 50;
@@ -75,6 +76,7 @@ public class TelemetryController(
             received_at = receivedAt,
         });
         await db.SaveChangesAsync(ct);
+        eventBroker.Publish(agent, events);
         await telemetrySink.PublishAsync(agent, events, ct);
 
         var alerts = await alertRules.EvaluateAsync(agent, events, receivedAt, ct);
@@ -86,7 +88,12 @@ public class TelemetryController(
                 event_count = events.Count,
                 received_at = receivedAt,
             });
-            await db.SaveChangesAsync(ct);
+        }
+        // Always save: even if alerts.Count == 0, the evaluator may have
+        // touched suppression counters (SuppressedCount, LastSuppressedAt).
+        await db.SaveChangesAsync(ct);
+        if (alerts.Count > 0)
+        {
             await alertSink.PublishAsync(
                 agent,
                 alerts,
