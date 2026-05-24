@@ -44,8 +44,13 @@ pub const Collector = struct {
             try std.fmt.allocPrint(self.allocator, "@{d}", .{self.last_run_unix});
         defer self.allocator.free(since_arg);
 
-        var child = std.process.Child.init(
-            &.{
+        // Match the network/users collectors: Child.run handles spawn + wait
+        // + output capture in a single call and returns a RunResult, so we
+        // don't have to wrestle with the kill/wait error-union type signatures
+        // that vary across Zig versions.
+        const result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{
                 "journalctl",
                 "-u",
                 "systemd-resolved",
@@ -55,20 +60,12 @@ pub const Collector = struct {
                 "--no-pager",
                 "--quiet",
             },
-            self.allocator,
-        );
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
+            .max_output_bytes = 4 * 1024 * 1024,
+        }) catch return; // journalctl missing or not permitted; silently skip.
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
 
-        child.spawn() catch return; // journalctl missing or not permitted; silently skip.
-        defer _ = child.kill() catch {};
-
-        const stdout = child.stdout orelse return;
-        const output = stdout.reader().readAllAlloc(self.allocator, 4 * 1024 * 1024) catch return;
-        defer self.allocator.free(output);
-        _ = child.wait() catch {};
-
-        var lines = std.mem.splitScalar(u8, output, '\n');
+        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
         while (lines.next()) |line| {
             if (line.len == 0) continue;
             try parseLine(self.allocator, line, payloads);

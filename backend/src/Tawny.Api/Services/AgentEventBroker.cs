@@ -27,26 +27,28 @@ public class AgentEventBroker
 
     public IDisposable Subscribe(Guid tenantId, Guid agentId, out Channel<StreamedEvent> channel)
     {
-        channel = Channel.CreateBounded<StreamedEvent>(new BoundedChannelOptions(256)
+        // Build the channel into a local first; C# forbids capturing an `out`
+        // parameter inside a lambda (its lifetime isn't guaranteed past the
+        // caller's stack frame), so the dispose lambda must close over the
+        // local copy instead of `channel` itself.
+        var created = Channel.CreateBounded<StreamedEvent>(new BoundedChannelOptions(256)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = false,
         });
+        channel = created;
 
         var perTenant = _subscribers.GetOrAdd(tenantId, _ => new ConcurrentDictionary<Guid, Channel<StreamedEvent>>());
         var subscriberId = Guid.NewGuid();
-        // Key by (subscriberId XOR agentId) so multiple subscribers on same agent coexist.
-        // We store the filter agentId alongside via the channel writer's queue items being already filtered.
-        // Implementation detail: store as a list of (agentId, channel) under tenant for routing.
-        perTenant.TryAdd(subscriberId, channel);
+        perTenant.TryAdd(subscriberId, created);
         _filters[subscriberId] = agentId;
 
         return new Subscription(() =>
         {
             perTenant.TryRemove(subscriberId, out _);
             _filters.TryRemove(subscriberId, out _);
-            channel.Writer.TryComplete();
+            created.Writer.TryComplete();
         });
     }
 

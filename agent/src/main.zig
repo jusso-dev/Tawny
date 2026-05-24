@@ -190,55 +190,28 @@ pub fn main() !void {
 
         if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
             process_events_timer.reset();
-            const launches = process_tracker.collectLaunches() catch |err| blk: {
+            if (process_tracker.collectLaunches()) |launches| {
+                try emitBatch(&buf, cfg.spill_path, "process_launch", launches, alloc);
+            } else |err| {
                 try stderr.print("process_events collector failed: {s}\n", .{@errorName(err)});
-                break :blk &[_][]u8{};
-            };
-            defer alloc.free(launches);
-            for (launches) |payload| {
-                defer alloc.free(payload);
-                try buf.push(.{
-                    .event_type = "process_launch",
-                    .occurred_at = std.time.timestamp(),
-                    .payload = payload,
-                });
-                try spillIfNeeded(&buf, cfg.spill_path);
             }
         }
 
         if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
             fs_events_timer.reset();
-            const events = fs_watcher.collectEvents() catch |err| blk: {
+            if (fs_watcher.collectEvents()) |events| {
+                try emitBatch(&buf, cfg.spill_path, "file_event", events, alloc);
+            } else |err| {
                 try stderr.print("fs_events collector failed: {s}\n", .{@errorName(err)});
-                break :blk &[_][]u8{};
-            };
-            defer alloc.free(events);
-            for (events) |payload| {
-                defer alloc.free(payload);
-                try buf.push(.{
-                    .event_type = "file_event",
-                    .occurred_at = std.time.timestamp(),
-                    .payload = payload,
-                });
-                try spillIfNeeded(&buf, cfg.spill_path);
             }
         }
 
         if (dns_timer.read() / std.time.ns_per_s >= cfg.dns_interval_seconds) {
             dns_timer.reset();
-            const queries = dns.collectQueries() catch |err| blk: {
+            if (dns.collectQueries()) |queries| {
+                try emitBatch(&buf, cfg.spill_path, "dns_query", queries, alloc);
+            } else |err| {
                 try stderr.print("dns collector failed: {s}\n", .{@errorName(err)});
-                break :blk &[_][]u8{};
-            };
-            defer alloc.free(queries);
-            for (queries) |payload| {
-                defer alloc.free(payload);
-                try buf.push(.{
-                    .event_type = "dns_query",
-                    .occurred_at = std.time.timestamp(),
-                    .payload = payload,
-                });
-                try spillIfNeeded(&buf, cfg.spill_path);
             }
         }
 
@@ -247,33 +220,29 @@ pub fn main() !void {
         if (supply_chain_timer.read() / std.time.ns_per_s >= cfg.supply_chain_interval_seconds) {
             supply_chain_timer.reset();
 
-            try emitBatch(&buf, cfg.spill_path, "package_inventory",
-                inventory.collectInventory() catch |err| blk: {
-                    try stderr.print("inventory collector failed: {s}\n", .{@errorName(err)});
-                    break :blk &[_][]u8{};
-                },
-                alloc);
+            if (inventory.collectInventory()) |payloads| {
+                try emitBatch(&buf, cfg.spill_path, "package_inventory", payloads, alloc);
+            } else |err| {
+                try stderr.print("inventory collector failed: {s}\n", .{@errorName(err)});
+            }
 
-            try emitBatch(&buf, cfg.spill_path, "editor_extension",
-                extensions.collectExtensions(.editor) catch |err| blk: {
-                    try stderr.print("editor extensions failed: {s}\n", .{@errorName(err)});
-                    break :blk &[_][]u8{};
-                },
-                alloc);
+            if (extensions.collectExtensions(.editor)) |payloads| {
+                try emitBatch(&buf, cfg.spill_path, "editor_extension", payloads, alloc);
+            } else |err| {
+                try stderr.print("editor extensions failed: {s}\n", .{@errorName(err)});
+            }
 
-            try emitBatch(&buf, cfg.spill_path, "browser_extension",
-                extensions.collectExtensions(.browser) catch |err| blk: {
-                    try stderr.print("browser extensions failed: {s}\n", .{@errorName(err)});
-                    break :blk &[_][]u8{};
-                },
-                alloc);
+            if (extensions.collectExtensions(.browser)) |payloads| {
+                try emitBatch(&buf, cfg.spill_path, "browser_extension", payloads, alloc);
+            } else |err| {
+                try stderr.print("browser extensions failed: {s}\n", .{@errorName(err)});
+            }
 
-            try emitBatch(&buf, cfg.spill_path, "mcp_config",
-                mcp.collectConfigs() catch |err| blk: {
-                    try stderr.print("mcp config failed: {s}\n", .{@errorName(err)});
-                    break :blk &[_][]u8{};
-                },
-                alloc);
+            if (mcp.collectConfigs()) |payloads| {
+                try emitBatch(&buf, cfg.spill_path, "mcp_config", payloads, alloc);
+            } else |err| {
+                try stderr.print("mcp config failed: {s}\n", .{@errorName(err)});
+            }
         }
 
         if (buf.len() == 0) {

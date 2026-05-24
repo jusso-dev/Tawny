@@ -83,7 +83,7 @@ public class DashboardController(TawnyDbContext db) : ControllerBase
         if (techniqueByRule.Count > 0)
         {
             var ruleIds = techniqueByRule.Keys.ToList();
-            var counts = await db.Alerts
+            var alertCounts = await db.Alerts
                 .AsNoTracking()
                 .Where(a => a.CreatedAt >= sevenDaysAgo
                             && ruleIds.Contains(a.AlertRuleId)
@@ -93,7 +93,7 @@ public class DashboardController(TawnyDbContext db) : ControllerBase
                 .ToListAsync(ct);
 
             var perTechnique = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var c in counts)
+            foreach (var c in alertCounts)
             {
                 if (!techniqueByRule.TryGetValue(c.RuleId, out var techniques)) continue;
                 foreach (var t in techniques)
