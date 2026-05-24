@@ -29,7 +29,8 @@ public record CreateSavedHuntRequest(
     string? ScheduleCron,
     bool? AlertOnMatch,
     AlertSeverity? AlertSeverity,
-    IReadOnlyList<string>? MitreTechniques);
+    IReadOnlyList<string>? MitreTechniques,
+    bool? IsShared);
 
 public record UpdateSavedHuntRequest(
     string Name,
@@ -39,7 +40,8 @@ public record UpdateSavedHuntRequest(
     string? ScheduleCron,
     bool AlertOnMatch,
     AlertSeverity AlertSeverity,
-    IReadOnlyList<string>? MitreTechniques);
+    IReadOnlyList<string>? MitreTechniques,
+    bool? IsShared);
 
 public record SavedHuntResponse(
     Guid Id,
@@ -51,6 +53,8 @@ public record SavedHuntResponse(
     bool AlertOnMatch,
     AlertSeverity AlertSeverity,
     IReadOnlyList<string> MitreTechniques,
+    bool IsShared,
+    Guid? CreatedByUserId,
     DateTimeOffset? LastRunAt,
     int? LastMatchCount,
     DateTimeOffset CreatedAt,

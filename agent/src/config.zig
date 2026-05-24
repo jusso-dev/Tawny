@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
+const iox = @import("io_compat.zig");
 
 pub const Config = struct {
     allocator: std.mem.Allocator,
@@ -9,10 +11,14 @@ pub const Config = struct {
     agent_jwt: ?[]u8 = null,
     heartbeat_interval_seconds: u32 = 60,
     process_interval_seconds: u32 = 30,
+    process_events_interval_seconds: u32 = 5,
     network_interval_seconds: u32 = 30,
     users_interval_seconds: u32 = 300,
     system_interval_seconds: u32 = 3600,
     fim_interval_seconds: u32 = 300,
+    fs_events_interval_seconds: u32 = 5,
+    dns_interval_seconds: u32 = 30,
+    supply_chain_interval_seconds: u32 = 21600,
     max_in_memory_events: usize = 1000,
     fim_paths: [][]u8 = &.{},
     spill_path: []u8,
@@ -33,7 +39,7 @@ pub const Config = struct {
 /// Resolve the platform-default config directory.
 fn defaultConfigPath(alloc: std.mem.Allocator) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const programdata = std.process.getEnvVarOwned(alloc, "PROGRAMDATA") catch
+        const programdata = env.getEnvVarOwned(alloc, "PROGRAMDATA") catch
             try alloc.dupe(u8, "C:\\ProgramData");
         defer alloc.free(programdata);
         return std.fmt.allocPrint(alloc, "{s}\\Tawny\\config.toml", .{programdata});
@@ -46,7 +52,7 @@ fn defaultConfigPath(alloc: std.mem.Allocator) ![]u8 {
 
 /// Read TOML-ish config. Trivial line-based parser — good enough for MVP.
 pub fn load(alloc: std.mem.Allocator) !Config {
-    const env_path = std.process.getEnvVarOwned(alloc, "TAWNY_CONFIG") catch null;
+    const env_path = env.getEnvVarOwned(alloc, "TAWNY_CONFIG") catch null;
     const path: []u8 = if (env_path) |p| p else try defaultConfigPath(alloc);
 
     var cfg = Config{
@@ -56,13 +62,14 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .config_path = path,
     };
 
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    const io = iox.current();
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch {
         // First run: emit a default config alongside the binary.
         return cfg;
     };
-    defer file.close();
+    defer file.close(io);
 
-    const raw = try file.readToEndAlloc(alloc, 64 * 1024);
+    const raw = try iox.readToEndAlloc(file, alloc, 64 * 1024);
     defer alloc.free(raw);
 
     var line_iter = std.mem.splitScalar(u8, raw, '\n');
@@ -95,6 +102,14 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             cfg.system_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "fim_interval_seconds")) {
             cfg.fim_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "process_events_interval_seconds")) {
+            cfg.process_events_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "fs_events_interval_seconds")) {
+            cfg.fs_events_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "dns_interval_seconds")) {
+            cfg.dns_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "supply_chain_interval_seconds")) {
+            cfg.supply_chain_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_in_memory_events")) {
             cfg.max_in_memory_events = try std.fmt.parseInt(usize, val, 10);
         } else if (std.mem.eql(u8, key, "spill_path")) {
@@ -113,15 +128,18 @@ pub fn load(alloc: std.mem.Allocator) !Config {
 pub fn save(cfg: *const Config) !void {
     // Best-effort write; create parent dirs as needed.
     const dir = std.fs.path.dirname(cfg.config_path) orelse ".";
-    std.fs.cwd().makePath(dir) catch {};
+    const io = iox.current();
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
 
     const tmp_path = try std.fmt.allocPrint(cfg.allocator, "{s}.tmp", .{cfg.config_path});
     defer cfg.allocator.free(tmp_path);
 
     {
-        var file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
-        var w = file.writer();
+        var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
+        defer file.close(io);
+        var writer_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(io, &writer_buffer);
+        const w = &file_writer.interface;
 
         try w.print("[backend]\nurl = \"{s}\"\n\n", .{cfg.backend_url});
         if (cfg.agent_id) |id| try w.print("agent_id = \"{s}\"\n", .{id});
@@ -132,40 +150,43 @@ pub fn save(cfg: *const Config) !void {
             \\[collection]
             \\heartbeat_interval_seconds = {d}
             \\process_interval_seconds = {d}
+            \\process_events_interval_seconds = {d}
             \\network_interval_seconds = {d}
             \\users_interval_seconds = {d}
             \\system_interval_seconds = {d}
             \\fim_interval_seconds = {d}
+            \\fs_events_interval_seconds = {d}
+            \\dns_interval_seconds = {d}
+            \\supply_chain_interval_seconds = {d}
             \\max_in_memory_events = {d}
             \\spill_path =
         , .{
             cfg.heartbeat_interval_seconds,
             cfg.process_interval_seconds,
+            cfg.process_events_interval_seconds,
             cfg.network_interval_seconds,
             cfg.users_interval_seconds,
             cfg.system_interval_seconds,
             cfg.fim_interval_seconds,
+            cfg.fs_events_interval_seconds,
+            cfg.dns_interval_seconds,
+            cfg.supply_chain_interval_seconds,
             cfg.max_in_memory_events,
         });
         try w.writeByte(' ');
-        try std.json.stringify(cfg.spill_path, .{}, w);
+        try std.json.Stringify.value(cfg.spill_path, .{}, w);
         try w.writeAll("\nfim_paths = [");
 
         for (cfg.fim_paths, 0..) |path, i| {
             if (i > 0) try w.writeAll(", ");
-            try std.json.stringify(path, .{}, w);
+            try std.json.Stringify.value(path, .{}, w);
         }
         try w.writeAll("]\n");
-        try file.sync();
+        try w.flush();
+        try file.sync(io);
     }
 
-    std.fs.cwd().rename(tmp_path, cfg.config_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            std.fs.cwd().deleteFile(cfg.config_path) catch {};
-            try std.fs.cwd().rename(tmp_path, cfg.config_path);
-        },
-        else => return err,
-    };
+    try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), cfg.config_path, io);
 }
 
 fn appendFimPaths(cfg: *Config, raw: []const u8) !void {

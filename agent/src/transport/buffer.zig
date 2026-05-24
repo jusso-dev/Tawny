@@ -1,4 +1,5 @@
 const std = @import("std");
+const iox = @import("../io_compat.zig");
 
 pub const Event = struct {
     event_type: []const u8,
@@ -10,13 +11,13 @@ pub const Event = struct {
 pub const Buffer = struct {
     allocator: std.mem.Allocator,
     capacity: usize,
-    list: std.ArrayList(Event),
+    list: std.array_list.Managed(Event),
 
     pub fn init(alloc: std.mem.Allocator, capacity: usize) Buffer {
         return .{
             .allocator = alloc,
             .capacity = capacity,
-            .list = std.ArrayList(Event).init(alloc),
+            .list = std.array_list.Managed(Event).init(alloc),
         };
     }
 
@@ -59,29 +60,33 @@ pub const Buffer = struct {
     pub fn spill(self: *Buffer, path: []const u8) !void {
         if (self.len() == 0) return;
 
+        const io = iox.current();
         const dir = std.fs.path.dirname(path) orelse ".";
-        std.fs.cwd().makePath(dir) catch {};
+        std.Io.Dir.cwd().createDirPath(io, dir) catch {};
 
-        var file = try std.fs.cwd().createFile(path, .{ .truncate = false });
-        defer file.close();
-        try file.seekFromEnd(0);
+        var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false });
+        defer file.close(io);
 
-        var w = file.writer();
+        var offset = (try file.stat(io)).size;
         for (self.list.items) |ev| {
-            try w.print("{s}\t{d}\t{s}\n", .{ ev.event_type, ev.occurred_at, ev.payload });
+            const line = try std.fmt.allocPrint(self.allocator, "{s}\t{d}\t{s}\n", .{ ev.event_type, ev.occurred_at, ev.payload });
+            defer self.allocator.free(line);
+            try file.writePositionalAll(io, line, offset);
+            offset += line.len;
         }
-        try file.sync();
+        try file.sync(io);
         self.clear();
     }
 
     pub fn replay(self: *Buffer, path: []const u8) !void {
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        const io = iox.current();
+        const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => return,
             else => return err,
         };
-        defer file.close();
+        defer file.close(io);
 
-        const raw = try file.readToEndAlloc(self.allocator, 32 * 1024 * 1024);
+        const raw = try iox.readToEndAlloc(file, self.allocator, 32 * 1024 * 1024);
         defer self.allocator.free(raw);
 
         var lines = std.mem.splitScalar(u8, raw, '\n');
@@ -100,7 +105,7 @@ pub const Buffer = struct {
             });
         }
 
-        std.fs.cwd().deleteFile(path) catch |err| switch (err) {
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
         };
@@ -119,11 +124,9 @@ test "buffer pushes and clears" {
 test "buffer spills and replays" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(tmp_path);
     const spill_path = try std.fs.path.join(
         std.testing.allocator,
-        &.{ tmp_path, "events.spool" },
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "events.spool" },
     );
     defer std.testing.allocator.free(spill_path);
 

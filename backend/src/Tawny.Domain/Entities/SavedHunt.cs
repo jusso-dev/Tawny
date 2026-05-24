@@ -15,6 +15,7 @@ public class SavedHunt
     public string? MitreTechniquesJson { get; set; }
     public DateTimeOffset? LastRunAt { get; set; }
     public int? LastMatchCount { get; set; }
+    public bool IsShared { get; set; } = true;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 

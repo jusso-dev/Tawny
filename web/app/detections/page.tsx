@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { authRole } from "@/lib/auth-role";
 import { apiGet } from "@/lib/api";
 import { AppShell, PageHeader } from "@/components/app-shell";
+import { ExposureImportPanel } from "./exposure-import-panel";
 import { IocImportPanel } from "./ioc-import-panel";
 import { SigmaImportPanel } from "./sigma-import-panel";
 
@@ -58,6 +59,10 @@ export default async function DetectionsPage() {
         <div className="mt-6 grid gap-5 xl:grid-cols-2">
           <SigmaImportPanel />
           <IocImportPanel />
+        </div>
+
+        <div className="mt-5">
+          <ExposureImportPanel />
         </div>
 
         <div className="mt-5 grid gap-5 lg:grid-cols-2">

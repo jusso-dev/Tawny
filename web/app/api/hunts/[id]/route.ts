@@ -14,6 +14,7 @@ const schema = z.object({
   alert_on_match: z.boolean(),
   alert_severity: z.enum(["low", "medium", "high", "critical"]),
   mitre_techniques: z.array(z.string()).optional(),
+  is_shared: z.boolean().optional(),
 });
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {

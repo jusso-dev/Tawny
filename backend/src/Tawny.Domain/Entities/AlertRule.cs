@@ -13,6 +13,7 @@ public class AlertRule
     public string? PayloadPath { get; set; }
     public string? MatchValue { get; set; }
     public string? SourceDefinition { get; set; }
+    public string? CompiledExpressionJson { get; set; }
     public bool IsEnabled { get; set; } = true;
     public string? MitreTechniquesJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; }

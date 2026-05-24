@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const iox = @import("../io_compat.zig");
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
@@ -24,18 +25,18 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     const brand = try sysctlString(alloc, "machdep.cpu.brand_string");
     defer alloc.free(brand);
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"platform\":\"macos\",\"hostname\":");
-    try std.json.stringify(std.mem.sliceTo(&uts.nodename, 0), .{}, w);
+    try std.json.Stringify.value(std.mem.sliceTo(&uts.nodename, 0), .{}, w);
     try w.writeAll(",\"kernel\":");
-    try std.json.stringify(std.mem.sliceTo(&uts.release, 0), .{}, w);
+    try std.json.Stringify.value(std.mem.sliceTo(&uts.release, 0), .{}, w);
     try w.writeAll(",\"architecture\":");
-    try std.json.stringify(std.mem.sliceTo(&uts.machine, 0), .{}, w);
+    try std.json.Stringify.value(std.mem.sliceTo(&uts.machine, 0), .{}, w);
     try w.print(",\"memory_bytes\":{d},\"cpu_count\":{d},\"cpu_brand\":", .{ mem_bytes, cpu_count });
-    try std.json.stringify(brand, .{}, w);
+    try std.json.Stringify.value(brand, .{}, w);
     try w.writeByte('}');
 
     return out.toOwnedSlice();
@@ -77,16 +78,16 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
     const mem_total_kb = readMemTotalKb(alloc) catch 0;
     const cpu_count = std.Thread.getCpuCount() catch 0;
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"platform\":\"linux\",\"hostname\":");
-    try std.json.stringify(std.mem.trimRight(u8, hostname_raw, "\r\n"), .{}, w);
+    try std.json.Stringify.value(std.mem.trimEnd(u8, hostname_raw, "\r\n"), .{}, w);
     try w.writeAll(",\"kernel\":");
-    try std.json.stringify(std.mem.trimRight(u8, kernel_raw, "\r\n"), .{}, w);
+    try std.json.Stringify.value(std.mem.trimEnd(u8, kernel_raw, "\r\n"), .{}, w);
     try w.writeAll(",\"architecture\":");
-    try std.json.stringify(@tagName(builtin.target.cpu.arch), .{}, w);
+    try std.json.Stringify.value(@tagName(builtin.target.cpu.arch), .{}, w);
     try w.print(",\"memory_bytes\":{d},\"cpu_count\":{d}}}", .{
         mem_total_kb * 1024,
         cpu_count,
@@ -111,9 +112,10 @@ fn readMemTotalKb(alloc: std.mem.Allocator) !u64 {
 }
 
 fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, max_bytes);
+    const io = iox.current();
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, max_bytes);
 }
 
 const COMPUTER_NAME_FORMAT = enum(u32) {
@@ -141,9 +143,9 @@ const MEMORYSTATUSEX = extern struct {
     ullAvailExtendedVirtual: u64,
 };
 
-extern "kernel32" fn GetComputerNameExW(NameType: COMPUTER_NAME_FORMAT, lpBuffer: ?[*]u16, nSize: *u32) callconv(.C) i32;
-extern "kernel32" fn GlobalMemoryStatusEx(lpBuffer: *MEMORYSTATUSEX) callconv(.C) i32;
-extern "ntdll" fn RtlGetVersion(lpVersionInformation: *RTL_OSVERSIONINFOW) callconv(.C) i32;
+extern "kernel32" fn GetComputerNameExW(NameType: COMPUTER_NAME_FORMAT, lpBuffer: ?[*]u16, nSize: *u32) callconv(.c) i32;
+extern "kernel32" fn GlobalMemoryStatusEx(lpBuffer: *MEMORYSTATUSEX) callconv(.c) i32;
+extern "ntdll" fn RtlGetVersion(lpVersionInformation: *RTL_OSVERSIONINFOW) callconv(.c) i32;
 
 fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     var name_len: u32 = 0;
@@ -162,12 +164,12 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     mem.dwLength = @sizeOf(MEMORYSTATUSEX);
     if (GlobalMemoryStatusEx(&mem) == 0) return error.MemoryStatusFailed;
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"platform\":\"windows\",\"hostname\":");
-    try std.json.stringify(hostname, .{}, w);
+    try std.json.Stringify.value(hostname, .{}, w);
     try w.print(
         ",\"major\":{d},\"minor\":{d},\"build\":{d},\"memory_bytes\":{d}}}",
         .{ version.dwMajorVersion, version.dwMinorVersion, version.dwBuildNumber, mem.ullTotalPhys },

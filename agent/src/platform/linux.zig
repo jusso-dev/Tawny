@@ -1,4 +1,5 @@
 const std = @import("std");
+const iox = @import("../io_compat.zig");
 
 pub const ProcessInfo = struct {
     pid: u32,
@@ -8,10 +9,11 @@ pub const ProcessInfo = struct {
 };
 
 pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
-    var proc_dir = try std.fs.openDirAbsolute("/proc", .{ .iterate = true });
-    defer proc_dir.close();
+    const io = iox.current();
+    var proc_dir = try std.Io.Dir.openDirAbsolute(io, "/proc", .{ .iterate = true });
+    defer proc_dir.close(io);
 
-    var list = std.ArrayList(ProcessInfo).init(alloc);
+    var list = std.array_list.Managed(ProcessInfo).init(alloc);
     errdefer {
         for (list.items) |p| {
             alloc.free(p.name);
@@ -21,13 +23,13 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     }
 
     var iter = proc_dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         if (entry.kind != .directory) continue;
         const pid = std.fmt.parseInt(u32, entry.name, 10) catch continue;
 
         const raw_name = readProcText(alloc, pid, "comm") catch try alloc.dupe(u8, "unknown");
         defer alloc.free(raw_name);
-        const name = try alloc.dupe(u8, std.mem.trimRight(u8, raw_name, "\r\n"));
+        const name = try alloc.dupe(u8, std.mem.trimEnd(u8, raw_name, "\r\n"));
         errdefer alloc.free(name);
         const command_line = readCommandLine(alloc, pid) catch try alloc.dupe(u8, name);
         errdefer alloc.free(command_line);
@@ -58,9 +60,10 @@ fn readParentPid(alloc: std.mem.Allocator, pid: u32) !u32 {
 fn readProcText(alloc: std.mem.Allocator, pid: u32, name: []const u8) ![]u8 {
     const path = try std.fmt.allocPrint(alloc, "/proc/{d}/{s}", .{ pid, name });
     defer alloc.free(path);
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, 16 * 1024);
+    const io = iox.current();
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, 16 * 1024);
 }
 
 fn readCommandLine(alloc: std.mem.Allocator, pid: u32) ![]u8 {
@@ -72,7 +75,7 @@ fn readCommandLine(alloc: std.mem.Allocator, pid: u32) ![]u8 {
         if (ch.* == 0) ch.* = ' ';
     }
 
-    const trimmed = std.mem.trimRight(u8, owned, " ");
+    const trimmed = std.mem.trimEnd(u8, owned, " ");
     if (trimmed.len == owned.len) {
         return owned;
     }

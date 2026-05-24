@@ -136,8 +136,9 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("Severity")
-                        .HasColumnType("int");
+                    b.Property<string>("EnrichmentJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("Enrichment");
 
                     b.Property<string>("SentinelNotificationError")
                         .HasMaxLength(1024)
@@ -148,6 +149,9 @@ namespace Tawny.Infrastructure.Migrations
 
                     b.Property<DateTimeOffset?>("SentinelNotifiedAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("Severity")
+                        .HasColumnType("int");
 
                     b.Property<string>("SlackNotificationError")
                         .HasMaxLength(1024)
@@ -188,6 +192,10 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CompiledExpressionJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("CompiledExpression");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
@@ -244,188 +252,6 @@ namespace Tawny.Infrastructure.Migrations
                     b.HasIndex("IsEnabled", "EventType");
 
                     b.ToTable("AlertRules");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<bool>("AlertOnMatch")
-                        .HasColumnType("bit");
-
-                    b.Property<int>("AlertSeverity")
-                        .HasColumnType("int");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<bool>("IsScheduled")
-                        .HasColumnType("bit");
-
-                    b.Property<int?>("LastMatchCount")
-                        .HasColumnType("int");
-
-                    b.Property<DateTimeOffset?>("LastRunAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("MitreTechniquesJson")
-                        .HasColumnType("nvarchar(max)")
-                        .HasColumnName("MitreTechniques");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("nvarchar(160)");
-
-                    b.Property<string>("Query")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("ScheduleCron")
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "IsScheduled");
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique();
-
-                    b.ToTable("SavedHunts");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.HuntRun", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
-
-                    b.Property<int>("AlertsCreated")
-                        .HasColumnType("int");
-
-                    b.Property<DateTimeOffset?>("CompletedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasMaxLength(1024)
-                        .HasColumnType("nvarchar(1024)");
-
-                    b.Property<int>("MatchCount")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("SavedHuntId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("StartedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
-                    b.Property<Guid?>("TriggeredByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId", "SavedHuntId", "StartedAt")
-                        .IsDescending(false, false, true);
-
-                    b.ToTable("HuntRuns");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.SuppressionRule", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("AgentId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid?>("AlertRuleId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<Guid?>("CreatedByUserId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTimeOffset?>("ExpiresAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<bool>("IsEnabled")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTimeOffset?>("LastSuppressedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("MatchValue")
-                        .HasMaxLength(512)
-                        .HasColumnType("nvarchar(512)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(160)
-                        .HasColumnType("nvarchar(160)");
-
-                    b.Property<int>("Operator")
-                        .HasColumnType("int");
-
-                    b.Property<string>("PayloadPath")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<string>("Reason")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("Scope")
-                        .HasColumnType("int");
-
-                    b.Property<int>("SuppressedCount")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("TenantId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier")
-                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("AgentId");
-
-                    b.HasIndex("AlertRuleId");
-
-                    b.HasIndex("TenantId", "IsEnabled");
-
-                    b.ToTable("SuppressionRules");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.ApiToken", b =>
@@ -521,6 +347,117 @@ namespace Tawny.Infrastructure.Migrations
                     b.ToTable("AuditLog");
                 });
 
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("AssignedToUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ClosedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("MitreTechniquesJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("MitreTechniques");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Status", "CreatedAt");
+
+                    b.ToTable("Cases");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseAlert", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("AddedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("AddedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("AlertId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CaseId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AlertId");
+
+                    b.HasIndex("CaseId", "AlertId")
+                        .IsUnique();
+
+                    b.ToTable("CaseAlerts");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseNote", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("AuthorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("CaseId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaseId", "CreatedAt");
+
+                    b.ToTable("CaseNotes");
+                });
+
             modelBuilder.Entity("Tawny.Domain.Entities.EnrollmentToken", b =>
                 {
                     b.Property<Guid>("Id")
@@ -560,6 +497,106 @@ namespace Tawny.Infrastructure.Migrations
                     b.HasIndex("TenantId", "CreatedAt");
 
                     b.ToTable("EnrollmentTokens");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.HuntRun", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AlertsCreated")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<int>("MatchCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SavedHuntId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<Guid?>("TriggeredByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SavedHuntId");
+
+                    b.HasIndex("TenantId", "SavedHuntId", "StartedAt")
+                        .IsDescending(false, false, true);
+
+                    b.ToTable("HuntRuns");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.ReputationCacheEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("DetailJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("FetchedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("IndicatorKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("IndicatorValue")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<int>("Provider")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("Score")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<int>("Verdict")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("TenantId", "Provider", "IndicatorKind", "IndicatorValue")
+                        .IsUnique();
+
+                    b.ToTable("ReputationCache");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.ResponseAction", b =>
@@ -603,6 +640,145 @@ namespace Tawny.Infrastructure.Migrations
                     b.HasIndex("AgentId", "Status", "RequestedAt");
 
                     b.ToTable("ResponseActions");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("AlertOnMatch")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("AlertSeverity")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsScheduled")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsShared")
+                        .HasColumnType("bit");
+
+                    b.Property<int?>("LastMatchCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("LastRunAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("MitreTechniquesJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("MitreTechniques");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("Query")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ScheduleCron")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "IsScheduled");
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("SavedHunts");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.SuppressionRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("AgentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("AlertRuleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LastSuppressedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("MatchValue")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("Operator")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PayloadPath")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Scope")
+                        .HasColumnType("int");
+
+                    b.Property<int>("SuppressedCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AgentId");
+
+                    b.HasIndex("AlertRuleId");
+
+                    b.HasIndex("TenantId", "IsEnabled");
+
+                    b.ToTable("SuppressionRules");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.TelemetryEvent", b =>
@@ -682,6 +858,86 @@ namespace Tawny.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Tawny.Domain.Entities.ThreatIntelFeed", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AuthHeaderName")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("AuthHeaderValueEncrypted")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("DefaultSeverity")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Etag")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<int>("IntervalMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<int>("LastImportedCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("LastRunAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("LastSkippedCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "IsEnabled");
+
+                    b.ToTable("ThreatIntelFeeds");
+                });
+
             modelBuilder.Entity("Tawny.Domain.Entities.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -728,28 +984,6 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("Tenant");
                 });
 
-            modelBuilder.Entity("Tawny.Domain.Entities.AuditLog", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("AuditLog")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.EnrollmentToken", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("EnrollmentTokens")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Tenant");
-                });
-
             modelBuilder.Entity("Tawny.Domain.Entities.Alert", b =>
                 {
                     b.HasOne("Tawny.Domain.Entities.Agent", "Agent")
@@ -777,51 +1011,73 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("TelemetryEvent");
                 });
 
-            modelBuilder.Entity("Tawny.Domain.Entities.ResponseAction", b =>
+            modelBuilder.Entity("Tawny.Domain.Entities.ApiToken", b =>
                 {
-                    b.HasOne("Tawny.Domain.Entities.Agent", "Agent")
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("ApiTokens")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.AuditLog", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("AuditLog")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("Cases")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseAlert", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Alert", "Alert")
                         .WithMany()
-                        .HasForeignKey("AgentId")
+                        .HasForeignKey("AlertId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Agent");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.TelemetryEvent", b =>
-                {
-                    b.HasOne("Tawny.Domain.Entities.Agent", "Agent")
-                        .WithMany("Events")
-                        .HasForeignKey("AgentId")
+                    b.HasOne("Tawny.Domain.Entities.Case", "Case")
+                        .WithMany("CaseAlerts")
+                        .HasForeignKey("CaseId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("TelemetryEvents")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                    b.Navigation("Alert");
 
-                    b.Navigation("Agent");
-
-                    b.Navigation("Tenant");
+                    b.Navigation("Case");
                 });
 
-            modelBuilder.Entity("Tawny.Domain.Entities.User", b =>
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseNote", b =>
                 {
-                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("Users")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                    b.HasOne("Tawny.Domain.Entities.Case", "Case")
+                        .WithMany("Notes")
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Tenant");
+                    b.Navigation("Case");
                 });
 
-            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
+            modelBuilder.Entity("Tawny.Domain.Entities.EnrollmentToken", b =>
                 {
                     b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("SavedHunts")
+                        .WithMany("EnrollmentTokens")
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
@@ -838,6 +1094,28 @@ namespace Tawny.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("SavedHunt");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.ResponseAction", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("SavedHunts")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.SuppressionRule", b =>
@@ -865,10 +1143,40 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("Tenant");
                 });
 
-            modelBuilder.Entity("Tawny.Domain.Entities.ApiToken", b =>
+            modelBuilder.Entity("Tawny.Domain.Entities.TelemetryEvent", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Agent", "Agent")
+                        .WithMany("Events")
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("TelemetryEvents")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.ThreatIntelFeed", b =>
                 {
                     b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
-                        .WithMany("ApiTokens")
+                        .WithMany("ThreatIntelFeeds")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.User", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("Users")
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
@@ -881,6 +1189,23 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("Events");
                 });
 
+            modelBuilder.Entity("Tawny.Domain.Entities.AlertRule", b =>
+                {
+                    b.Navigation("Alerts");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.Navigation("CaseAlerts");
+
+                    b.Navigation("Notes");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
+                {
+                    b.Navigation("Runs");
+                });
+
             modelBuilder.Entity("Tawny.Domain.Entities.Tenant", b =>
                 {
                     b.Navigation("Agents");
@@ -888,6 +1213,8 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("ApiTokens");
 
                     b.Navigation("AuditLog");
+
+                    b.Navigation("Cases");
 
                     b.Navigation("EnrollmentTokens");
 
@@ -897,17 +1224,9 @@ namespace Tawny.Infrastructure.Migrations
 
                     b.Navigation("TelemetryEvents");
 
+                    b.Navigation("ThreatIntelFeeds");
+
                     b.Navigation("Users");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.AlertRule", b =>
-                {
-                    b.Navigation("Alerts");
-                });
-
-            modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
-                {
-                    b.Navigation("Runs");
                 });
 #pragma warning restore 612, 618
         }

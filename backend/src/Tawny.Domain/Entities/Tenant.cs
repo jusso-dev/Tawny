@@ -15,4 +15,6 @@ public class Tenant
     public List<SavedHunt> SavedHunts { get; set; } = [];
     public List<SuppressionRule> SuppressionRules { get; set; } = [];
     public List<ApiToken> ApiTokens { get; set; } = [];
+    public List<ThreatIntelFeed> ThreatIntelFeeds { get; set; } = [];
+    public List<Case> Cases { get; set; } = [];
 }

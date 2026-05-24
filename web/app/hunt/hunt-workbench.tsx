@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, BookmarkPlus, Calendar, Loader2, Pencil, Play, Save, Trash2, X } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, Calendar, Lock, Loader2, Pencil, Play, Save, Trash2, X } from "lucide-react";
 
 export type SavedHunt = {
   id: string;
@@ -14,6 +14,8 @@ export type SavedHunt = {
   alert_on_match: boolean;
   alert_severity: "low" | "medium" | "high" | "critical";
   mitre_techniques: string[];
+  is_shared: boolean;
+  created_by_user_id: string | null;
   last_run_at: string | null;
   last_match_count: number | null;
   created_at: string;
@@ -148,11 +150,18 @@ export function HuntWorkbench({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-medium">{hunt.name}</span>
-                  {hunt.is_scheduled ? (
-                    <span title="Scheduled" aria-label="Scheduled">
-                      <Calendar size={13} className="shrink-0 text-[color:var(--color-accent)]" />
-                    </span>
-                  ) : null}
+                  <span className="flex items-center gap-1">
+                    {!hunt.is_shared ? (
+                      <span title="Private to you" aria-label="Private">
+                        <Lock size={12} className="shrink-0 text-[color:var(--color-muted-foreground)]" />
+                      </span>
+                    ) : null}
+                    {hunt.is_scheduled ? (
+                      <span title="Scheduled" aria-label="Scheduled">
+                        <Calendar size={13} className="shrink-0 text-[color:var(--color-accent)]" />
+                      </span>
+                    ) : null}
+                  </span>
                 </div>
                 <span className="truncate font-mono text-[10px] text-[color:var(--color-muted-foreground)]">
                   {hunt.query}
@@ -349,6 +358,7 @@ function SaveHuntDialog({
   const [alertOnMatch, setAlertOnMatch] = useState(hunt?.alert_on_match ?? false);
   const [severity, setSeverity] = useState<SavedHunt["alert_severity"]>(hunt?.alert_severity ?? "medium");
   const [techniques, setTechniques] = useState((hunt?.mitre_techniques ?? []).join(", "));
+  const [isShared, setIsShared] = useState(hunt?.is_shared ?? true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -379,6 +389,7 @@ function SaveHuntDialog({
       alert_on_match: alertOnMatch,
       alert_severity: severity,
       mitre_techniques: techniqueList,
+      is_shared: isShared,
     };
     setPending(true);
     try {
@@ -498,6 +509,19 @@ function SaveHuntDialog({
             className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 text-sm font-mono"
             placeholder="T1059.003, T1071.004"
           />
+        </label>
+
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={isShared}
+            onChange={(e) => setIsShared(e.target.checked)}
+            className="h-4 w-4 accent-[color:var(--color-accent)]"
+          />
+          <span className="font-medium">Share with everyone in this tenant</span>
+          <span className="text-xs text-[color:var(--color-muted-foreground)]">
+            (uncheck to keep this hunt private to you)
+          </span>
         </label>
 
         {error ? (

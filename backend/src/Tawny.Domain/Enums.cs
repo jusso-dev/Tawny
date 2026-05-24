@@ -29,6 +29,13 @@ public enum TelemetryEventType
     SystemInfo = 3,
     FileIntegrity = 4,
     Heartbeat = 5,
+    DnsQuery = 6,
+    ProcessLaunch = 7,
+    FileEvent = 8,
+    PackageInventory = 9,
+    EditorExtension = 10,
+    BrowserExtension = 11,
+    McpConfig = 12,
 }
 
 public enum UserRole
@@ -74,6 +81,9 @@ public enum AlertRuleFormat
     TawnyPredicate = 0,
     Sigma = 1,
     Ioc = 2,
+    Sequence = 3,
+    Yara = 4,
+    PackageExposure = 5,
 }
 
 public enum ResponseActionType
@@ -102,4 +112,39 @@ public enum SuppressionScope
 {
     AllRules = 0,
     SpecificRule = 1,
+}
+
+public enum ThreatIntelFeedKind
+{
+    UrlhausCsv = 0,
+    UrlhausJson = 1,
+    OtxPulse = 2,
+    MispEvents = 3,
+    Taxii21 = 4,
+    GenericCsv = 5,
+    OsvVulnerabilities = 6,
+}
+
+public enum ThreatIntelFeedStatus
+{
+    Healthy = 0,
+    Degraded = 1,
+    Failed = 2,
+    NeverRun = 3,
+}
+
+public enum ReputationProvider
+{
+    VirusTotal = 0,
+    AbuseIpDb = 1,
+    GreyNoise = 2,
+}
+
+public enum ReputationVerdict
+{
+    Unknown = 0,
+    Clean = 1,
+    Suspicious = 2,
+    Malicious = 3,
+    Error = 4,
 }

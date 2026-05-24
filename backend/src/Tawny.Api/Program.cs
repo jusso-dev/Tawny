@@ -15,6 +15,7 @@ using Tawny.Api.Controllers;
 using Tawny.Api.Services;
 using Tawny.Infrastructure;
 using Tawny.Infrastructure.Hunting;
+using Tawny.Infrastructure.ThreatIntel;
 using Tawny.Jobs;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,6 +29,7 @@ builder.Services.Configure<TelemetryBackupOptions>(builder.Configuration.GetSect
 builder.Services.Configure<WazuhSinkOptions>(builder.Configuration.GetSection("Tawny:Wazuh"));
 builder.Services.Configure<SlackSinkOptions>(builder.Configuration.GetSection("Tawny:Slack"));
 builder.Services.Configure<SentinelSinkOptions>(builder.Configuration.GetSection("Tawny:Sentinel"));
+builder.Services.Configure<ReputationOptions>(builder.Configuration.GetSection("Tawny:Reputation"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
@@ -41,10 +43,15 @@ builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AlertRuleEvaluator>();
 builder.Services.AddScoped<SigmaRuleImporter>();
 builder.Services.AddScoped<IocRuleImporter>();
+builder.Services.AddScoped<ExposureRuleImporter>();
 builder.Services.AddSingleton<HuntQueryParser>();
 builder.Services.AddScoped<HuntExecutor>();
 builder.Services.AddScoped<SuppressionEvaluator>();
+builder.Services.AddSingleton<SequenceRuleEvaluator>();
+builder.Services.AddSingleton<RuleTestHarness>();
 builder.Services.AddSingleton<AgentEventBroker>();
+builder.Services.AddHttpClient<ThreatIntelFetcher>();
+builder.Services.AddHttpClient<ReputationEnricher>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
 builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProvider>();
@@ -123,6 +130,8 @@ if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
     builder.Services.AddScoped<PurgeOldEventsJob>();
     builder.Services.AddScoped<BackupTelemetryJob>();
     builder.Services.AddScoped<ScheduledHuntsJob>();
+    builder.Services.AddScoped<ThreatIntelFeedsJob>();
+    builder.Services.AddScoped<ReputationEnrichmentJob>();
     builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
     builder.Services.AddHangfire(cfg => cfg
@@ -175,6 +184,10 @@ if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
         "check-agent-releases", j => j.ExecuteAsync(default), Cron.Hourly);
     RecurringJob.AddOrUpdate<ScheduledHuntsJob>(
         "scheduled-hunts", j => j.ExecuteAsync(default), "*/5 * * * *");
+    RecurringJob.AddOrUpdate<ThreatIntelFeedsJob>(
+        "threat-intel-feeds", j => j.ExecuteAsync(default), "*/10 * * * *");
+    RecurringJob.AddOrUpdate<ReputationEnrichmentJob>(
+        "reputation-enrichment", j => j.ExecuteAsync(default), "*/5 * * * *");
 }
 
 app.Run();

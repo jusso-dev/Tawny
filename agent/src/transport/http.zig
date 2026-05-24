@@ -1,5 +1,6 @@
 const std = @import("std");
 const buffer_mod = @import("buffer.zig");
+const iox = @import("../io_compat.zig");
 
 pub const HeartbeatPayload = struct {
     agent_version: []const u8,
@@ -74,7 +75,7 @@ pub const Client = struct {
             result.rotated_jwt = try self.allocator.dupe(u8, jwt);
         }
         if (parsed.value.actions.len > 0) {
-            var actions = std.ArrayList(ResponseAction).init(self.allocator);
+            var actions = std.array_list.Managed(ResponseAction).init(self.allocator);
             errdefer {
                 for (actions.items) |action| {
                     self.allocator.free(action.id);
@@ -85,9 +86,9 @@ pub const Client = struct {
             }
 
             for (parsed.value.actions) |action| {
-                var payload = std.ArrayList(u8).init(self.allocator);
+                var payload: std.Io.Writer.Allocating = .init(self.allocator);
                 errdefer payload.deinit();
-                try std.json.stringify(action.payload, .{}, payload.writer());
+                try std.json.Stringify.value(action.payload, .{}, &payload.writer);
                 try actions.append(.{
                     .id = try self.allocator.dupe(u8, action.id),
                     .action_type = try self.allocator.dupe(u8, action.action_type),
@@ -108,12 +109,14 @@ pub const Client = struct {
         const path = try std.fmt.allocPrint(self.allocator, "/api/agents/actions/{s}/result", .{action_id});
         defer self.allocator.free(path);
 
-        var body = std.ArrayList(u8).init(self.allocator);
+        var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
-        var w = body.writer();
-        try w.print("{{\"status\":\"{s}\",\"message\":", .{status});
-        try std.json.stringify(message, .{}, w);
-        try w.writeAll(",\"result\":{}}");
+        try body.print("{{\"status\":\"{s}\",\"message\":", .{status});
+        var body_writer: std.Io.Writer.Allocating = .init(self.allocator);
+        defer body_writer.deinit();
+        try std.json.Stringify.value(message, .{}, &body_writer.writer);
+        try body.appendSlice(body_writer.written());
+        try body.appendSlice(",\"result\":{}}");
 
         const response = try self.post(path, body.items);
         defer self.allocator.free(response);
@@ -122,12 +125,12 @@ pub const Client = struct {
     pub fn flushEvents(self: *Client, buf: *buffer_mod.Buffer) !void {
         if (buf.len() == 0) return;
 
-        var body = std.ArrayList(u8).init(self.allocator);
+        var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
         try body.appendSlice("{\"events\":[");
         for (buf.items(), 0..) |ev, i| {
             if (i > 0) try body.append(',');
-            try body.writer().print(
+            try body.print(
                 \\{{"type":"{s}","occurred_at":{d},"payload":{s}}}
             , .{ ev.event_type, ev.occurred_at, ev.payload });
         }
@@ -145,10 +148,10 @@ pub const Client = struct {
         const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{self.jwt});
         defer self.allocator.free(auth);
 
-        var client = std.http.Client{ .allocator = self.allocator };
+        var client = std.http.Client{ .allocator = self.allocator, .io = iox.current() };
         defer client.deinit();
 
-        var resp = std.ArrayList(u8).init(self.allocator);
+        var resp: std.Io.Writer.Allocating = .init(self.allocator);
         defer resp.deinit();
 
         const res = client.fetch(.{
@@ -159,7 +162,7 @@ pub const Client = struct {
                 .authorization = .{ .override = auth },
             },
             .payload = body,
-            .response_storage = .{ .dynamic = &resp },
+            .response_writer = &resp.writer,
         }) catch |err| {
             self.backoff_seconds = @min(self.backoff_seconds * 2, 300);
             return err;

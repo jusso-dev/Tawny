@@ -12,7 +12,14 @@ type EventType =
   | "file_integrity"
   | "user_session"
   | "system_info"
-  | "heartbeat";
+  | "heartbeat"
+  | "dns_query"
+  | "process_launch"
+  | "file_event"
+  | "package_inventory"
+  | "editor_extension"
+  | "browser_extension"
+  | "mcp_config";
 
 type TelemetryEvent = {
   id: number;
@@ -32,8 +39,15 @@ type Tab = {
 const TABS: Tab[] = [
   { key: "processes", label: "Processes", type: "process_snapshot" },
   { key: "tree", label: "Process tree", type: "process_snapshot" },
+  { key: "launches", label: "Launches", type: "process_launch" },
+  { key: "dns", label: "DNS", type: "dns_query" },
   { key: "network", label: "Network", type: "network_snapshot" },
   { key: "fim", label: "FIM", type: "file_integrity" },
+  { key: "fs", label: "FS events", type: "file_event" },
+  { key: "inventory", label: "Inventory", type: "package_inventory" },
+  { key: "editor-ext", label: "Editor ext", type: "editor_extension" },
+  { key: "browser-ext", label: "Browser ext", type: "browser_extension" },
+  { key: "mcp", label: "MCP", type: "mcp_config" },
   { key: "sessions", label: "Sessions", type: "user_session" },
   { key: "raw", label: "Raw events" },
 ];
@@ -247,7 +261,28 @@ function summarizePayload(event: TelemetryEvent) {
     return `${event.payload.processes.length} processes${names ? `: ${names}` : ""}`;
   }
 
+  // Inventory / extension / MCP events all carry {ecosystem, name, version}
+  // at the top level — summarise as one line per event for the table view.
+  if (isInventoryLike(event.type) && isPackageRecord(event.payload)) {
+    const p = event.payload;
+    const provenance = p.source_type ? ` (${p.source_type})` : "";
+    return `${p.ecosystem}/${p.name}@${p.version}${provenance}`;
+  }
+
   return JSON.stringify(event.payload, null, 2);
+}
+
+function isInventoryLike(type: EventType): boolean {
+  return type === "package_inventory"
+    || type === "editor_extension"
+    || type === "browser_extension"
+    || type === "mcp_config";
+}
+
+function isPackageRecord(payload: unknown): payload is { ecosystem: string; name: string; version: string; source_type?: string } {
+  if (!payload || typeof payload !== "object") return false;
+  const obj = payload as Record<string, unknown>;
+  return typeof obj.ecosystem === "string" && typeof obj.name === "string" && typeof obj.version === "string";
 }
 
 type ProcessRow = {

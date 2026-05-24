@@ -20,9 +20,9 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
         alloc.free(procs);
     }
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"processes\":[");
     for (procs, 0..) |p, i| {
@@ -41,7 +41,7 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn writeJsonString(writer: anytype, s: []const u8) !void {
-    try std.json.stringify(s, .{}, writer);
+    try std.json.Stringify.value(s, .{}, writer);
 }
 
 test "process collect runs" {
@@ -53,13 +53,13 @@ test "process collect runs" {
 }
 
 test "process names are json escaped" {
-    var out = std.ArrayList(u8).init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
 
-    try writeJsonString(out.writer(), "bad\"name\\with\nnewline");
+    try writeJsonString(&out.writer, "bad\"name\\with\nnewline");
 
     try std.testing.expectEqualStrings(
         "\"bad\\\"name\\\\with\\nnewline\"",
-        out.items,
+        out.written(),
     );
 }

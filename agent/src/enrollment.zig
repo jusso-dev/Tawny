@@ -2,11 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const Config = @import("config.zig").Config;
+const iox = @import("io_compat.zig");
 
 extern "kernel32" fn GetComputerNameA(
     name: [*]u8,
     size: *u32,
-) callconv(.C) i32;
+) callconv(.c) i32;
 
 fn getHostname(buf: []u8) ![]const u8 {
     if (builtin.os.tag == .windows) {
@@ -39,10 +40,9 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         else => "unknown",
     };
 
-    var body_buf = std.ArrayList(u8).init(alloc);
+    var body_buf = std.array_list.Managed(u8).init(alloc);
     defer body_buf.deinit();
-    var w = body_buf.writer();
-    try w.print(
+    try body_buf.print(
         \\{{"enrollment_token":"{s}","hostname":"{s}","os":"{s}","os_version":"unknown","arch":"{s}","agent_version":"{s}"}}
     ,
         .{ token, hostname, os_str, arch_str, agent_version },
@@ -51,10 +51,10 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
     const url = try std.fmt.allocPrint(alloc, "{s}/api/agents/enroll", .{cfg.backend_url});
     defer alloc.free(url);
 
-    var client = std.http.Client{ .allocator = alloc };
+    var client = std.http.Client{ .allocator = alloc, .io = iox.current() };
     defer client.deinit();
 
-    var response_body = std.ArrayList(u8).init(alloc);
+    var response_body: std.Io.Writer.Allocating = .init(alloc);
     defer response_body.deinit();
 
     const res = try client.fetch(.{
@@ -62,7 +62,7 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         .location = .{ .url = url },
         .headers = .{ .content_type = .{ .override = "application/json" } },
         .payload = body_buf.items,
-        .response_storage = .{ .dynamic = &response_body },
+        .response_writer = &response_body.writer,
     });
 
     if (res.status != .ok) return error.EnrollmentFailed;
@@ -71,7 +71,7 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         agent_id: []const u8,
         jwt: []const u8,
         jwt_expires_at: []const u8,
-    }, alloc, response_body.items, .{ .ignore_unknown_fields = true });
+    }, alloc, response_body.written(), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     cfg.agent_id = try alloc.dupe(u8, parsed.value.agent_id);

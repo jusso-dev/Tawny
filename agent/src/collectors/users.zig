@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const iox = @import("../io_compat.zig");
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
@@ -15,9 +16,9 @@ const c = if (builtin.os.tag == .macos) @cImport({
 }) else struct {};
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"source\":\"utmpx\",\"sessions\":[");
     c.setutxent();
@@ -31,9 +32,9 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
         first = false;
 
         try w.writeAll("{\"user\":");
-        try std.json.stringify(std.mem.sliceTo(&session.ut_user, 0), .{}, w);
+        try std.json.Stringify.value(std.mem.sliceTo(&session.ut_user, 0), .{}, w);
         try w.writeAll(",\"line\":");
-        try std.json.stringify(std.mem.sliceTo(&session.ut_line, 0), .{}, w);
+        try std.json.Stringify.value(std.mem.sliceTo(&session.ut_line, 0), .{}, w);
         try w.print(",\"pid\":{d}}}", .{session.ut_pid});
     }
     try w.writeAll("]}");
@@ -42,19 +43,19 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
+    const result = std.process.run(alloc, iox.current(), .{
         .argv = &.{ "who" },
-        .max_output_bytes = 128 * 1024,
+        .stdout_limit = .limited(128 * 1024),
+        .stderr_limit = .limited(128 * 1024),
     }) catch {
         return alloc.dupe(u8, "{\"source\":\"who\",\"sessions\":[]}");
     };
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"source\":\"who\",\"sessions\":[");
     var first = true;
@@ -68,11 +69,11 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
         if (!first) try w.writeByte(',');
         first = false;
         try w.writeAll("{\"user\":");
-        try std.json.stringify(user, .{}, w);
+        try std.json.Stringify.value(user, .{}, w);
         try w.writeAll(",\"line\":");
-        try std.json.stringify(tty, .{}, w);
+        try std.json.Stringify.value(tty, .{}, w);
         try w.writeAll(",\"raw\":");
-        try std.json.stringify(line, .{}, w);
+        try std.json.Stringify.value(line, .{}, w);
         try w.writeByte('}');
     }
     try w.writeAll("]}");
@@ -95,9 +96,9 @@ extern "wtsapi32" fn WTSEnumerateSessionsW(
     Version: u32,
     ppSessionInfo: *?[*]WTS_SESSION_INFOW,
     pCount: *u32,
-) callconv(.C) i32;
+) callconv(.c) i32;
 
-extern "wtsapi32" fn WTSFreeMemory(pMemory: ?*anyopaque) callconv(.C) void;
+extern "wtsapi32" fn WTSFreeMemory(pMemory: ?*anyopaque) callconv(.c) void;
 
 fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     var sessions_ptr: ?[*]WTS_SESSION_INFOW = null;
@@ -107,9 +108,9 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     }
     defer WTSFreeMemory(@ptrCast(sessions_ptr));
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"source\":\"wts\",\"sessions\":[");
     var first = true;
@@ -126,7 +127,7 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
         defer alloc.free(name);
 
         try w.print("{{\"session_id\":{d},\"station\":", .{session.SessionId});
-        try std.json.stringify(name, .{}, w);
+        try std.json.Stringify.value(name, .{}, w);
         try w.writeByte('}');
     }
     try w.writeAll("]}");

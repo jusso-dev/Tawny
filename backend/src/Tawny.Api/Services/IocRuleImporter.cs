@@ -59,6 +59,18 @@ public partial class IocRuleImporter
             }
 
             rules.Add(rule);
+
+            // Domain IoCs additionally produce a dns_query.qname rule so they
+            // match against DNS telemetry (Phase 2) without losing the existing
+            // command-line fallback for installs that don't ship DNS events.
+            if (indicator.Type is IocIndicatorType.Domain)
+            {
+                var dnsRule = CompileDnsRule(indicator, normalizedFormat, severity, isEnabled, now);
+                if (dnsRule is not null)
+                {
+                    rules.Add(dnsRule);
+                }
+            }
         }
 
         if (rules.Count == 0)
@@ -105,6 +117,36 @@ public partial class IocRuleImporter
             Severity = severity,
             Operator = op,
             PayloadPath = payloadPath,
+            MatchValue = value,
+            SourceDefinition = indicator.SourceDefinition,
+            IsEnabled = isEnabled,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+    }
+
+    private static AlertRule? CompileDnsRule(
+        IocIndicator indicator,
+        string sourceFormat,
+        AlertSeverity severity,
+        bool isEnabled,
+        DateTimeOffset now)
+    {
+        if (indicator.Type is not IocIndicatorType.Domain) return null;
+        var value = indicator.Value.ToLowerInvariant();
+        var externalId = ExternalId(indicator);
+        if (externalId.Length >= 124) externalId = externalId[..124];
+        return new AlertRule
+        {
+            Id = Guid.NewGuid(),
+            Name = $"{BuildRuleName(indicator)} (DNS)",
+            Format = AlertRuleFormat.Ioc,
+            ExternalId = externalId + ":dns",
+            Description = $"{BuildDescription(indicator, sourceFormat)} Matches DNS queries by qname.",
+            EventType = TelemetryEventType.DnsQuery,
+            Severity = severity,
+            Operator = AlertRuleOperator.Equals,
+            PayloadPath = "qname",
             MatchValue = value,
             SourceDefinition = indicator.SourceDefinition,
             IsEnabled = isEnabled,

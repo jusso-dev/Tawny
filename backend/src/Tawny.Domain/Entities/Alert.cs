@@ -16,6 +16,7 @@ public class Alert
     public string? SentinelNotificationError { get; set; }
     public required string Title { get; set; }
     public string? Description { get; set; }
+    public string? EnrichmentJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
     public AlertRule? AlertRule { get; set; }

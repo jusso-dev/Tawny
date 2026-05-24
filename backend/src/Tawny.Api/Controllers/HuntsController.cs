@@ -49,9 +49,12 @@ public class HuntsController(
     public async Task<ActionResult<IReadOnlyList<SavedHuntResponse>>> List(CancellationToken ct)
     {
         var tenantId = User.GetTenantId();
+        var currentUserId = TryGetUserId();
+        // Show shared hunts to everyone in the tenant; private hunts only to their creator.
         var rows = await db.SavedHunts
             .AsNoTracking()
-            .Where(h => h.TenantId == tenantId)
+            .Where(h => h.TenantId == tenantId
+                && (h.IsShared || h.CreatedByUserId == currentUserId))
             .OrderBy(h => h.Name)
             .ToListAsync(ct);
         return Ok(rows.Select(ToResponse).ToList());
@@ -100,6 +103,7 @@ public class HuntsController(
             AlertOnMatch = req.AlertOnMatch ?? false,
             AlertSeverity = req.AlertSeverity ?? AlertSeverity.Medium,
             MitreTechniquesJson = SerializeTechniques(req.MitreTechniques),
+            IsShared = req.IsShared ?? true,
             CreatedByUserId = TryGetUserId(),
             CreatedAt = now,
             UpdatedAt = now,
@@ -143,6 +147,7 @@ public class HuntsController(
         hunt.AlertOnMatch = req.AlertOnMatch;
         hunt.AlertSeverity = req.AlertSeverity;
         hunt.MitreTechniquesJson = SerializeTechniques(req.MitreTechniques);
+        if (req.IsShared.HasValue) hunt.IsShared = req.IsShared.Value;
         hunt.UpdatedAt = DateTimeOffset.UtcNow;
         audit.Add(User, "saved_hunt.update", hunt.Id.ToString(), new
         {
@@ -254,6 +259,8 @@ public class HuntsController(
         h.AlertOnMatch,
         h.AlertSeverity,
         DeserializeTechniques(h.MitreTechniquesJson),
+        h.IsShared,
+        h.CreatedByUserId,
         h.LastRunAt,
         h.LastMatchCount,
         h.CreatedAt,

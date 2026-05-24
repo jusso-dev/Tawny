@@ -57,6 +57,7 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
                 a.SentinelNotificationError,
                 a.Title,
                 a.Description,
+                a.EnrichmentJson,
                 a.CreatedAt,
             })
             .ToListAsync(ct);
@@ -86,6 +87,7 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
             a.SentinelNotificationError,
             a.Title,
             a.Description,
+            string.IsNullOrEmpty(a.EnrichmentJson) ? null : JsonSerializer.Deserialize<JsonElement>(a.EnrichmentJson),
             a.CreatedAt)).ToList());
     }
 }

@@ -23,10 +23,10 @@ const PROCESSENTRY32W = extern struct {
     szExeFile: [260]u16,
 };
 
-extern "kernel32" fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) callconv(.C) std.os.windows.HANDLE;
-extern "kernel32" fn Process32FirstW(hSnapshot: std.os.windows.HANDLE, lppe: *PROCESSENTRY32W) callconv(.C) i32;
-extern "kernel32" fn Process32NextW(hSnapshot: std.os.windows.HANDLE, lppe: *PROCESSENTRY32W) callconv(.C) i32;
-extern "kernel32" fn CloseHandle(hObject: std.os.windows.HANDLE) callconv(.C) i32;
+extern "kernel32" fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) callconv(.c) std.os.windows.HANDLE;
+extern "kernel32" fn Process32FirstW(hSnapshot: std.os.windows.HANDLE, lppe: *PROCESSENTRY32W) callconv(.c) i32;
+extern "kernel32" fn Process32NextW(hSnapshot: std.os.windows.HANDLE, lppe: *PROCESSENTRY32W) callconv(.c) i32;
+extern "kernel32" fn CloseHandle(hObject: std.os.windows.HANDLE) callconv(.c) i32;
 
 pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     const snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -36,7 +36,7 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     var entry: PROCESSENTRY32W = std.mem.zeroes(PROCESSENTRY32W);
     entry.dwSize = @sizeOf(PROCESSENTRY32W);
 
-    var list = std.ArrayList(ProcessInfo).init(alloc);
+    var list = std.array_list.Managed(ProcessInfo).init(alloc);
     errdefer {
         for (list.items) |p| {
             alloc.free(p.name);
