@@ -10,6 +10,9 @@ const network_collector = @import("collectors/network.zig");
 const users_collector = @import("collectors/users.zig");
 const system_collector = @import("collectors/system.zig");
 const fim_collector = @import("collectors/fim.zig");
+const process_events = @import("collectors/process_events.zig");
+const fs_events = @import("collectors/fs_events.zig");
+const dns_collector = @import("collectors/dns.zig");
 const response_actions = @import("response_actions.zig");
 
 const AGENT_VERSION = "0.1.0";
@@ -44,12 +47,23 @@ pub fn main() !void {
     var fim = try fim_collector.Watcher.init(alloc, cfg.fim_paths);
     defer fim.deinit();
 
+    var process_tracker = process_events.Tracker.init(alloc);
+    defer process_tracker.deinit();
+
+    var fs_watcher = try fs_events.Watcher.init(alloc, cfg.fim_paths);
+    defer fs_watcher.deinit();
+
+    var dns = dns_collector.Collector.init(alloc);
+
     var heartbeat_timer = try std.time.Timer.start();
     var process_timer = try std.time.Timer.start();
+    var process_events_timer = try std.time.Timer.start();
     var network_timer = try std.time.Timer.start();
     var users_timer = try std.time.Timer.start();
     var system_timer = try std.time.Timer.start();
     var fim_timer = try std.time.Timer.start();
+    var fs_events_timer = try std.time.Timer.start();
+    var dns_timer = try std.time.Timer.start();
     const start_time = std.time.timestamp();
 
     if (system_collector.collect(alloc)) |payload| {
@@ -166,6 +180,60 @@ pub fn main() !void {
             }
         }
 
+        if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
+            process_events_timer.reset();
+            const launches = process_tracker.collectLaunches() catch |err| blk: {
+                try stderr.print("process_events collector failed: {s}\n", .{@errorName(err)});
+                break :blk &[_][]u8{};
+            };
+            defer alloc.free(launches);
+            for (launches) |payload| {
+                defer alloc.free(payload);
+                try buf.push(.{
+                    .event_type = "process_launch",
+                    .occurred_at = std.time.timestamp(),
+                    .payload = payload,
+                });
+                try spillIfNeeded(&buf, cfg.spill_path);
+            }
+        }
+
+        if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
+            fs_events_timer.reset();
+            const events = fs_watcher.collectEvents() catch |err| blk: {
+                try stderr.print("fs_events collector failed: {s}\n", .{@errorName(err)});
+                break :blk &[_][]u8{};
+            };
+            defer alloc.free(events);
+            for (events) |payload| {
+                defer alloc.free(payload);
+                try buf.push(.{
+                    .event_type = "file_event",
+                    .occurred_at = std.time.timestamp(),
+                    .payload = payload,
+                });
+                try spillIfNeeded(&buf, cfg.spill_path);
+            }
+        }
+
+        if (dns_timer.read() / std.time.ns_per_s >= cfg.dns_interval_seconds) {
+            dns_timer.reset();
+            const queries = dns.collectQueries() catch |err| blk: {
+                try stderr.print("dns collector failed: {s}\n", .{@errorName(err)});
+                break :blk &[_][]u8{};
+            };
+            defer alloc.free(queries);
+            for (queries) |payload| {
+                defer alloc.free(payload);
+                try buf.push(.{
+                    .event_type = "dns_query",
+                    .occurred_at = std.time.timestamp(),
+                    .payload = payload,
+                });
+                try spillIfNeeded(&buf, cfg.spill_path);
+            }
+        }
+
         if (buf.len() == 0) {
             buf.replay(cfg.spill_path) catch |err| {
                 try stderr.print("buffer replay failed: {s}\n", .{@errorName(err)});
@@ -198,6 +266,9 @@ test "main module loads" {
     _ = users_collector;
     _ = system_collector;
     _ = fim_collector;
+    _ = process_events;
+    _ = fs_events;
+    _ = dns_collector;
     _ = response_actions;
 }
 

@@ -190,6 +190,9 @@ public class TelemetryController(
         TelemetryEventType.SystemInfo => "system_info",
         TelemetryEventType.FileIntegrity => "file_integrity",
         TelemetryEventType.Heartbeat => "heartbeat",
+        TelemetryEventType.DnsQuery => "dns_query",
+        TelemetryEventType.ProcessLaunch => "process_launch",
+        TelemetryEventType.FileEvent => "file_event",
         _ => type.ToString(),
     };
 }

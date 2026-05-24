@@ -12,7 +12,10 @@ type EventType =
   | "file_integrity"
   | "user_session"
   | "system_info"
-  | "heartbeat";
+  | "heartbeat"
+  | "dns_query"
+  | "process_launch"
+  | "file_event";
 
 type TelemetryEvent = {
   id: number;
@@ -32,8 +35,11 @@ type Tab = {
 const TABS: Tab[] = [
   { key: "processes", label: "Processes", type: "process_snapshot" },
   { key: "tree", label: "Process tree", type: "process_snapshot" },
+  { key: "launches", label: "Launches", type: "process_launch" },
+  { key: "dns", label: "DNS", type: "dns_query" },
   { key: "network", label: "Network", type: "network_snapshot" },
   { key: "fim", label: "FIM", type: "file_integrity" },
+  { key: "fs", label: "FS events", type: "file_event" },
   { key: "sessions", label: "Sessions", type: "user_session" },
   { key: "raw", label: "Raw events" },
 ];

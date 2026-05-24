@@ -9,10 +9,13 @@ pub const Config = struct {
     agent_jwt: ?[]u8 = null,
     heartbeat_interval_seconds: u32 = 60,
     process_interval_seconds: u32 = 30,
+    process_events_interval_seconds: u32 = 5,
     network_interval_seconds: u32 = 30,
     users_interval_seconds: u32 = 300,
     system_interval_seconds: u32 = 3600,
     fim_interval_seconds: u32 = 300,
+    fs_events_interval_seconds: u32 = 5,
+    dns_interval_seconds: u32 = 30,
     max_in_memory_events: usize = 1000,
     fim_paths: [][]u8 = &.{},
     spill_path: []u8,
@@ -95,6 +98,12 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             cfg.system_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "fim_interval_seconds")) {
             cfg.fim_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "process_events_interval_seconds")) {
+            cfg.process_events_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "fs_events_interval_seconds")) {
+            cfg.fs_events_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "dns_interval_seconds")) {
+            cfg.dns_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_in_memory_events")) {
             cfg.max_in_memory_events = try std.fmt.parseInt(usize, val, 10);
         } else if (std.mem.eql(u8, key, "spill_path")) {
@@ -132,19 +141,25 @@ pub fn save(cfg: *const Config) !void {
             \\[collection]
             \\heartbeat_interval_seconds = {d}
             \\process_interval_seconds = {d}
+            \\process_events_interval_seconds = {d}
             \\network_interval_seconds = {d}
             \\users_interval_seconds = {d}
             \\system_interval_seconds = {d}
             \\fim_interval_seconds = {d}
+            \\fs_events_interval_seconds = {d}
+            \\dns_interval_seconds = {d}
             \\max_in_memory_events = {d}
             \\spill_path =
         , .{
             cfg.heartbeat_interval_seconds,
             cfg.process_interval_seconds,
+            cfg.process_events_interval_seconds,
             cfg.network_interval_seconds,
             cfg.users_interval_seconds,
             cfg.system_interval_seconds,
             cfg.fim_interval_seconds,
+            cfg.fs_events_interval_seconds,
+            cfg.dns_interval_seconds,
             cfg.max_in_memory_events,
         });
         try w.writeByte(' ');

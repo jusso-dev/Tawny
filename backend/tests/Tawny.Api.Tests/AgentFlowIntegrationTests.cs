@@ -416,7 +416,10 @@ level: high
         {
             var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
             var rules = await db.AlertRules.OrderBy(r => r.PayloadPath).ToListAsync();
-            rules.Should().HaveCount(3);
+            // Each domain IoC now produces two rules: a process command-line
+            // match (legacy fallback) and a DNS qname match for the new
+            // dns_query event type. So we expect 4 rules for {ip, sha256, domain}.
+            rules.Should().HaveCount(4);
             rules.Should().OnlyContain(r => r.Format == AlertRuleFormat.Ioc);
             rules.Should().Contain(r =>
                 r.EventType == TelemetryEventType.NetworkSnapshot &&
@@ -428,6 +431,10 @@ level: high
             rules.Should().Contain(r =>
                 r.EventType == TelemetryEventType.ProcessSnapshot &&
                 r.PayloadPath == "processes.command_line" &&
+                r.MatchValue == "payload.example.com");
+            rules.Should().Contain(r =>
+                r.EventType == TelemetryEventType.DnsQuery &&
+                r.PayloadPath == "qname" &&
                 r.MatchValue == "payload.example.com");
         }
 

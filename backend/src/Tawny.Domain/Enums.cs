@@ -29,6 +29,9 @@ public enum TelemetryEventType
     SystemInfo = 3,
     FileIntegrity = 4,
     Heartbeat = 5,
+    DnsQuery = 6,
+    ProcessLaunch = 7,
+    FileEvent = 8,
 }
 
 public enum UserRole
