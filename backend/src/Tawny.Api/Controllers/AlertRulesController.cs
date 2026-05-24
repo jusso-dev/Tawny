@@ -163,6 +163,7 @@ public class AlertRulesController(
         rule.PayloadPath = Normalize(req.PayloadPath);
         rule.MatchValue = Normalize(req.MatchValue);
         rule.SourceDefinition = null;
+        rule.CompiledExpressionJson = null;
         rule.IsEnabled = req.IsEnabled;
         rule.MitreTechniquesJson = SerializeTechniques(req.MitreTechniques);
         rule.UpdatedAt = DateTimeOffset.UtcNow;

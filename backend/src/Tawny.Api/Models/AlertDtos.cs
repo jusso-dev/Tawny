@@ -79,4 +79,5 @@ public record AlertResponse(
     string? SentinelNotificationError,
     string Title,
     string? Description,
+    JsonElement? Enrichment,
     DateTimeOffset CreatedAt);

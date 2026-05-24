@@ -8,7 +8,10 @@ using Tawny.Infrastructure.Hunting;
 
 namespace Tawny.Api.Services;
 
-public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppressions)
+public class AlertRuleEvaluator(
+    TawnyDbContext db,
+    SuppressionEvaluator suppressions,
+    SequenceRuleEvaluator sequences)
 {
     public async Task<IReadOnlyList<Alert>> EvaluateAsync(
         Agent agent,
@@ -26,7 +29,13 @@ public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppress
             .Where(r => r.IsEnabled && (r.EventType == null || eventTypes.Contains(r.EventType.Value)))
             .ToListAsync(ct);
 
-        if (rules.Count == 0)
+        // Sequence rules need to see every event regardless of EventType filter,
+        // because each step can target a different type. Load them separately.
+        var sequenceRules = await db.AlertRules
+            .Where(r => r.IsEnabled && r.Format == AlertRuleFormat.Sequence)
+            .ToListAsync(ct);
+
+        if (rules.Count == 0 && sequenceRules.Count == 0)
         {
             return [];
         }
@@ -37,6 +46,7 @@ public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppress
             using var payload = JsonDocument.Parse(telemetryEvent.Payload);
             foreach (var rule in rules)
             {
+                if (rule.Format == AlertRuleFormat.Sequence) continue; // handled below
                 if (rule.EventType is not null && rule.EventType.Value != telemetryEvent.EventType)
                 {
                     continue;
@@ -55,6 +65,27 @@ public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppress
                     Severity = rule.Severity,
                     Title = $"{rule.Name} on {agent.Hostname}",
                     Description = BuildDescription(rule, telemetryEvent),
+                    CreatedAt = now,
+                });
+            }
+        }
+
+        foreach (var rule in sequenceRules)
+        {
+            SequenceRuleDefinition definition;
+            try { definition = SequenceRuleParser.Parse(rule.SourceDefinition ?? ""); }
+            catch { continue; }
+            var matches = sequences.Evaluate(rule, definition, agent, events, now);
+            foreach (var match in matches)
+            {
+                candidates.Add(new Alert
+                {
+                    AlertRuleId = rule.Id,
+                    AgentId = agent.Id,
+                    TelemetryEventId = match.TriggeringEventId,
+                    Severity = rule.Severity,
+                    Title = $"{rule.Name} on {agent.Hostname}",
+                    Description = BuildSequenceDescription(rule, match),
                     CreatedAt = now,
                 });
             }
@@ -79,8 +110,35 @@ public class AlertRuleEvaluator(TawnyDbContext db, SuppressionEvaluator suppress
         return emitted;
     }
 
+    private static string BuildSequenceDescription(AlertRule rule, SequenceMatch match)
+    {
+        var steps = string.Join(" -> ", match.Trail.Select(s => s.Name));
+        return $"Sequence '{rule.Name}' completed: {steps}.";
+    }
+
     private static bool Matches(AlertRule rule, JsonElement payload)
     {
+        // YARA-lite: match strings against the raw payload text.
+        if (rule.Format == AlertRuleFormat.Yara && !string.IsNullOrWhiteSpace(rule.SourceDefinition))
+        {
+            try
+            {
+                var definition = YaraLiteParser.Parse(rule.SourceDefinition);
+                return YaraLiteEvaluator.Evaluate(definition, payload.GetRawText());
+            }
+            catch (YaraLiteException)
+            {
+                return false;
+            }
+        }
+
+        // Compiled boolean tree (Sigma AND/OR/NOT, 1 of selection_*, all of selection_*).
+        if (!string.IsNullOrWhiteSpace(rule.CompiledExpressionJson))
+        {
+            var tree = SigmaExpressionSerializer.Deserialize(rule.CompiledExpressionJson);
+            return tree is not null && SigmaExpressionEvaluator.Evaluate(tree, payload);
+        }
+
         if (string.IsNullOrWhiteSpace(rule.PayloadPath))
         {
             return true;

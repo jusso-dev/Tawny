@@ -136,6 +136,10 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("EnrichmentJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("Enrichment");
+
                     b.Property<int>("Severity")
                         .HasColumnType("int");
 
@@ -188,6 +192,10 @@ namespace Tawny.Infrastructure.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CompiledExpressionJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("CompiledExpression");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
@@ -268,6 +276,9 @@ namespace Tawny.Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsScheduled")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsShared")
                         .HasColumnType("bit");
 
                     b.Property<int?>("LastMatchCount")
@@ -480,6 +491,249 @@ namespace Tawny.Infrastructure.Migrations
                     b.HasIndex("TenantId", "CreatedAt");
 
                     b.ToTable("ApiTokens");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.ThreatIntelFeed", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AuthHeaderName")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("AuthHeaderValueEncrypted")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("DefaultSeverity")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Etag")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<int>("IntervalMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<int>("LastImportedCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("LastRunAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("LastSkippedCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "IsEnabled");
+
+                    b.ToTable("ThreatIntelFeeds");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.ReputationCacheEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("DetailJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("FetchedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("IndicatorKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("IndicatorValue")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<int>("Provider")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("Score")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<int>("Verdict")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("TenantId", "Provider", "IndicatorKind", "IndicatorValue")
+                        .IsUnique();
+
+                    b.ToTable("ReputationCache");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("AssignedToUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ClosedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("MitreTechniquesJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("MitreTechniques");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("TenantId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000001"));
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "Status", "CreatedAt");
+
+                    b.ToTable("Cases");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseAlert", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("AddedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("AddedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("AlertId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CaseId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AlertId");
+
+                    b.HasIndex("CaseId", "AlertId")
+                        .IsUnique();
+
+                    b.ToTable("CaseAlerts");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseNote", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid?>("AuthorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("CaseId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaseId", "CreatedAt");
+
+                    b.ToTable("CaseNotes");
                 });
 
             modelBuilder.Entity("Tawny.Domain.Entities.AuditLog", b =>
@@ -876,6 +1130,58 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("Tenant");
                 });
 
+            modelBuilder.Entity("Tawny.Domain.Entities.ThreatIntelFeed", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("ThreatIntelFeeds")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Tenant", "Tenant")
+                        .WithMany("Cases")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseAlert", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Alert", "Alert")
+                        .WithMany()
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Tawny.Domain.Entities.Case", "Case")
+                        .WithMany("CaseAlerts")
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Alert");
+
+                    b.Navigation("Case");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.CaseNote", b =>
+                {
+                    b.HasOne("Tawny.Domain.Entities.Case", "Case")
+                        .WithMany("Notes")
+                        .HasForeignKey("CaseId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Case");
+                });
+
             modelBuilder.Entity("Tawny.Domain.Entities.Agent", b =>
                 {
                     b.Navigation("Events");
@@ -889,6 +1195,8 @@ namespace Tawny.Infrastructure.Migrations
 
                     b.Navigation("AuditLog");
 
+                    b.Navigation("Cases");
+
                     b.Navigation("EnrollmentTokens");
 
                     b.Navigation("SavedHunts");
@@ -896,6 +1204,8 @@ namespace Tawny.Infrastructure.Migrations
                     b.Navigation("SuppressionRules");
 
                     b.Navigation("TelemetryEvents");
+
+                    b.Navigation("ThreatIntelFeeds");
 
                     b.Navigation("Users");
                 });
@@ -908,6 +1218,13 @@ namespace Tawny.Infrastructure.Migrations
             modelBuilder.Entity("Tawny.Domain.Entities.SavedHunt", b =>
                 {
                     b.Navigation("Runs");
+                });
+
+            modelBuilder.Entity("Tawny.Domain.Entities.Case", b =>
+                {
+                    b.Navigation("CaseAlerts");
+
+                    b.Navigation("Notes");
                 });
 #pragma warning restore 612, 618
         }

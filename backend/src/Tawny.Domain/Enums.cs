@@ -74,6 +74,8 @@ public enum AlertRuleFormat
     TawnyPredicate = 0,
     Sigma = 1,
     Ioc = 2,
+    Sequence = 3,
+    Yara = 4,
 }
 
 public enum ResponseActionType
@@ -102,4 +104,38 @@ public enum SuppressionScope
 {
     AllRules = 0,
     SpecificRule = 1,
+}
+
+public enum ThreatIntelFeedKind
+{
+    UrlhausCsv = 0,
+    UrlhausJson = 1,
+    OtxPulse = 2,
+    MispEvents = 3,
+    Taxii21 = 4,
+    GenericCsv = 5,
+}
+
+public enum ThreatIntelFeedStatus
+{
+    Healthy = 0,
+    Degraded = 1,
+    Failed = 2,
+    NeverRun = 3,
+}
+
+public enum ReputationProvider
+{
+    VirusTotal = 0,
+    AbuseIpDb = 1,
+    GreyNoise = 2,
+}
+
+public enum ReputationVerdict
+{
+    Unknown = 0,
+    Clean = 1,
+    Suspicious = 2,
+    Malicious = 3,
+    Error = 4,
 }

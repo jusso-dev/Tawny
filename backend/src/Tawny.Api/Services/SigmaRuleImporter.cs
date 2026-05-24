@@ -1,6 +1,9 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
+using Tawny.Infrastructure.Hunting;
 using YamlDotNet.RepresentationModel;
 
 namespace Tawny.Api.Services;
@@ -39,17 +42,27 @@ public class SigmaRuleImporter
         {
             throw new SigmaRuleException("Sigma rule detection.condition is required.");
         }
-        if (condition.Contains(' ', StringComparison.Ordinal))
+
+        // Map every selection name (except `condition`) to its compiled SigmaNode.
+        var selections = new Dictionary<string, SigmaNode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in detection.Children)
         {
-            throw new SigmaRuleException("Only a single Sigma selection condition is supported for now.");
+            if (pair.Key is not YamlScalarNode keyNode || keyNode.Value is null) continue;
+            if (string.Equals(keyNode.Value, "condition", StringComparison.OrdinalIgnoreCase)) continue;
+            if (pair.Value is not YamlMappingNode selectionMap)
+            {
+                throw new SigmaRuleException($"Selection '{keyNode.Value}' must be a mapping.");
+            }
+            selections[keyNode.Value] = CompileSelectionNode(selectionMap);
         }
 
-        var selection = Mapping(detection, condition)
-            ?? throw new SigmaRuleException($"Sigma selection '{condition}' was not found.");
-        var predicate = CompileSelection(selection);
-        var logsource = Mapping(root, "logsource");
+        if (selections.Count == 0)
+        {
+            throw new SigmaRuleException("Sigma rule needs at least one named selection block.");
+        }
 
-        return new AlertRule
+        var logsource = Mapping(root, "logsource");
+        var rule = new AlertRule
         {
             Id = Guid.NewGuid(),
             Name = title.Trim(),
@@ -58,15 +71,61 @@ public class SigmaRuleImporter
             Description = Normalize(Scalar(root, "description")),
             EventType = MapEventType(logsource),
             Severity = MapSeverity(Scalar(root, "level")),
-            Operator = predicate.Operator,
-            PayloadPath = predicate.PayloadPath,
-            MatchValue = predicate.MatchValue,
             SourceDefinition = yaml,
             IsEnabled = isEnabled,
             MitreTechniquesJson = ExtractMitreTechniques(root),
             CreatedAt = now,
             UpdatedAt = now,
         };
+
+        // Fast path: single named selection referenced directly. Stays as a
+        // single-predicate rule so the existing legacy fields and the existing
+        // UI keep working without change.
+        if (selections.Count == 1
+            && selections.TryGetValue(condition.Trim(), out var solo)
+            && solo is SigmaFieldPredicate predicate
+            && predicate.Values.Count > 0)
+        {
+            rule.Operator = predicate.Operator;
+            rule.PayloadPath = predicate.PayloadPath;
+            rule.MatchValue = predicate.Values.Count == 1
+                ? predicate.Values[0]
+                : JsonSerializer.Serialize(predicate.Values, JsonOptions);
+            return rule;
+        }
+
+        // General path: parse the condition into a SigmaNode tree by resolving
+        // names + globs against the compiled selections.
+        var tree = SigmaConditionParser.Parse(condition, selections);
+        rule.CompiledExpressionJson = SigmaExpressionSerializer.Serialize(tree);
+        // Leave legacy predicate fields null — the evaluator falls back to CompiledExpression.
+        return rule;
+    }
+
+    private static SigmaNode CompileSelectionNode(YamlMappingNode selection)
+    {
+        if (selection.Children.Count == 0)
+        {
+            throw new SigmaRuleException("Selection must have at least one field predicate.");
+        }
+        var children = new List<SigmaNode>();
+        foreach (var pair in selection.Children)
+        {
+            if (pair.Key is not YamlScalarNode keyNode || string.IsNullOrWhiteSpace(keyNode.Value))
+            {
+                throw new SigmaRuleException("Selection field name must be a scalar.");
+            }
+            var (fieldRaw, op) = ParseField(keyNode.Value);
+            var field = NormalizeField(fieldRaw);
+            var values = Values(pair.Value);
+            if (values.Count == 0 && op != AlertRuleOperator.Exists)
+            {
+                throw new SigmaRuleException("Selection value is required.");
+            }
+            children.Add(new SigmaFieldPredicate(field, op, values));
+        }
+        // Multiple fields in the same selection mapping => AND across them (Sigma semantics).
+        return children.Count == 1 ? children[0] : new SigmaAnd(children);
     }
 
     private static string? ExtractMitreTechniques(YamlMappingNode root)
@@ -93,34 +152,6 @@ public class SigmaRuleImporter
 
         if (techniques.Count == 0) return null;
         return JsonSerializer.Serialize(techniques.Distinct().ToList(), JsonOptions);
-    }
-
-    private static CompiledPredicate CompileSelection(YamlMappingNode selection)
-    {
-        if (selection.Children.Count != 1)
-        {
-            throw new SigmaRuleException("Only one field predicate per Sigma selection is supported for now.");
-        }
-
-        var pair = selection.Children.Single();
-        if (pair.Key is not YamlScalarNode keyNode || string.IsNullOrWhiteSpace(keyNode.Value))
-        {
-            throw new SigmaRuleException("Sigma selection field must be a scalar.");
-        }
-
-        var (field, op) = ParseField(keyNode.Value);
-        var values = Values(pair.Value);
-        if (values.Count == 0)
-        {
-            throw new SigmaRuleException("Sigma selection value is required.");
-        }
-
-        return new CompiledPredicate(
-            NormalizeField(field),
-            op,
-            values.Count == 1
-                ? values[0]
-                : JsonSerializer.Serialize(values, JsonOptions));
     }
 
     private static string NormalizeField(string field) => field switch
@@ -229,11 +260,160 @@ public class SigmaRuleImporter
         var trimmed = value?.Trim();
         return string.IsNullOrEmpty(trimmed) ? null : trimmed;
     }
+}
 
-    private sealed record CompiledPredicate(
-        string PayloadPath,
-        AlertRuleOperator Operator,
-        string MatchValue);
+/// <summary>
+/// Tiny recursive-descent parser for Sigma `condition:` strings.
+/// Supports:  selection_name  |  not  |  and  |  or  |  ()  |  "1 of name_*"  |  "all of name_*"
+/// Globs are resolved against the dictionary of compiled selections.
+/// </summary>
+internal static class SigmaConditionParser
+{
+    public static SigmaNode Parse(string condition, IReadOnlyDictionary<string, SigmaNode> selections)
+    {
+        var tokens = Tokenize(condition);
+        var pos = 0;
+        var node = ParseOr(tokens, ref pos, selections);
+        if (pos < tokens.Count)
+        {
+            throw new SigmaRuleException($"Unexpected token '{tokens[pos]}' at end of condition.");
+        }
+        return node;
+    }
+
+    private static SigmaNode ParseOr(IReadOnlyList<string> tokens, ref int pos, IReadOnlyDictionary<string, SigmaNode> selections)
+    {
+        var left = ParseAnd(tokens, ref pos, selections);
+        while (pos < tokens.Count && string.Equals(tokens[pos], "or", StringComparison.OrdinalIgnoreCase))
+        {
+            pos++;
+            var right = ParseAnd(tokens, ref pos, selections);
+            left = new SigmaOr(Flatten<SigmaOr>(left, right));
+        }
+        return left;
+    }
+
+    private static SigmaNode ParseAnd(IReadOnlyList<string> tokens, ref int pos, IReadOnlyDictionary<string, SigmaNode> selections)
+    {
+        var left = ParseUnary(tokens, ref pos, selections);
+        while (pos < tokens.Count && string.Equals(tokens[pos], "and", StringComparison.OrdinalIgnoreCase))
+        {
+            pos++;
+            var right = ParseUnary(tokens, ref pos, selections);
+            left = new SigmaAnd(Flatten<SigmaAnd>(left, right));
+        }
+        return left;
+    }
+
+    private static SigmaNode ParseUnary(IReadOnlyList<string> tokens, ref int pos, IReadOnlyDictionary<string, SigmaNode> selections)
+    {
+        if (pos >= tokens.Count) throw new SigmaRuleException("Unexpected end of condition.");
+        var token = tokens[pos];
+        if (string.Equals(token, "not", StringComparison.OrdinalIgnoreCase))
+        {
+            pos++;
+            return new SigmaNot(ParseUnary(tokens, ref pos, selections));
+        }
+        if (token == "(")
+        {
+            pos++;
+            var inner = ParseOr(tokens, ref pos, selections);
+            if (pos >= tokens.Count || tokens[pos] != ")")
+            {
+                throw new SigmaRuleException("Expected ')'.");
+            }
+            pos++;
+            return inner;
+        }
+        if (string.Equals(token, "1", StringComparison.Ordinal)
+            || string.Equals(token, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            var quantifier = token;
+            pos++;
+            if (pos >= tokens.Count || !string.Equals(tokens[pos], "of", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SigmaRuleException("Expected 'of' after quantifier.");
+            }
+            pos++;
+            if (pos >= tokens.Count) throw new SigmaRuleException("Expected pattern after 'of'.");
+            var pattern = tokens[pos];
+            pos++;
+            var matched = ResolveGlob(pattern, selections);
+            if (matched.Count == 0)
+            {
+                throw new SigmaRuleException($"No selections matched pattern '{pattern}'.");
+            }
+            return string.Equals(quantifier, "1", StringComparison.Ordinal)
+                ? new SigmaAnyOf(matched)
+                : new SigmaAllOf(matched);
+        }
+        // Bare selection name.
+        pos++;
+        if (!selections.TryGetValue(token, out var selection))
+        {
+            throw new SigmaRuleException($"Unknown selection '{token}' in condition.");
+        }
+        return selection;
+    }
+
+    private static List<SigmaNode> ResolveGlob(string pattern, IReadOnlyDictionary<string, SigmaNode> selections)
+    {
+        var matched = new List<SigmaNode>();
+        var regex = new Regex("^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$",
+            RegexOptions.IgnoreCase);
+        foreach (var (name, node) in selections)
+        {
+            if (regex.IsMatch(name)) matched.Add(node);
+        }
+        return matched;
+    }
+
+    private static IReadOnlyList<SigmaNode> Flatten<T>(SigmaNode left, SigmaNode right) where T : SigmaNode
+    {
+        var list = new List<SigmaNode>();
+        AddFlattened<T>(list, left);
+        AddFlattened<T>(list, right);
+        return list;
+    }
+
+    private static void AddFlattened<T>(List<SigmaNode> list, SigmaNode node) where T : SigmaNode
+    {
+        if (typeof(T) == typeof(SigmaAnd) && node is SigmaAnd and)
+        {
+            list.AddRange(and.Children);
+            return;
+        }
+        if (typeof(T) == typeof(SigmaOr) && node is SigmaOr or)
+        {
+            list.AddRange(or.Children);
+            return;
+        }
+        list.Add(node);
+    }
+
+    private static List<string> Tokenize(string condition)
+    {
+        var tokens = new List<string>();
+        var i = 0;
+        while (i < condition.Length)
+        {
+            var c = condition[i];
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+            if (c == '(' || c == ')')
+            {
+                tokens.Add(c.ToString());
+                i++;
+                continue;
+            }
+            var start = i;
+            while (i < condition.Length && !char.IsWhiteSpace(condition[i]) && condition[i] != '(' && condition[i] != ')')
+            {
+                i++;
+            }
+            tokens.Add(condition[start..i]);
+        }
+        return tokens;
+    }
 }
 
 public class SigmaRuleException(string message) : Exception(message);

@@ -20,6 +20,11 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<HuntRun> HuntRuns => Set<HuntRun>();
     public DbSet<SuppressionRule> SuppressionRules => Set<SuppressionRule>();
     public DbSet<ApiToken> ApiTokens => Set<ApiToken>();
+    public DbSet<ThreatIntelFeed> ThreatIntelFeeds => Set<ThreatIntelFeed>();
+    public DbSet<ReputationCacheEntry> ReputationCache => Set<ReputationCacheEntry>();
+    public DbSet<Case> Cases => Set<Case>();
+    public DbSet<CaseAlert> CaseAlerts => Set<CaseAlert>();
+    public DbSet<CaseNote> CaseNotes => Set<CaseNote>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -108,6 +113,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(r => r.PayloadPath).HasMaxLength(256);
             e.Property(r => r.MatchValue).HasMaxLength(512);
             e.Property(r => r.SourceDefinition).HasColumnType("nvarchar(max)");
+            e.Property(r => r.CompiledExpressionJson).HasColumnName("CompiledExpression").HasColumnType("nvarchar(max)");
             e.Property(r => r.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
             e.HasIndex(r => new { r.IsEnabled, r.EventType });
             e.HasIndex(r => new { r.Format, r.ExternalId });
@@ -118,6 +124,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasKey(a => a.Id);
             e.Property(a => a.Title).HasMaxLength(255).IsRequired();
             e.Property(a => a.Description).HasColumnType("nvarchar(max)");
+            e.Property(a => a.EnrichmentJson).HasColumnName("Enrichment").HasColumnType("nvarchar(max)");
             e.Property(a => a.SlackNotificationError).HasMaxLength(1024);
             e.Property(a => a.SentinelNotificationError).HasMaxLength(1024);
             e.HasOne(a => a.AlertRule)
@@ -239,6 +246,73 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
                 .OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(t => t.TokenHash).IsUnique();
             e.HasIndex(t => new { t.TenantId, t.CreatedAt });
+        });
+
+        b.Entity<ThreatIntelFeed>(e =>
+        {
+            e.HasKey(t => t.Id);
+            e.Property(t => t.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(t => t.Name).HasMaxLength(160).IsRequired();
+            e.Property(t => t.Url).HasMaxLength(1024).IsRequired();
+            e.Property(t => t.AuthHeaderName).HasMaxLength(64);
+            e.Property(t => t.AuthHeaderValueEncrypted).HasMaxLength(1024);
+            e.Property(t => t.LastError).HasMaxLength(2048);
+            e.Property(t => t.Etag).HasMaxLength(256);
+            e.HasOne(t => t.Tenant)
+                .WithMany(t => t.ThreatIntelFeeds)
+                .HasForeignKey(t => t.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(t => new { t.TenantId, t.IsEnabled });
+        });
+
+        b.Entity<ReputationCacheEntry>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(r => r.IndicatorKind).HasMaxLength(32).IsRequired();
+            e.Property(r => r.IndicatorValue).HasMaxLength(512).IsRequired();
+            e.Property(r => r.DetailJson).HasColumnType("nvarchar(max)").IsRequired();
+            e.HasIndex(r => new { r.TenantId, r.Provider, r.IndicatorKind, r.IndicatorValue }).IsUnique();
+            e.HasIndex(r => r.ExpiresAt);
+        });
+
+        b.Entity<Case>(e =>
+        {
+            e.HasKey(c => c.Id);
+            e.Property(c => c.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(c => c.Title).HasMaxLength(255).IsRequired();
+            e.Property(c => c.Summary).HasColumnType("nvarchar(max)");
+            e.Property(c => c.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
+            e.HasOne(c => c.Tenant)
+                .WithMany(t => t.Cases)
+                .HasForeignKey(c => c.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(c => new { c.TenantId, c.Status, c.CreatedAt });
+        });
+
+        b.Entity<CaseAlert>(e =>
+        {
+            e.HasKey(ca => ca.Id);
+            e.HasOne(ca => ca.Case)
+                .WithMany(c => c.CaseAlerts)
+                .HasForeignKey(ca => ca.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(ca => ca.Alert)
+                .WithMany()
+                .HasForeignKey(ca => ca.AlertId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(ca => new { ca.CaseId, ca.AlertId }).IsUnique();
+        });
+
+        b.Entity<CaseNote>(e =>
+        {
+            e.HasKey(n => n.Id);
+            e.Property(n => n.Body).HasColumnType("nvarchar(max)").IsRequired();
+            e.HasOne(n => n.Case)
+                .WithMany(c => c.Notes)
+                .HasForeignKey(n => n.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(n => new { n.CaseId, n.CreatedAt });
         });
     }
 }
