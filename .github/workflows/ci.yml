@@ -68,20 +68,28 @@ jobs:
   agent:
     name: agent (Zig)
     runs-on: ubuntu-latest
+    env:
+      ZIG_VERSION: 0.16.0
     defaults:
       run:
         working-directory: agent
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: 0.16.0
+      - name: install Zig
+        run: |
+          set -euo pipefail
+          zig_dir="$RUNNER_TEMP/zig-$ZIG_VERSION"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$zig_dir"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
       - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
       - run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
-      - run: zig build test
+      - run: zig build test -Dtarget=x86_64-linux-musl
       - uses: actions/upload-artifact@v4
         with:
           name: tawny-agent-builds

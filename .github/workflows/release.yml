@@ -9,6 +9,8 @@ jobs:
   build-agent:
     name: build agent
     runs-on: ubuntu-latest
+    env:
+      ZIG_VERSION: 0.16.0
     strategy:
       matrix:
         target:
@@ -19,9 +21,15 @@ jobs:
           - { name: macos-x64, zig: x86_64-macos, ext: "" }
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: 0.16.0
+      - name: install Zig
+        run: |
+          set -euo pipefail
+          zig_dir="$RUNNER_TEMP/zig-$ZIG_VERSION"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$zig_dir"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
       - name: build
         working-directory: agent
         run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
