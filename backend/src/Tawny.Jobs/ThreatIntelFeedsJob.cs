@@ -87,14 +87,16 @@ public class ThreatIntelFeedsJob(
             var externalId = externalIdPrefix + ind.Kind + ":" + ind.Value.ToLowerInvariant();
             if (existing.Contains(externalId)) continue;
 
-            var (eventType, payloadPath, op) = ind.Kind switch
+            (TelemetryEventType EventType, string PayloadPath, AlertRuleOperator Op)? compiled = ind.Kind switch
             {
                 "sha256" => (TelemetryEventType.FileIntegrity, "new_sha256", AlertRuleOperator.Equals),
                 "sha1" => (TelemetryEventType.FileIntegrity, "new_sha1", AlertRuleOperator.Equals),
                 "ipv4" or "ipv6" => (TelemetryEventType.NetworkSnapshot, "connections.remote_address", AlertRuleOperator.Equals),
                 "domain" => (TelemetryEventType.ProcessSnapshot, "processes.command_line", AlertRuleOperator.Contains),
-                _ => default((TelemetryEventType, string, AlertRuleOperator)?)!,
+                _ => null,
             };
+            if (compiled is null) continue;
+            var (eventType, payloadPath, op) = compiled.Value;
 
             newRules.Add(new AlertRule
             {
