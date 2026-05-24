@@ -118,6 +118,21 @@ public class AlertRuleEvaluator(
 
     private static bool Matches(AlertRule rule, JsonElement payload)
     {
+        // Package exposure: match (ecosystem, name, version_pattern) against an
+        // inventory event. Inspired by Perplexity's Bumblebee scanner.
+        if (rule.Format == AlertRuleFormat.PackageExposure && !string.IsNullOrWhiteSpace(rule.SourceDefinition))
+        {
+            try
+            {
+                var definition = PackageExposureParser.Parse(rule.SourceDefinition);
+                return PackageExposureEvaluator.Evaluate(definition, payload);
+            }
+            catch (PackageExposureException)
+            {
+                return false;
+            }
+        }
+
         // YARA-lite: match strings against the raw payload text.
         if (rule.Format == AlertRuleFormat.Yara && !string.IsNullOrWhiteSpace(rule.SourceDefinition))
         {

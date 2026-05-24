@@ -13,6 +13,9 @@ const fim_collector = @import("collectors/fim.zig");
 const process_events = @import("collectors/process_events.zig");
 const fs_events = @import("collectors/fs_events.zig");
 const dns_collector = @import("collectors/dns.zig");
+const inventory_collector = @import("collectors/inventory.zig");
+const extensions_collector = @import("collectors/extensions.zig");
+const mcp_collector = @import("collectors/mcp_config.zig");
 const response_actions = @import("response_actions.zig");
 
 const AGENT_VERSION = "0.1.0";
@@ -55,6 +58,10 @@ pub fn main() !void {
 
     var dns = dns_collector.Collector.init(alloc);
 
+    var inventory = inventory_collector.Scanner.init(alloc);
+    var extensions = extensions_collector.Scanner.init(alloc);
+    var mcp = mcp_collector.Scanner.init(alloc);
+
     var heartbeat_timer = try std.time.Timer.start();
     var process_timer = try std.time.Timer.start();
     var process_events_timer = try std.time.Timer.start();
@@ -64,6 +71,7 @@ pub fn main() !void {
     var fim_timer = try std.time.Timer.start();
     var fs_events_timer = try std.time.Timer.start();
     var dns_timer = try std.time.Timer.start();
+    var supply_chain_timer = try std.time.Timer.start();
     const start_time = std.time.timestamp();
 
     if (system_collector.collect(alloc)) |payload| {
@@ -234,6 +242,40 @@ pub fn main() !void {
             }
         }
 
+        // Supply-chain inventory + extensions + MCP configs run on a much
+        // longer cadence — these are slow filesystem walks, not real-time.
+        if (supply_chain_timer.read() / std.time.ns_per_s >= cfg.supply_chain_interval_seconds) {
+            supply_chain_timer.reset();
+
+            try emitBatch(&buf, cfg.spill_path, "package_inventory",
+                inventory.collectInventory() catch |err| blk: {
+                    try stderr.print("inventory collector failed: {s}\n", .{@errorName(err)});
+                    break :blk &[_][]u8{};
+                },
+                alloc);
+
+            try emitBatch(&buf, cfg.spill_path, "editor_extension",
+                extensions.collectExtensions(.editor) catch |err| blk: {
+                    try stderr.print("editor extensions failed: {s}\n", .{@errorName(err)});
+                    break :blk &[_][]u8{};
+                },
+                alloc);
+
+            try emitBatch(&buf, cfg.spill_path, "browser_extension",
+                extensions.collectExtensions(.browser) catch |err| blk: {
+                    try stderr.print("browser extensions failed: {s}\n", .{@errorName(err)});
+                    break :blk &[_][]u8{};
+                },
+                alloc);
+
+            try emitBatch(&buf, cfg.spill_path, "mcp_config",
+                mcp.collectConfigs() catch |err| blk: {
+                    try stderr.print("mcp config failed: {s}\n", .{@errorName(err)});
+                    break :blk &[_][]u8{};
+                },
+                alloc);
+        }
+
         if (buf.len() == 0) {
             buf.replay(cfg.spill_path) catch |err| {
                 try stderr.print("buffer replay failed: {s}\n", .{@errorName(err)});
@@ -269,11 +311,33 @@ test "main module loads" {
     _ = process_events;
     _ = fs_events;
     _ = dns_collector;
+    _ = inventory_collector;
+    _ = extensions_collector;
+    _ = mcp_collector;
     _ = response_actions;
 }
 
 fn spillIfNeeded(buf: *buffer.Buffer, path: []const u8) !void {
     if (buf.shouldSpill()) try buf.spill(path);
+}
+
+fn emitBatch(
+    buf: *buffer.Buffer,
+    spill_path: []const u8,
+    event_type: []const u8,
+    payloads: [][]u8,
+    alloc: std.mem.Allocator,
+) !void {
+    defer alloc.free(payloads);
+    for (payloads) |payload| {
+        defer alloc.free(payload);
+        try buf.push(.{
+            .event_type = event_type,
+            .occurred_at = std.time.timestamp(),
+            .payload = payload,
+        });
+        try spillIfNeeded(buf, spill_path);
+    }
 }
 
 fn persistRotatedJwt(

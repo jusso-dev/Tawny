@@ -18,7 +18,8 @@ public class AlertRulesController(
     TawnyDbContext db,
     AuditLogger audit,
     SigmaRuleImporter sigma,
-    IocRuleImporter iocs) : ControllerBase
+    IocRuleImporter iocs,
+    ExposureRuleImporter exposures) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<AlertRuleResponse>>> List(CancellationToken ct)
@@ -135,6 +136,41 @@ public class AlertRulesController(
             nameof(List),
             new { count = imported.Rules.Count },
             new ImportIocRulesResponse(imported.Rules.Select(ToResponse).ToList(), imported.SkippedIndicators));
+    }
+
+    [HttpPost("exposures")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    public async Task<ActionResult<ImportExposureRulesResponse>> ImportExposures(
+        ImportExposureRulesRequest req,
+        CancellationToken ct)
+    {
+        ExposureImportResult imported;
+        try
+        {
+            imported = exposures.Import(
+                req.Definition,
+                req.Severity ?? AlertSeverity.High,
+                req.IsEnabled ?? true,
+                DateTimeOffset.UtcNow);
+        }
+        catch (ExposureRuleException ex)
+        {
+            return Problem(statusCode: 400, title: ex.Message);
+        }
+
+        db.AlertRules.AddRange(imported.Rules);
+        audit.Add(User, "alert_rule.import_exposures", null, new
+        {
+            Count = imported.Rules.Count,
+            Severity = req.Severity ?? AlertSeverity.High,
+            SkippedCount = imported.SkippedEntries.Count,
+        });
+        await db.SaveChangesAsync(ct);
+
+        return CreatedAtAction(
+            nameof(List),
+            new { count = imported.Rules.Count },
+            new ImportExposureRulesResponse(imported.Rules.Select(ToResponse).ToList(), imported.SkippedEntries));
     }
 
     [HttpPut("{id:guid}")]

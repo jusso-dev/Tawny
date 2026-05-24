@@ -193,6 +193,10 @@ public class TelemetryController(
         TelemetryEventType.DnsQuery => "dns_query",
         TelemetryEventType.ProcessLaunch => "process_launch",
         TelemetryEventType.FileEvent => "file_event",
+        TelemetryEventType.PackageInventory => "package_inventory",
+        TelemetryEventType.EditorExtension => "editor_extension",
+        TelemetryEventType.BrowserExtension => "browser_extension",
+        TelemetryEventType.McpConfig => "mcp_config",
         _ => type.ToString(),
     };
 }

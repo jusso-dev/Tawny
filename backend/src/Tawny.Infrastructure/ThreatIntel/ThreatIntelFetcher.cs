@@ -9,11 +9,20 @@ namespace Tawny.Infrastructure.ThreatIntel;
 
 public record FetchedIndicator(string Kind, string Value, string? Description);
 
+public record FetchedExposure(
+    string Ecosystem,
+    string Name,
+    string? VersionPattern,
+    string? AdvisoryId,
+    string? AdvisoryUrl,
+    string? Summary);
+
 public record FetchResult(
     bool Modified,
     string? Etag,
     IReadOnlyList<FetchedIndicator> Indicators,
-    IReadOnlyList<string> Skipped);
+    IReadOnlyList<string> Skipped,
+    IReadOnlyList<FetchedExposure>? Exposures = null);
 
 public class ThreatIntelFetchException(string message, Exception? inner = null) : Exception(message, inner);
 
@@ -56,6 +65,16 @@ public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log
 
         var body = await response.Content.ReadAsStringAsync(ct);
         var etag = response.Headers.ETag?.Tag?.Trim('"');
+
+        // OSV feeds produce package-exposure records, not the hash/IP/domain
+        // indicator shape, so they take a separate branch.
+        if (feed.Kind == ThreatIntelFeedKind.OsvVulnerabilities)
+        {
+            var exposures = ParseOsv(body);
+            log.LogInformation("OSV feed {Feed} returned {Count} exposures.", feed.Name, exposures.Count);
+            return new FetchResult(true, etag, [], [], exposures);
+        }
+
         var indicators = feed.Kind switch
         {
             ThreatIntelFeedKind.UrlhausCsv => ParseUrlhausCsv(body),
@@ -74,6 +93,103 @@ public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log
                 feed.Name, indicators.Count, taken.Count, skipped.Count);
         }
         return new FetchResult(true, etag, taken, skipped);
+    }
+
+    private static List<FetchedExposure> ParseOsv(string body)
+    {
+        // Accept either a single OSV record, a `{advisories: [...]}` bundle,
+        // or a top-level JSON array of records. Mirrors ExposureRuleImporter.
+        var result = new List<FetchedExposure>();
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            switch (root.ValueKind)
+            {
+                case JsonValueKind.Array:
+                    foreach (var entry in root.EnumerateArray()) AppendOsvRecord(entry, result);
+                    break;
+                case JsonValueKind.Object when root.TryGetProperty("advisories", out var bundle)
+                        && bundle.ValueKind == JsonValueKind.Array:
+                    foreach (var entry in bundle.EnumerateArray()) AppendOsvRecord(entry, result);
+                    break;
+                case JsonValueKind.Object:
+                    AppendOsvRecord(root, result);
+                    break;
+            }
+        }
+        catch (JsonException ex)
+        {
+            throw new ThreatIntelFetchException("OSV parse failed", ex);
+        }
+        return result;
+    }
+
+    private static void AppendOsvRecord(JsonElement advisory, List<FetchedExposure> out_)
+    {
+        var id = advisory.TryGetProperty("id", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() : null;
+        var summary = advisory.TryGetProperty("summary", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+        var url = ExtractFirstOsvUrl(advisory);
+
+        if (!advisory.TryGetProperty("affected", out var affected) || affected.ValueKind != JsonValueKind.Array) return;
+        foreach (var a in affected.EnumerateArray())
+        {
+            if (!a.TryGetProperty("package", out var pkg)) continue;
+            if (!pkg.TryGetProperty("ecosystem", out var eco) || !pkg.TryGetProperty("name", out var name)) continue;
+            var ecosystem = eco.GetString();
+            var packageName = name.GetString();
+            if (string.IsNullOrWhiteSpace(ecosystem) || string.IsNullOrWhiteSpace(packageName)) continue;
+            out_.Add(new FetchedExposure(
+                ecosystem.ToLowerInvariant(),
+                packageName,
+                BuildOsvPattern(a),
+                id,
+                url,
+                summary));
+        }
+    }
+
+    private static string? BuildOsvPattern(JsonElement affected)
+    {
+        if (affected.TryGetProperty("versions", out var versions) && versions.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var v in versions.EnumerateArray())
+            {
+                if (v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
+                    list.Add(v.GetString()!);
+            }
+            if (list.Count > 0) return string.Join(",", list);
+        }
+        if (affected.TryGetProperty("ranges", out var ranges) && ranges.ValueKind == JsonValueKind.Array)
+        {
+            var fragments = new List<string>();
+            foreach (var range in ranges.EnumerateArray())
+            {
+                if (!range.TryGetProperty("events", out var events) || events.ValueKind != JsonValueKind.Array) continue;
+                string? introduced = null;
+                string? fixedAt = null;
+                foreach (var ev in events.EnumerateArray())
+                {
+                    if (ev.TryGetProperty("introduced", out var iEl) && iEl.ValueKind == JsonValueKind.String) introduced = iEl.GetString();
+                    if (ev.TryGetProperty("fixed", out var fEl) && fEl.ValueKind == JsonValueKind.String) fixedAt = fEl.GetString();
+                }
+                if (introduced is not null and not "0") fragments.Add($">={introduced}");
+                if (fixedAt is not null) fragments.Add($"<{fixedAt}");
+            }
+            if (fragments.Count > 0) return string.Join(",", fragments);
+        }
+        return null;
+    }
+
+    private static string? ExtractFirstOsvUrl(JsonElement advisory)
+    {
+        if (!advisory.TryGetProperty("references", out var refs) || refs.ValueKind != JsonValueKind.Array) return null;
+        foreach (var r in refs.EnumerateArray())
+        {
+            if (r.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String) return u.GetString();
+        }
+        return null;
     }
 
     // ---------- parsers ----------

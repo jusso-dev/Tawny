@@ -15,7 +15,11 @@ type EventType =
   | "heartbeat"
   | "dns_query"
   | "process_launch"
-  | "file_event";
+  | "file_event"
+  | "package_inventory"
+  | "editor_extension"
+  | "browser_extension"
+  | "mcp_config";
 
 type TelemetryEvent = {
   id: number;
@@ -40,6 +44,10 @@ const TABS: Tab[] = [
   { key: "network", label: "Network", type: "network_snapshot" },
   { key: "fim", label: "FIM", type: "file_integrity" },
   { key: "fs", label: "FS events", type: "file_event" },
+  { key: "inventory", label: "Inventory", type: "package_inventory" },
+  { key: "editor-ext", label: "Editor ext", type: "editor_extension" },
+  { key: "browser-ext", label: "Browser ext", type: "browser_extension" },
+  { key: "mcp", label: "MCP", type: "mcp_config" },
   { key: "sessions", label: "Sessions", type: "user_session" },
   { key: "raw", label: "Raw events" },
 ];

@@ -43,6 +43,7 @@ builder.Services.AddScoped<AuditLogger>();
 builder.Services.AddScoped<AlertRuleEvaluator>();
 builder.Services.AddScoped<SigmaRuleImporter>();
 builder.Services.AddScoped<IocRuleImporter>();
+builder.Services.AddScoped<ExposureRuleImporter>();
 builder.Services.AddSingleton<HuntQueryParser>();
 builder.Services.AddScoped<HuntExecutor>();
 builder.Services.AddScoped<SuppressionEvaluator>();

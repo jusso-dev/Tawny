@@ -54,6 +54,15 @@ public record ImportIocRulesResponse(
     IReadOnlyList<AlertRuleResponse> Rules,
     IReadOnlyList<string> SkippedIndicators);
 
+public record ImportExposureRulesRequest(
+    string Definition,
+    AlertSeverity? Severity,
+    bool? IsEnabled);
+
+public record ImportExposureRulesResponse(
+    IReadOnlyList<AlertRuleResponse> Rules,
+    IReadOnlyList<string> SkippedEntries);
+
 public record AlertResponse(
     long Id,
     Guid AlertRuleId,

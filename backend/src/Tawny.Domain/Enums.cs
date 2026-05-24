@@ -32,6 +32,10 @@ public enum TelemetryEventType
     DnsQuery = 6,
     ProcessLaunch = 7,
     FileEvent = 8,
+    PackageInventory = 9,
+    EditorExtension = 10,
+    BrowserExtension = 11,
+    McpConfig = 12,
 }
 
 public enum UserRole
@@ -79,6 +83,7 @@ public enum AlertRuleFormat
     Ioc = 2,
     Sequence = 3,
     Yara = 4,
+    PackageExposure = 5,
 }
 
 public enum ResponseActionType
@@ -117,6 +122,7 @@ public enum ThreatIntelFeedKind
     MispEvents = 3,
     Taxii21 = 4,
     GenericCsv = 5,
+    OsvVulnerabilities = 6,
 }
 
 public enum ThreatIntelFeedStatus

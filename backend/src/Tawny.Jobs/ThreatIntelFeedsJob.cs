@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
+using Tawny.Infrastructure.Hunting;
 using Tawny.Infrastructure.ThreatIntel;
 
 namespace Tawny.Jobs;
@@ -54,7 +55,7 @@ public class ThreatIntelFeedsJob(
             await MaterialiseAsync(feed, result, now, ct);
             feed.Status = ThreatIntelFeedStatus.Healthy;
             feed.LastSuccessAt = now;
-            feed.LastImportedCount = result.Indicators.Count;
+            feed.LastImportedCount = result.Indicators.Count + (result.Exposures?.Count ?? 0);
             feed.LastSkippedCount = result.Skipped.Count;
             feed.LastError = null;
         }
@@ -73,8 +74,6 @@ public class ThreatIntelFeedsJob(
         DateTimeOffset now,
         CancellationToken ct)
     {
-        if (result.Indicators.Count == 0) return;
-
         var externalIdPrefix = $"ti-feed:{feed.Id}:";
         var existingIds = await db.AlertRules
             .Where(r => r.ExternalId != null && r.ExternalId.StartsWith(externalIdPrefix))
@@ -115,10 +114,58 @@ public class ThreatIntelFeedsJob(
             });
         }
 
+        // OSV exposures coming from the feed get materialised as Format=PackageExposure
+        // rules so the agent's inventory events can match them at ingest time.
+        if (result.Exposures is { Count: > 0 })
+        {
+            foreach (var exposure in result.Exposures)
+            {
+                var pattern = exposure.VersionPattern ?? "any";
+                var externalId = $"{externalIdPrefix}exposure:{exposure.Ecosystem}:{exposure.Name}:{pattern}";
+                if (exposure.AdvisoryId is { Length: > 0 }) externalId = $"{externalId}:{exposure.AdvisoryId}";
+                if (externalId.Length > 128) externalId = externalId[..128];
+                if (existing.Contains(externalId)) continue;
+
+                var definition = new PackageExposureDefinition(
+                    exposure.Ecosystem,
+                    exposure.Name,
+                    exposure.VersionPattern,
+                    exposure.AdvisoryId,
+                    exposure.AdvisoryUrl);
+                var eventType = exposure.Ecosystem switch
+                {
+                    "editor-extension" or "editor_extension" => TelemetryEventType.EditorExtension,
+                    "browser-extension" or "browser_extension" => TelemetryEventType.BrowserExtension,
+                    "mcp" or "mcp_server" or "mcp-server" => TelemetryEventType.McpConfig,
+                    _ => TelemetryEventType.PackageInventory,
+                };
+
+                newRules.Add(new AlertRule
+                {
+                    Id = Guid.NewGuid(),
+                    Name = $"OSV: {exposure.Ecosystem}/{exposure.Name} {pattern}",
+                    Format = AlertRuleFormat.PackageExposure,
+                    ExternalId = externalId,
+                    Description = exposure.Summary
+                        ?? $"OSV exposure from {feed.Name}: {exposure.Ecosystem}/{exposure.Name} {pattern}.",
+                    EventType = eventType,
+                    Severity = feed.DefaultSeverity,
+                    Operator = AlertRuleOperator.Exists,
+                    SourceDefinition = PackageExposureParser.Serialize(definition),
+                    IsEnabled = true,
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                });
+            }
+        }
+
         if (newRules.Count > 0)
         {
             db.AlertRules.AddRange(newRules);
-            log.LogInformation("TI feed {Name} imported {Count} new IoCs.", feed.Name, newRules.Count);
+            log.LogInformation("TI feed {Name} imported {Count} new rules ({Ioc} IoCs + {Exp} exposures).",
+                feed.Name, newRules.Count,
+                newRules.Count(r => r.Format == AlertRuleFormat.Ioc),
+                newRules.Count(r => r.Format == AlertRuleFormat.PackageExposure));
         }
     }
 }
