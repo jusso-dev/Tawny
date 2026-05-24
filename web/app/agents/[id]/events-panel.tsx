@@ -261,7 +261,28 @@ function summarizePayload(event: TelemetryEvent) {
     return `${event.payload.processes.length} processes${names ? `: ${names}` : ""}`;
   }
 
+  // Inventory / extension / MCP events all carry {ecosystem, name, version}
+  // at the top level — summarise as one line per event for the table view.
+  if (isInventoryLike(event.type) && isPackageRecord(event.payload)) {
+    const p = event.payload;
+    const provenance = p.source_type ? ` (${p.source_type})` : "";
+    return `${p.ecosystem}/${p.name}@${p.version}${provenance}`;
+  }
+
   return JSON.stringify(event.payload, null, 2);
+}
+
+function isInventoryLike(type: EventType): boolean {
+  return type === "package_inventory"
+    || type === "editor_extension"
+    || type === "browser_extension"
+    || type === "mcp_config";
+}
+
+function isPackageRecord(payload: unknown): payload is { ecosystem: string; name: string; version: string; source_type?: string } {
+  if (!payload || typeof payload !== "object") return false;
+  const obj = payload as Record<string, unknown>;
+  return typeof obj.ecosystem === "string" && typeof obj.name === "string" && typeof obj.version === "string";
 }
 
 type ProcessRow = {
