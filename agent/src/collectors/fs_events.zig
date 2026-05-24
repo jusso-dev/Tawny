@@ -62,7 +62,7 @@ pub const Watcher = struct {
     /// Drain pending inotify events and translate each into a JSON payload.
     /// Caller owns both the outer slice and each inner payload.
     pub fn collectEvents(self: *Watcher) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
+        var payloads = std.array_list.Managed([]u8).init(self.allocator);
         errdefer {
             for (payloads.items) |p| self.allocator.free(p);
             payloads.deinit();
@@ -78,7 +78,7 @@ pub const Watcher = struct {
     }
 };
 
-fn drainLinux(self: *Watcher, fd: i32, payloads: *std.ArrayList([]u8)) !void {
+fn drainLinux(self: *Watcher, fd: i32, payloads: *std.array_list.Managed([]u8)) !void {
     if (comptime builtin.os.tag != .linux) return;
 
     var buf: [4096]u8 = undefined;
@@ -110,22 +110,22 @@ fn drainLinux(self: *Watcher, fd: i32, payloads: *std.ArrayList([]u8)) !void {
 }
 
 fn buildEvent(alloc: std.mem.Allocator, base: []const u8, name: []const u8, mask: u32) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"path\":");
     if (name.len == 0) {
-        try std.json.stringify(base, .{}, w);
+        try std.json.Stringify.value(base, .{}, w);
     } else {
         const composed = try std.fs.path.join(alloc, &.{ base, name });
         defer alloc.free(composed);
-        try std.json.stringify(composed, .{}, w);
+        try std.json.Stringify.value(composed, .{}, w);
     }
     try w.writeAll(",\"action\":\"");
     try w.writeAll(actionName(mask));
     try w.writeAll("\",\"watch\":");
-    try std.json.stringify(base, .{}, w);
+    try std.json.Stringify.value(base, .{}, w);
     try w.writeAll(",\"is_directory\":");
     try w.print("{any}", .{(mask & linux.IN.ISDIR) != 0});
     try w.writeByte('}');

@@ -29,7 +29,7 @@ pub const Tracker = struct {
     /// Returns a list of JSON payloads, one per newly observed process.
     /// Caller owns both the outer slice and each inner payload.
     pub fn collectLaunches(self: *Tracker) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
+        var payloads = std.array_list.Managed([]u8).init(self.allocator);
         errdefer {
             for (payloads.items) |p| self.allocator.free(p);
             payloads.deinit();
@@ -46,7 +46,7 @@ pub const Tracker = struct {
         return payloads.toOwnedSlice();
     }
 
-    fn collectLinux(self: *Tracker, payloads: *std.ArrayList([]u8)) !void {
+    fn collectLinux(self: *Tracker, payloads: *std.array_list.Managed([]u8)) !void {
         var proc_dir = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return;
         defer proc_dir.close();
 
@@ -67,7 +67,7 @@ pub const Tracker = struct {
     }
 
     fn pruneStale(self: *Tracker) !void {
-        var to_remove = std.ArrayList(u32).init(self.allocator);
+        var to_remove = std.array_list.Managed(u32).init(self.allocator);
         defer to_remove.deinit();
 
         var it = self.seen.iterator();
@@ -112,16 +112,16 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
 
     const uid = readUid(alloc, pid) catch 0;
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.print("{{\"pid\":{d},\"ppid\":{d},\"uid\":{d},\"name\":", .{ pid, ppid, uid });
-    try std.json.stringify(trimmed_name, .{}, w);
+    try std.json.Stringify.value(trimmed_name, .{}, w);
     try w.writeAll(",\"command_line\":");
-    try std.json.stringify(command_line, .{}, w);
+    try std.json.Stringify.value(command_line, .{}, w);
     try w.writeAll(",\"image_path\":");
-    try std.json.stringify(exe_path, .{}, w);
+    try std.json.Stringify.value(exe_path, .{}, w);
     if (hashed) {
         try w.print(",\"image_sha256\":\"{}\"", .{std.fmt.fmtSliceHexLower(&digest)});
     } else {

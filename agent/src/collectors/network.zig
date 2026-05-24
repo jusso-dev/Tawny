@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const iox = @import("../io_compat.zig");
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
@@ -11,9 +12,9 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"source\":\"procfs\",\"connections\":[");
     var first = true;
@@ -55,17 +56,17 @@ fn appendProcNetRows(
         defer alloc.free(remote_endpoint.address);
 
         try writer.writeAll("{\"protocol\":");
-        try std.json.stringify(protocol, .{}, writer);
+        try std.json.Stringify.value(protocol, .{}, writer);
         try writer.writeAll(",\"local_address\":");
-        try std.json.stringify(local_endpoint.address, .{}, writer);
+        try std.json.Stringify.value(local_endpoint.address, .{}, writer);
         try writer.print(",\"local_port\":{d}", .{local_endpoint.port});
         try writer.writeAll(",\"remote_address\":");
-        try std.json.stringify(remote_endpoint.address, .{}, writer);
+        try std.json.Stringify.value(remote_endpoint.address, .{}, writer);
         try writer.print(",\"remote_port\":{d}", .{remote_endpoint.port});
         try writer.writeAll(",\"state\":");
-        try std.json.stringify(state, .{}, writer);
+        try std.json.Stringify.value(state, .{}, writer);
         try writer.writeAll(",\"raw\":");
-        try std.json.stringify(line, .{}, writer);
+        try std.json.Stringify.value(line, .{}, writer);
         try writer.writeByte('}');
     }
 }
@@ -104,17 +105,17 @@ fn parseProcNetEndpoint(alloc: std.mem.Allocator, protocol: []const u8, endpoint
 }
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
-    const result = try std.process.Child.run(.{
-        .allocator = alloc,
+    const result = try std.process.run(alloc, iox.current(), .{
         .argv = &.{ "lsof", "-i", "-P", "-n" },
-        .max_output_bytes = 512 * 1024,
+        .stdout_limit = .limited(512 * 1024),
+        .stderr_limit = .limited(512 * 1024),
     });
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
 
     try w.writeAll("{\"source\":\"lsof\",\"connections\":[");
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
@@ -130,7 +131,7 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
         if (!first) try w.writeByte(',');
         first = false;
         try w.writeAll("{\"raw\":");
-        try std.json.stringify(line, .{}, w);
+        try std.json.Stringify.value(line, .{}, w);
         try w.writeByte('}');
     }
     try w.writeAll("]}");

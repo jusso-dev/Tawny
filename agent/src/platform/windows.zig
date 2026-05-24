@@ -36,7 +36,7 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     var entry: PROCESSENTRY32W = std.mem.zeroes(PROCESSENTRY32W);
     entry.dwSize = @sizeOf(PROCESSENTRY32W);
 
-    var list = std.ArrayList(ProcessInfo).init(alloc);
+    var list = std.array_list.Managed(ProcessInfo).init(alloc);
     errdefer {
         for (list.items) |p| {
             alloc.free(p.name);

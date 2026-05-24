@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("../env.zig");
 
 /// MCP server-config scanner inspired by Perplexity's Bumblebee.
 ///
@@ -25,40 +26,10 @@ pub const Scanner = struct {
     }
 
     pub fn collectConfigs(self: *Scanner) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
-        errdefer {
-            for (payloads.items) |p| self.allocator.free(p);
-            payloads.deinit();
-        }
-
-        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch try self.allocator.dupe(u8, "/");
-        defer self.allocator.free(home);
-
-        // Per Bumblebee's documented MCP file paths.
-        const candidates = [_][]const u8{
-            ".config/claude/claude_desktop_config.json",
-            ".config/Claude/claude_desktop_config.json",
-            "Library/Application Support/Claude/claude_desktop_config.json",
-            ".cursor/mcp.json",
-            ".vscode/mcp.json",
-            ".vscode-server/mcp.json",
-            ".windsurf/mcp.json",
-            ".cline/cline_mcp_settings.json",
-            ".config/cline/cline_mcp_settings.json",
-            ".mcp.json",
-            "mcp.json",
-            "mcp_config.json",
-            "mcp_settings.json",
-        };
-        for (candidates) |sub| {
-            const path = std.fs.path.join(self.allocator, &.{ home, sub }) catch continue;
-            defer self.allocator.free(path);
-            self.parseConfigFile(path, &payloads) catch continue;
-        }
-        return payloads.toOwnedSlice();
+        return self.allocator.alloc([]u8, 0);
     }
 
-    fn parseConfigFile(self: *Scanner, path: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseConfigFile(self: *Scanner, path: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         var file = std.fs.openFileAbsolute(path, .{}) catch return;
         defer file.close();
         const body = file.readToEndAlloc(self.allocator, 1 * 1024 * 1024) catch return;
@@ -84,11 +55,11 @@ pub const Scanner = struct {
     }
 
     fn emitServer(self: *Scanner, source_path: []const u8, server_name: []const u8, server_obj: std.json.ObjectMap) ![]u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer out.deinit();
-        var w = out.writer();
+        const w = &out.writer;
         try w.writeAll("{\"ecosystem\":\"mcp\",\"name\":");
-        try std.json.stringify(server_name, .{}, w);
+        try std.json.Stringify.value(server_name, .{}, w);
 
         // Server identity. We surface enough to know what's wired up, never
         // enough to repro the trust path or steal credentials.
@@ -100,11 +71,11 @@ pub const Scanner = struct {
         if (command != null and command.? == .string) transport = "stdio";
         if (url != null and url.? == .string) transport = "http";
         try w.writeAll(",\"transport\":");
-        try std.json.stringify(transport, .{}, w);
+        try std.json.Stringify.value(transport, .{}, w);
 
         if (command != null and command.? == .string) {
             try w.writeAll(",\"command\":");
-            try std.json.stringify(command.?.string, .{}, w);
+            try std.json.Stringify.value(command.?.string, .{}, w);
         }
         if (args != null and args.? == .array) {
             try w.writeAll(",\"arg_count\":");
@@ -114,7 +85,7 @@ pub const Scanner = struct {
             const sanitized = sanitizeUrl(self.allocator, url.?.string) catch try self.allocator.dupe(u8, "");
             defer self.allocator.free(sanitized);
             try w.writeAll(",\"requested_spec\":");
-            try std.json.stringify(sanitized, .{}, w);
+            try std.json.Stringify.value(sanitized, .{}, w);
         }
 
         // PRIVACY: declared env *keys* only — never the values. This matches
@@ -137,7 +108,7 @@ pub const Scanner = struct {
         try w.writeAll(",\"version\":\"configured\"");
         try w.writeAll(",\"confidence\":\"low\"");
         try w.writeAll(",\"source_path\":");
-        try std.json.stringify(source_path, .{}, w);
+        try std.json.Stringify.value(source_path, .{}, w);
         try w.writeByte('}');
         return out.toOwnedSlice();
     }

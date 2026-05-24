@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const iox = @import("../io_compat.zig");
 
 /// DNS query collector. Linux: shells out to `journalctl -u systemd-resolved`
 /// since the last collection and pulls structured JSON lines, then matches
@@ -22,7 +23,7 @@ pub const Collector = struct {
     /// Returns one JSON payload per detected DNS query since the last call.
     /// Caller owns the outer slice and each inner payload.
     pub fn collectQueries(self: *Collector) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
+        var payloads = std.array_list.Managed([]u8).init(self.allocator);
         errdefer {
             for (payloads.items) |p| self.allocator.free(p);
             payloads.deinit();
@@ -33,23 +34,18 @@ pub const Collector = struct {
             else => {}, // Win/macOS DNS capture needs ETW / NetworkExtension; not in this collector.
         }
 
-        self.last_run_unix = std.time.timestamp();
+        self.last_run_unix = iox.timestamp();
         return payloads.toOwnedSlice();
     }
 
-    fn collectLinux(self: *Collector, payloads: *std.ArrayList([]u8)) !void {
+    fn collectLinux(self: *Collector, payloads: *std.array_list.Managed([]u8)) !void {
         const since_arg = if (self.last_run_unix == 0)
             try self.allocator.dupe(u8, "60 seconds ago")
         else
             try std.fmt.allocPrint(self.allocator, "@{d}", .{self.last_run_unix});
         defer self.allocator.free(since_arg);
 
-        // Match the network/users collectors: Child.run handles spawn + wait
-        // + output capture in a single call and returns a RunResult, so we
-        // don't have to wrestle with the kill/wait error-union type signatures
-        // that vary across Zig versions.
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
+        const result = std.process.run(self.allocator, iox.current(), .{
             .argv = &.{
                 "journalctl",
                 "-u",
@@ -60,7 +56,8 @@ pub const Collector = struct {
                 "--no-pager",
                 "--quiet",
             },
-            .max_output_bytes = 4 * 1024 * 1024,
+            .stdout_limit = .limited(4 * 1024 * 1024),
+            .stderr_limit = .limited(4 * 1024 * 1024),
         }) catch return; // journalctl missing or not permitted; silently skip.
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
@@ -78,7 +75,7 @@ pub const Collector = struct {
 /// up. systemd-resolved at debug level emits messages like:
 ///   "Looking up RR for example.com IN A"
 ///   "Got DNS reply ... example.com IN A -> 93.184.216.34"
-fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.ArrayList([]u8)) !void {
+fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.array_list.Managed([]u8)) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch return;
     defer parsed.deinit();
 
@@ -92,25 +89,25 @@ fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.ArrayList([]u
     const qtype = extractQtype(message) orelse "A";
     const reply_ip = extractReplyIp(message);
     const ts_secs: i64 = blk: {
-        const ts_entry = obj.get("__REALTIME_TIMESTAMP") orelse break :blk std.time.timestamp();
-        if (ts_entry != .string) break :blk std.time.timestamp();
-        const micros = std.fmt.parseInt(i64, ts_entry.string, 10) catch break :blk std.time.timestamp();
+        const ts_entry = obj.get("__REALTIME_TIMESTAMP") orelse break :blk iox.timestamp();
+        if (ts_entry != .string) break :blk iox.timestamp();
+        const micros = std.fmt.parseInt(i64, ts_entry.string, 10) catch break :blk iox.timestamp();
         break :blk @divTrunc(micros, 1_000_000);
     };
     _ = ts_secs; // ts surfaces on the event envelope, not the payload, so we drop it here.
 
-    var payload = std.ArrayList(u8).init(alloc);
+    var payload = std.array_list.Managed(u8).init(alloc);
     errdefer payload.deinit();
     var w = payload.writer();
 
     try w.writeAll("{\"qname\":");
-    try std.json.stringify(qname, .{}, w);
+    try std.json.Stringify.value(qname, .{}, w);
     try w.writeAll(",\"qtype\":");
-    try std.json.stringify(qtype, .{}, w);
+    try std.json.Stringify.value(qtype, .{}, w);
     try w.writeAll(",\"response_ips\":");
     if (reply_ip) |ip| {
         try w.writeAll("[");
-        try std.json.stringify(ip, .{}, w);
+        try std.json.Stringify.value(ip, .{}, w);
         try w.writeAll("]");
     } else {
         try w.writeAll("[]");

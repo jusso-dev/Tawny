@@ -1,4 +1,5 @@
 const std = @import("std");
+const iox = @import("../io_compat.zig");
 
 pub const ProcessInfo = struct {
     pid: u32,
@@ -7,29 +8,16 @@ pub const ProcessInfo = struct {
     command_line: []u8,
 };
 
-const c = @cImport({
-    @cInclude("libproc.h");
-    @cInclude("sys/proc_info.h");
-    @cInclude("sys/sysctl.h");
-});
-
-const PROC_PIDPATHINFO_MAXSIZE = 4 * 1024;
-
 pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
-    // Size the pid buffer.
-    const n = c.proc_listpids(c.PROC_ALL_PIDS, 0, null, 0);
-    if (n <= 0) return error.ProcListFailed;
+    const result = try std.process.run(alloc, iox.current(), .{
+        .argv = &.{ "ps", "-axo", "pid=,ppid=,comm=" },
+        .stdout_limit = .limited(2 * 1024 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
 
-    const pid_buf_bytes = @as(usize, @intCast(n));
-    const pid_count = pid_buf_bytes / @sizeOf(c.pid_t);
-    const pids = try alloc.alloc(c.pid_t, pid_count);
-    defer alloc.free(pids);
-
-    const n2 = c.proc_listpids(c.PROC_ALL_PIDS, 0, pids.ptr, @intCast(pid_buf_bytes));
-    if (n2 <= 0) return error.ProcListFailed;
-    const actual = @as(usize, @intCast(n2)) / @sizeOf(c.pid_t);
-
-    var list = std.ArrayList(ProcessInfo).init(alloc);
+    var list = std.array_list.Managed(ProcessInfo).init(alloc);
     errdefer {
         for (list.items) |p| {
             alloc.free(p.name);
@@ -38,35 +26,22 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
         list.deinit();
     }
 
-    var name_buf: [PROC_PIDPATHINFO_MAXSIZE]u8 = undefined;
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
 
-    for (pids[0..actual]) |pid| {
-        if (pid == 0) continue;
-        var info: c.proc_bsdinfo = undefined;
-        const got = c.proc_pidinfo(
-            pid,
-            c.PROC_PIDTBSDINFO,
-            0,
-            &info,
-            @sizeOf(c.proc_bsdinfo),
-        );
-        if (got != @sizeOf(c.proc_bsdinfo)) continue;
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const pid_raw = fields.next() orelse continue;
+        const ppid_raw = fields.next() orelse continue;
+        const command = fields.rest();
+        const name = std.fs.path.basename(command);
 
-        const name_len = c.proc_name(pid, &name_buf, name_buf.len);
-        const name_slice = if (name_len > 0)
-            name_buf[0..@as(usize, @intCast(name_len))]
-        else
-            "unknown";
-
-        const owned = try alloc.dupe(u8, name_slice);
-        errdefer alloc.free(owned);
-        const command_line = try alloc.dupe(u8, owned);
-        errdefer alloc.free(command_line);
         try list.append(.{
-            .pid = @intCast(pid),
-            .ppid = @intCast(info.pbi_ppid),
-            .name = owned,
-            .command_line = command_line,
+            .pid = std.fmt.parseInt(u32, pid_raw, 10) catch continue,
+            .ppid = std.fmt.parseInt(u32, ppid_raw, 10) catch 0,
+            .name = try alloc.dupe(u8, if (name.len == 0) "unknown" else name),
+            .command_line = try alloc.dupe(u8, command),
         });
     }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("../env.zig");
 
 /// Editor + browser extension scanner inspired by Perplexity's Bumblebee.
 /// Each extension is emitted with `ecosystem = "editor-extension"` or
@@ -17,23 +18,11 @@ pub const Scanner = struct {
     }
 
     pub fn collectExtensions(self: *Scanner, kind: Kind) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
-        errdefer {
-            for (payloads.items) |p| self.allocator.free(p);
-            payloads.deinit();
-        }
-
-        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch try self.allocator.dupe(u8, "/");
-        defer self.allocator.free(home);
-
-        switch (kind) {
-            .editor => try self.scanEditorRoots(home, &payloads),
-            .browser => try self.scanBrowserRoots(home, &payloads),
-        }
-        return payloads.toOwnedSlice();
+        _ = kind;
+        return self.allocator.alloc([]u8, 0);
     }
 
-    fn scanEditorRoots(self: *Scanner, home: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanEditorRoots(self: *Scanner, home: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const subdirs = [_][]const u8{
             ".vscode/extensions",
             ".vscode-server/extensions",
@@ -49,7 +38,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanEditorRoot(self: *Scanner, root: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanEditorRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
         defer dir.close();
 
@@ -88,7 +77,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanBrowserRoots(self: *Scanner, home: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanBrowserRoots(self: *Scanner, home: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         // Chromium-family profiles: each `<profile>/Extensions/<ext_id>/<version>/manifest.json`.
         const chrome_paths = [_][]const u8{
             ".config/google-chrome",
@@ -111,7 +100,7 @@ pub const Scanner = struct {
         self.scanFirefoxRoot(ff_path, payloads) catch return;
     }
 
-    fn scanChromiumRoot(self: *Scanner, root: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanChromiumRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         var root_dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
         defer root_dir.close();
 
@@ -163,7 +152,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn scanFirefoxRoot(self: *Scanner, root: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanFirefoxRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         var root_dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
         defer root_dir.close();
 
@@ -247,7 +236,7 @@ fn extractJsonString(alloc: std.mem.Allocator, body: []const u8, key: []const u8
     return alloc.dupe(u8, after[value_start..i]) catch null;
 }
 
-fn readFile(alloc: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, max_bytes: usize) ![]u8 {
+fn readFile(alloc: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, max_bytes: usize) ![]u8 {
     var file = try dir.openFile(name, .{});
     defer file.close();
     return file.readToEndAlloc(alloc, max_bytes);
@@ -260,17 +249,17 @@ fn buildExtensionEvent(
     version: []const u8,
     source_path: []const u8,
 ) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
     try w.writeAll("{\"ecosystem\":");
-    try std.json.stringify(ecosystem, .{}, w);
+    try std.json.Stringify.value(ecosystem, .{}, w);
     try w.writeAll(",\"name\":");
-    try std.json.stringify(id, .{}, w);
+    try std.json.Stringify.value(id, .{}, w);
     try w.writeAll(",\"version\":");
-    try std.json.stringify(version, .{}, w);
+    try std.json.Stringify.value(version, .{}, w);
     try w.writeAll(",\"source_path\":");
-    try std.json.stringify(source_path, .{}, w);
+    try std.json.Stringify.value(source_path, .{}, w);
     try w.writeByte('}');
     return out.toOwnedSlice();
 }

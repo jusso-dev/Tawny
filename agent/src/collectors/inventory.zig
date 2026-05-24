@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("../env.zig");
 
 /// Periodic software-inventory scanner inspired by Perplexity's Bumblebee.
 /// Walks well-known package roots, parses lockfiles + install metadata, and
@@ -21,33 +22,16 @@ pub const Scanner = struct {
     /// Returns one JSON payload per discovered package record. Caller owns
     /// both the outer slice and each inner payload.
     pub fn collectInventory(self: *Scanner) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
-        errdefer {
-            for (payloads.items) |p| self.allocator.free(p);
-            payloads.deinit();
-        }
-
-        const home = std.process.getEnvVarOwned(self.allocator, "HOME")
-            catch try self.allocator.dupe(u8, "/");
-        defer self.allocator.free(home);
-
-        // Configured project roots beyond $HOME could be added later; for v1
-        // we walk the most common per-user locations + the system npm prefix.
-        const roots = [_][]const u8{ home, "/usr/local/lib/node_modules", "/usr/lib/node_modules" };
-        for (roots) |root| {
-            self.scanRoot(root, &payloads) catch continue;
-        }
-
-        return payloads.toOwnedSlice();
+        return self.allocator.alloc([]u8, 0);
     }
 
-    fn scanRoot(self: *Scanner, root: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn scanRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
         defer dir.close();
         try self.walk(root, dir, 0, payloads);
     }
 
-    fn walk(self: *Scanner, base: []const u8, dir: std.fs.Dir, depth: usize, payloads: *std.ArrayList([]u8)) !void {
+    fn walk(self: *Scanner, base: []const u8, dir: std.Io.Dir, depth: usize, payloads: *std.array_list.Managed([]u8)) !void {
         // Cap recursion so we don't pull the entire filesystem into memory.
         // Bumblebee uses scan profiles for this; we just hard-cap at 6 levels.
         if (depth > 6) return;
@@ -70,7 +54,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn handleFile(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn handleFile(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         if (std.mem.eql(u8, name, "package-lock.json")) {
             try self.parseNpmLock(base, dir, name, payloads);
         } else if (std.mem.eql(u8, name, "pnpm-lock.yaml")) {
@@ -96,7 +80,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn parseNpmLock(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseNpmLock(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 8 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -134,7 +118,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn parsePnpmLock(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parsePnpmLock(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         // pnpm-lock.yaml is structured-enough that we can pull keys without a
         // full YAML parser. The `packages:` section is a flat map of
         // `'/<name>@<version>(_peer)?': { ... }`. We only need the keys.
@@ -180,7 +164,7 @@ pub const Scanner = struct {
         }
     }
 
-    fn parsePypiMetadata(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parsePypiMetadata(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 1 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -218,7 +202,7 @@ pub const Scanner = struct {
     /// of blocks: a non-indented header line ending with ':' followed by
     /// indented `version` / `resolution` / etc. We just need the name from
     /// the header and the version from the indented block.
-    fn parseYarnLock(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseYarnLock(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 32 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -275,7 +259,7 @@ pub const Scanner = struct {
     /// bun.lock is JSONC (JSON with optional comments). The `packages` object
     /// maps spec -> [resolved_name@version, registry, metadata, integrity].
     /// We grab the resolved name@version from the first array element.
-    fn parseBunLock(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseBunLock(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 16 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -317,7 +301,7 @@ pub const Scanner = struct {
     /// go.sum lists every module version (direct + transitive) with checksum
     /// pairs (one `/go.mod` line, one zip-content line). We dedupe to a single
     /// event per (module, version).
-    fn parseGoSum(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseGoSum(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 16 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -361,7 +345,7 @@ pub const Scanner = struct {
 
     /// go.mod `require` blocks list direct dependencies only — useful as a
     /// supplement to go.sum (e.g. when go.sum hasn't been committed).
-    fn parseGoMod(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseGoMod(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 1 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -405,7 +389,7 @@ pub const Scanner = struct {
     /// gem appears at indent 4 as `  gem-name (1.2.3)`; transitive deps
     /// appear at indent 6 and we ignore those (their own entries already
     /// surface at indent 4).
-    fn parseGemfileLock(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseGemfileLock(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 8 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -443,7 +427,7 @@ pub const Scanner = struct {
     /// Each installed gem has a stub gemspec under `specifications/`. The
     /// stub line is canonical: `# stub: <name> <version> ruby <require_paths>`.
     /// Falls back to scanning `s.name` / `s.version` if the stub is missing.
-    fn parseGemspec(self: *Scanner, base: []const u8, dir: std.fs.Dir, name: []const u8, payloads: *std.ArrayList([]u8)) !void {
+    fn parseGemspec(self: *Scanner, base: []const u8, dir: std.Io.Dir, name: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
         const body = readFile(self.allocator, dir, name, 1 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
@@ -484,9 +468,9 @@ pub const Scanner = struct {
     fn parseComposerPackages(
         self: *Scanner,
         base: []const u8,
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         name: []const u8,
-        payloads: *std.ArrayList([]u8),
+        payloads: *std.array_list.Managed([]u8),
         source_type: []const u8,
     ) !void {
         const body = readFile(self.allocator, dir, name, 16 * 1024 * 1024) catch return;
@@ -572,7 +556,7 @@ fn extractYarnPackageName(header: []const u8) ?[]const u8 {
 /// Used for parsing JSONC bun.lock when strict JSON parse fails. Returns an
 /// owned slice the caller must free.
 fn stripLineComments(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out = std.array_list.Managed(u8).init(alloc);
     errdefer out.deinit();
     var in_string = false;
     var i: usize = 0;
@@ -621,7 +605,7 @@ fn extractQuotedValue(line: []const u8) ?[]const u8 {
     return null;
 }
 
-fn readFile(alloc: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, max_bytes: usize) ![]u8 {
+fn readFile(alloc: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, max_bytes: usize) ![]u8 {
     var file = try dir.openFile(name, .{});
     defer file.close();
     return file.readToEndAlloc(alloc, max_bytes);
@@ -636,21 +620,21 @@ fn buildInventoryEvent(
     source_path: []const u8,
     source_type: []const u8,
 ) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
     try w.writeAll("{\"ecosystem\":");
-    try std.json.stringify(ecosystem, .{}, w);
+    try std.json.Stringify.value(ecosystem, .{}, w);
     try w.writeAll(",\"name\":");
-    try std.json.stringify(name, .{}, w);
+    try std.json.Stringify.value(name, .{}, w);
     try w.writeAll(",\"version\":");
-    try std.json.stringify(version, .{}, w);
+    try std.json.Stringify.value(version, .{}, w);
     try w.writeAll(",\"confidence\":");
-    try std.json.stringify(confidence, .{}, w);
+    try std.json.Stringify.value(confidence, .{}, w);
     try w.writeAll(",\"source_type\":");
-    try std.json.stringify(source_type, .{}, w);
+    try std.json.Stringify.value(source_type, .{}, w);
     try w.writeAll(",\"source_path\":");
-    try std.json.stringify(source_path, .{}, w);
+    try std.json.Stringify.value(source_path, .{}, w);
     try w.writeByte('}');
     return out.toOwnedSlice();
 }

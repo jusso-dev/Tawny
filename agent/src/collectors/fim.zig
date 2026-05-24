@@ -1,4 +1,5 @@
 const std = @import("std");
+const iox = @import("../io_compat.zig");
 
 const Sha1Digest = [20]u8;
 const Sha256Digest = [32]u8;
@@ -13,12 +14,12 @@ const WatchedFile = struct {
 
 pub const Watcher = struct {
     allocator: std.mem.Allocator,
-    files: std.ArrayList(WatchedFile),
+    files: std.array_list.Managed(WatchedFile),
 
     pub fn init(alloc: std.mem.Allocator, paths: []const []const u8) !Watcher {
         var watcher = Watcher{
             .allocator = alloc,
-            .files = std.ArrayList(WatchedFile).init(alloc),
+            .files = std.array_list.Managed(WatchedFile).init(alloc),
         };
         errdefer watcher.deinit();
 
@@ -47,7 +48,7 @@ pub const Watcher = struct {
     }
 
     pub fn collectChanges(self: *Watcher) ![][]u8 {
-        var payloads = std.ArrayList([]u8).init(self.allocator);
+        var payloads = std.array_list.Managed([]u8).init(self.allocator);
         errdefer {
             for (payloads.items) |payload| self.allocator.free(payload);
             payloads.deinit();
@@ -97,18 +98,21 @@ const Snapshot = struct {
 };
 
 fn snapshotFile(path: []const u8) !Snapshot {
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const io = iox.current();
+    var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     var sha1 = std.crypto.hash.Sha1.init(.{});
     var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [8192]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const n = try file.read(&buf);
+        const n = try file.readPositionalAll(io, &buf, offset);
         if (n == 0) break;
         sha1.update(buf[0..n]);
         sha256.update(buf[0..n]);
+        offset += n;
     }
 
     var sha1_digest: Sha1Digest = undefined;
@@ -133,19 +137,23 @@ fn formatChange(
     size_bytes: u64,
     exists: bool,
 ) ![]u8 {
-    var out = std.ArrayList(u8).init(alloc);
+    var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    var w = out.writer();
+    const w = &out.writer;
+    const old_sha1_hex = std.fmt.bytesToHex(old_sha1, .lower);
+    const new_sha1_hex = std.fmt.bytesToHex(new_sha1, .lower);
+    const old_sha256_hex = std.fmt.bytesToHex(old_sha256, .lower);
+    const new_sha256_hex = std.fmt.bytesToHex(new_sha256, .lower);
 
     try w.writeAll("{\"path\":");
-    try std.json.stringify(path, .{}, w);
+    try std.json.Stringify.value(path, .{}, w);
     try w.print(
-        ",\"old_sha1\":\"{}\",\"new_sha1\":\"{}\",\"old_sha256\":\"{}\",\"new_sha256\":\"{}\",\"size_bytes\":{d},\"exists\":{any}}}",
+        ",\"old_sha1\":\"{s}\",\"new_sha1\":\"{s}\",\"old_sha256\":\"{s}\",\"new_sha256\":\"{s}\",\"size_bytes\":{d},\"exists\":{any}}}",
         .{
-            std.fmt.fmtSliceHexLower(&old_sha1),
-            std.fmt.fmtSliceHexLower(&new_sha1),
-            std.fmt.fmtSliceHexLower(&old_sha256),
-            std.fmt.fmtSliceHexLower(&new_sha256),
+            old_sha1_hex,
+            new_sha1_hex,
+            old_sha256_hex,
+            new_sha256_hex,
             size_bytes,
             exists,
         },

@@ -11,7 +11,7 @@ pub fn enumerateProcesses(alloc: std.mem.Allocator) ![]ProcessInfo {
     var proc_dir = try std.fs.openDirAbsolute("/proc", .{ .iterate = true });
     defer proc_dir.close();
 
-    var list = std.ArrayList(ProcessInfo).init(alloc);
+    var list = std.array_list.Managed(ProcessInfo).init(alloc);
     errdefer {
         for (list.items) |p| {
             alloc.free(p.name);
