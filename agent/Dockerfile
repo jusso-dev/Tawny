@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM alpine:3.20 AS build
 ARG TARGETARCH
-ARG ZIG_VERSION=0.14.0
+ARG ZIG_VERSION=0.16.0
 WORKDIR /src
 
 RUN apk add --no-cache curl xz

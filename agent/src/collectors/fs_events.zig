@@ -33,7 +33,8 @@ pub const Watcher = struct {
         }
 
         if (comptime builtin.os.tag == .linux) {
-            const fd = std.posix.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC) catch return watcher;
+            const fd = std.c.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
+            if (std.c.errno(fd) != .SUCCESS) return watcher;
             watcher.inotify_fd = fd;
             const mask = linux.IN.MODIFY
                 | linux.IN.CREATE
@@ -42,7 +43,10 @@ pub const Watcher = struct {
                 | linux.IN.MOVED_TO
                 | linux.IN.ATTRIB;
             for (watcher.paths) |path| {
-                const wd = std.posix.inotify_add_watch(fd, path, mask) catch continue;
+                const path_z = alloc.dupeZ(u8, path) catch continue;
+                defer alloc.free(path_z);
+                const wd = std.c.inotify_add_watch(fd, path_z.ptr, mask);
+                if (std.c.errno(wd) != .SUCCESS) continue;
                 try watcher.wd_to_path.put(wd, path);
             }
         }
@@ -52,7 +56,7 @@ pub const Watcher = struct {
 
     pub fn deinit(self: *Watcher) void {
         if (comptime builtin.os.tag == .linux) {
-            if (self.inotify_fd) |fd| std.posix.close(fd);
+            if (self.inotify_fd) |fd| _ = linux.close(fd);
         }
         for (self.paths) |p| self.allocator.free(p);
         self.allocator.free(self.paths);

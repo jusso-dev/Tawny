@@ -53,13 +53,13 @@ test "process collect runs" {
 }
 
 test "process names are json escaped" {
-    var out = std.array_list.Managed(u8).init(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
 
-    try writeJsonString(out.writer(), "bad\"name\\with\nnewline");
+    try writeJsonString(&out.writer, "bad\"name\\with\nnewline");
 
     try std.testing.expectEqualStrings(
         "\"bad\\\"name\\\\with\\nnewline\"",
-        out.items,
+        out.written(),
     );
 }

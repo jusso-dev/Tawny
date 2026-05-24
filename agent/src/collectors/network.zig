@@ -152,7 +152,7 @@ extern "iphlpapi" fn GetExtendedTcpTable(
     ulAf: u32,
     TableClass: u32,
     Reserved: u32,
-) callconv(.C) u32;
+) callconv(.c) u32;
 
 extern "iphlpapi" fn GetExtendedUdpTable(
     pUdpTable: ?*anyopaque,
@@ -161,7 +161,7 @@ extern "iphlpapi" fn GetExtendedUdpTable(
     ulAf: u32,
     TableClass: u32,
     Reserved: u32,
-) callconv(.C) u32;
+) callconv(.c) u32;
 
 fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     const tcp_bytes = try tableSize(alloc, true);
@@ -194,9 +194,10 @@ fn tableSize(alloc: std.mem.Allocator, comptime tcp: bool) !u32 {
 }
 
 fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, max_bytes);
+    const io = iox.current();
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, max_bytes);
 }
 
 test "network collector module loads" {

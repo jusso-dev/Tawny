@@ -151,7 +151,7 @@ Requirements:
 
 - Docker 24+
 - macOS Apple Silicon: enable Docker Desktop's x86/amd64 emulation/Rosetta support for SQL Server, or pass `--platform linux/amd64`
-- .NET 10 SDK, Node 22 + pnpm 10, and Zig 0.14+ only if you want to work outside Docker or build the agent locally
+- .NET 10 SDK, Node 22 + pnpm 10, and Zig 0.16+ only if you want to work outside Docker or build the agent locally
 
 ```bash
 # macOS / Linux

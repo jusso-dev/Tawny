@@ -166,8 +166,9 @@ test "fim emits only on hash change" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "watched.txt", .data = "one" });
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "watched.txt");
+    const io = iox.current();
+    try tmp.dir.writeFile(io, .{ .sub_path = "watched.txt", .data = "one" });
+    const path = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "watched.txt" });
     defer std.testing.allocator.free(path);
 
     var watcher = try Watcher.init(std.testing.allocator, &.{path});
@@ -177,7 +178,7 @@ test "fim emits only on hash change" {
     defer std.testing.allocator.free(unchanged);
     try std.testing.expectEqual(@as(usize, 0), unchanged.len);
 
-    try tmp.dir.writeFile(.{ .sub_path = "watched.txt", .data = "two" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "watched.txt", .data = "two" });
     const changed = try watcher.collectChanges();
     defer {
         for (changed) |payload| std.testing.allocator.free(payload);

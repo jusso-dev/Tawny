@@ -7,7 +7,7 @@ const iox = @import("io_compat.zig");
 extern "kernel32" fn GetComputerNameA(
     name: [*]u8,
     size: *u32,
-) callconv(.C) i32;
+) callconv(.c) i32;
 
 fn getHostname(buf: []u8) ![]const u8 {
     if (builtin.os.tag == .windows) {

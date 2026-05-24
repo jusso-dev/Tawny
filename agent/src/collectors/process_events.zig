@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const iox = @import("../io_compat.zig");
 
 /// Diff-based process launch collector. Tracks the set of live PIDs across
 /// invocations and emits a per-launch event for every PID that has appeared
@@ -47,21 +48,19 @@ pub const Tracker = struct {
     }
 
     fn collectLinux(self: *Tracker, payloads: *std.array_list.Managed([]u8)) !void {
-        var proc_dir = std.fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return;
-        defer proc_dir.close();
+        const io = iox.current();
+        var proc_dir = std.Io.Dir.openDirAbsolute(io, "/proc", .{ .iterate = true }) catch return;
+        defer proc_dir.close(io);
 
         var iter = proc_dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try iter.next(io)) |entry| {
             if (entry.kind != .directory) continue;
             const pid = std.fmt.parseInt(u32, entry.name, 10) catch continue;
             if (self.seen.contains(pid)) continue;
 
             // First sighting of this PID: emit a launch event and remember it.
             try self.seen.put(pid, {});
-            const payload = buildLinuxLaunchEvent(self.allocator, pid) catch |err| switch (err) {
-                error.FileNotFound, error.AccessDenied, error.IsDir => continue,
-                else => return err,
-            };
+            const payload = buildLinuxLaunchEvent(self.allocator, pid) catch continue;
             try payloads.append(payload);
         }
     }
@@ -81,17 +80,18 @@ pub const Tracker = struct {
 
 fn pidExists(pid: u32) bool {
     if (builtin.os.tag != .linux) return true;
+    const io = iox.current();
     var buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "/proc/{d}", .{pid}) catch return false;
-    var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-    dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+    dir.close(io);
     return true;
 }
 
 fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
     const name = readProcText(alloc, pid, "comm") catch try alloc.dupe(u8, "unknown");
     defer alloc.free(name);
-    const trimmed_name = std.mem.trimRight(u8, name, "\r\n");
+    const trimmed_name = std.mem.trimEnd(u8, name, "\r\n");
 
     const command_line = readCommandLine(alloc, pid) catch try alloc.dupe(u8, trimmed_name);
     defer alloc.free(command_line);
@@ -123,7 +123,8 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
     try w.writeAll(",\"image_path\":");
     try std.json.Stringify.value(exe_path, .{}, w);
     if (hashed) {
-        try w.print(",\"image_sha256\":\"{}\"", .{std.fmt.fmtSliceHexLower(&digest)});
+        const hex = std.fmt.bytesToHex(digest, .lower);
+        try w.print(",\"image_sha256\":\"{s}\"", .{hex});
     } else {
         try w.writeAll(",\"image_sha256\":null");
     }
@@ -134,9 +135,10 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
 fn readProcText(alloc: std.mem.Allocator, pid: u32, name: []const u8) ![]u8 {
     const path = try std.fmt.allocPrint(alloc, "/proc/{d}/{s}", .{ pid, name });
     defer alloc.free(path);
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, 16 * 1024);
+    const io = iox.current();
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, 16 * 1024);
 }
 
 fn readCommandLine(alloc: std.mem.Allocator, pid: u32) ![]u8 {
@@ -146,7 +148,7 @@ fn readCommandLine(alloc: std.mem.Allocator, pid: u32) ![]u8 {
     for (owned) |*ch| {
         if (ch.* == 0) ch.* = ' ';
     }
-    const trimmed = std.mem.trimRight(u8, owned, " ");
+    const trimmed = std.mem.trimEnd(u8, owned, " ");
     if (trimmed.len == owned.len) return owned;
     const compact = try alloc.dupe(u8, trimmed);
     alloc.free(owned);
@@ -181,19 +183,22 @@ fn readExeLink(alloc: std.mem.Allocator, pid: u32) ![]u8 {
     const link_path = try std.fmt.allocPrint(alloc, "/proc/{d}/exe", .{pid});
     defer alloc.free(link_path);
     var buf: [4096]u8 = undefined;
-    const resolved = std.fs.readLinkAbsolute(link_path, &buf) catch return alloc.dupe(u8, "");
-    return alloc.dupe(u8, resolved);
+    const len = std.Io.Dir.readLinkAbsolute(iox.current(), link_path, &buf) catch return alloc.dupe(u8, "");
+    return alloc.dupe(u8, buf[0..len]);
 }
 
 fn hashImage(path: []const u8) ![32]u8 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    const io = iox.current();
+    var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [16 * 1024]u8 = undefined;
+    var offset: u64 = 0;
     while (true) {
-        const n = try file.read(&buf);
+        const n = try file.readPositionalAll(io, &buf, offset);
         if (n == 0) break;
         sha.update(buf[0..n]);
+        offset += n;
     }
     var digest: [32]u8 = undefined;
     sha.final(&digest);

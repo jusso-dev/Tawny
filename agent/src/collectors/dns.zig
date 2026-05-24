@@ -96,9 +96,9 @@ fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.array_list.Ma
     };
     _ = ts_secs; // ts surfaces on the event envelope, not the payload, so we drop it here.
 
-    var payload = std.array_list.Managed(u8).init(alloc);
+    var payload: std.Io.Writer.Allocating = .init(alloc);
     errdefer payload.deinit();
-    var w = payload.writer();
+    const w = &payload.writer;
 
     try w.writeAll("{\"qname\":");
     try std.json.Stringify.value(qname, .{}, w);

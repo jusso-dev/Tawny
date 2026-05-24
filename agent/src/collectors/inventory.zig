@@ -131,7 +131,7 @@ pub const Scanner = struct {
         var lines = std.mem.splitScalar(u8, body, '\n');
         var in_packages = false;
         while (lines.next()) |line_raw| {
-            const line = std.mem.trimRight(u8, line_raw, " \r\t");
+            const line = std.mem.trimEnd(u8, line_raw, " \r\t");
             if (line.len == 0) continue;
             if (std.mem.startsWith(u8, line, "packages:")) { in_packages = true; continue; }
             if (!in_packages) continue;
@@ -175,7 +175,7 @@ pub const Scanner = struct {
         var version: ?[]const u8 = null;
         var lines = std.mem.splitScalar(u8, body, '\n');
         while (lines.next()) |line_raw| {
-            const line = std.mem.trimRight(u8, line_raw, "\r");
+            const line = std.mem.trimEnd(u8, line_raw, "\r");
             if (line.len == 0) break; // Headers end at the first blank line.
             if (std.mem.startsWith(u8, line, "Name: ")) {
                 package_name = line[6..];
@@ -212,7 +212,7 @@ pub const Scanner = struct {
         var current_name: ?[]const u8 = null;
         var lines = std.mem.splitScalar(u8, body, '\n');
         while (lines.next()) |line_raw| {
-            const line = std.mem.trimRight(u8, line_raw, " \r\t");
+            const line = std.mem.trimEnd(u8, line_raw, " \r\t");
             if (line.len == 0) {
                 current_name = null;
                 continue;
@@ -232,7 +232,7 @@ pub const Scanner = struct {
 
             // Indented lines inside a block. Look for "version".
             if (current_name) |pkg_name| {
-                const trimmed = std.mem.trimLeft(u8, line, " \t");
+                const trimmed = std.mem.trimStart(u8, line, " \t");
                 if (std.mem.startsWith(u8, trimmed, "version ")) {
                     // Classic: `version "7.23.5"`
                     const after = trimmed["version ".len..];
@@ -399,7 +399,7 @@ pub const Scanner = struct {
         var in_specs = false;
         var lines = std.mem.splitScalar(u8, body, '\n');
         while (lines.next()) |line_raw| {
-            const line = std.mem.trimRight(u8, line_raw, " \r\t");
+            const line = std.mem.trimEnd(u8, line_raw, " \r\t");
             if (line.len == 0) continue;
 
             if (std.mem.startsWith(u8, line, "  specs:")) { in_specs = true; continue; }

@@ -96,9 +96,9 @@ extern "wtsapi32" fn WTSEnumerateSessionsW(
     Version: u32,
     ppSessionInfo: *?[*]WTS_SESSION_INFOW,
     pCount: *u32,
-) callconv(.C) i32;
+) callconv(.c) i32;
 
-extern "wtsapi32" fn WTSFreeMemory(pMemory: ?*anyopaque) callconv(.C) void;
+extern "wtsapi32" fn WTSFreeMemory(pMemory: ?*anyopaque) callconv(.c) void;
 
 fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     var sessions_ptr: ?[*]WTS_SESSION_INFOW = null;

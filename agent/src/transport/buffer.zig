@@ -124,11 +124,9 @@ test "buffer pushes and clears" {
 test "buffer spills and replays" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(tmp_path);
     const spill_path = try std.fs.path.join(
         std.testing.allocator,
-        &.{ tmp_path, "events.spool" },
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "events.spool" },
     );
     defer std.testing.allocator.free(spill_path);
 
