@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Route } from "next";
-import { Activity, BellRing, Compass, FileClock, KeyRound, LayoutDashboard, PlugZap, ShieldCheck, ShieldOff, TerminalSquare } from "lucide-react";
+import { Activity, BellRing, Briefcase, Compass, FileClock, KeyRound, LayoutDashboard, Network, PlugZap, Radar, ShieldCheck, ShieldOff, TerminalSquare } from "lucide-react";
 import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/cn";
@@ -18,9 +18,12 @@ type AppShellProps = {
     | "dashboard"
     | "agents"
     | "alerts"
+    | "cases"
     | "detections"
     | "hunt"
     | "suppressions"
+    | "investigation"
+    | "threat-intel"
     | "audit"
     | "tokens"
     | "integrations"
@@ -39,8 +42,11 @@ const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", key: "dashboard", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", key: "agents", icon: Activity },
   { href: "/alerts" as Route, label: "Alerts", key: "alerts", icon: BellRing },
+  { href: "/cases" as Route, label: "Cases", key: "cases", icon: Briefcase },
   { href: "/hunt" as Route, label: "Hunt", key: "hunt", icon: TerminalSquare },
+  { href: "/investigation" as Route, label: "Investigate", key: "investigation", icon: Network },
   { href: "/detections", label: "Detections", key: "detections", icon: ShieldCheck },
+  { href: "/threat-intel" as Route, label: "Threat intel", key: "threat-intel", icon: Radar },
   { href: "/suppressions" as Route, label: "Suppressions", key: "suppressions", icon: ShieldOff },
   { href: "/audit" as Route, label: "Audit", key: "audit", icon: FileClock },
   { href: "/api-tokens" as Route, label: "Tokens", key: "tokens", icon: Compass },

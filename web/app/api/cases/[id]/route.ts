@@ -6,15 +6,12 @@ import { authRole } from "@/lib/auth-role";
 import { ApiError, apiDelete, apiPut } from "@/lib/api";
 
 const schema = z.object({
-  name: z.string().trim().min(1).max(160),
-  description: z.string().nullable().optional(),
-  query: z.string().trim().min(1),
-  is_scheduled: z.boolean(),
-  schedule_cron: z.string().nullable().optional(),
-  alert_on_match: z.boolean(),
-  alert_severity: z.enum(["low", "medium", "high", "critical"]),
+  title: z.string().trim().min(1).max(255),
+  summary: z.string().nullable().optional(),
+  status: z.enum(["open", "investigating", "contained", "resolved", "closed"]),
+  priority: z.enum(["low", "medium", "high", "critical"]),
+  assigned_to_user_id: z.string().nullable().optional(),
   mitre_techniques: z.array(z.string()).optional(),
-  is_shared: z.boolean().optional(),
 });
 
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -29,13 +26,13 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
   }
 
   try {
-    const data = await apiPut(`/api/hunts/${id}`, parsed.data, session.user.id, authRole(session.user));
+    const data = await apiPut(`/api/cases/${id}`, parsed.data, session.user.id, authRole(session.user));
     return NextResponse.json(data);
   } catch (err) {
     if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    return NextResponse.json({ error: "Failed to update hunt." }, { status: 502 });
+    return NextResponse.json({ error: "Failed to update case." }, { status: 502 });
   }
 }
 
@@ -45,12 +42,12 @@ export async function DELETE(_: NextRequest, ctx: { params: Promise<{ id: string
 
   const { id } = await ctx.params;
   try {
-    await apiDelete(`/api/hunts/${id}`, session.user.id, authRole(session.user));
+    await apiDelete(`/api/cases/${id}`, session.user.id, authRole(session.user));
     return new NextResponse(null, { status: 204 });
   } catch (err) {
     if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    return NextResponse.json({ error: "Failed to delete hunt." }, { status: 502 });
+    return NextResponse.json({ error: "Failed to delete case." }, { status: 502 });
   }
 }

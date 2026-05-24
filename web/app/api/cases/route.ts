@@ -6,15 +6,11 @@ import { authRole } from "@/lib/auth-role";
 import { ApiError, apiPost } from "@/lib/api";
 
 const schema = z.object({
-  name: z.string().trim().min(1).max(160),
-  description: z.string().nullable().optional(),
-  query: z.string().trim().min(1),
-  is_scheduled: z.boolean(),
-  schedule_cron: z.string().nullable().optional(),
-  alert_on_match: z.boolean(),
-  alert_severity: z.enum(["low", "medium", "high", "critical"]),
+  title: z.string().trim().min(1).max(255),
+  summary: z.string().nullable().optional(),
+  priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+  alert_ids: z.array(z.number().int()).optional(),
   mitre_techniques: z.array(z.string()).optional(),
-  is_shared: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -28,12 +24,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const data = await apiPost("/api/hunts", parsed.data, session.user.id, authRole(session.user));
+    const data = await apiPost("/api/cases", parsed.data, session.user.id, authRole(session.user));
     return NextResponse.json(data);
   } catch (err) {
     if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    return NextResponse.json({ error: "Failed to save hunt." }, { status: 502 });
+    return NextResponse.json({ error: "Failed to create case." }, { status: 502 });
   }
 }
