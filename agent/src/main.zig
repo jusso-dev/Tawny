@@ -21,10 +21,9 @@ const iox = @import("io_compat.zig");
 
 const AGENT_VERSION = "0.1.0";
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    iox.initialize(init.io);
+    const alloc = init.gpa;
 
     std.debug.print("tawny-agent {s} starting on {s}\n", .{ AGENT_VERSION, @tagName(builtin.os.tag) });
 

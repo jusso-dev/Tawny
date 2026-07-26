@@ -1,7 +1,13 @@
 const std = @import("std");
 
+var runtime_io: ?std.Io = null;
+
+pub fn initialize(io: std.Io) void {
+    runtime_io = io;
+}
+
 pub fn current() std.Io {
-    return std.Io.Threaded.global_single_threaded.io();
+    return runtime_io orelse std.Io.Threaded.global_single_threaded.io();
 }
 
 pub fn readToEndAlloc(file: std.Io.File, allocator: std.mem.Allocator, max_bytes: usize) ![]u8 {
