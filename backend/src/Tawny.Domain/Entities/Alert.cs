@@ -14,6 +14,11 @@ public class Alert
     public AlertNotificationStatus SentinelNotificationStatus { get; set; } = AlertNotificationStatus.NotConfigured;
     public DateTimeOffset? SentinelNotifiedAt { get; set; }
     public string? SentinelNotificationError { get; set; }
+    public AlertNotificationStatus KelpieNotificationStatus { get; set; } = AlertNotificationStatus.NotConfigured;
+    public DateTimeOffset? KelpieNotifiedAt { get; set; }
+    public string? KelpieNotificationError { get; set; }
+    public string? KelpieCaseId { get; set; }
+    public string? KelpieCaseNumber { get; set; }
     public required string Title { get; set; }
     public string? Description { get; set; }
     public string? EnrichmentJson { get; set; }

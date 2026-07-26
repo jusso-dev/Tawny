@@ -140,6 +140,16 @@ export default async function IntegrationsPage() {
               ["Config", "Tawny__Wazuh__Host"],
             ]}
           />
+          <SinkCard
+            title="Kelpie"
+            icon={ShieldCheck}
+            status="Cases API"
+            items={[
+              ["Delivery", "One detailed case per generated alert"],
+              ["Evidence", "Endpoint, rule, telemetry, and enrichment"],
+              ["Config", "Tawny__Kelpie__BaseUrl"],
+            ]}
+          />
         </section>
       </main>
     </AppShell>

@@ -41,6 +41,11 @@ export type Alert = {
   sentinel_notification_status: AlertNotificationStatus;
   sentinel_notified_at: string | null;
   sentinel_notification_error: string | null;
+  kelpie_notification_status: AlertNotificationStatus;
+  kelpie_notified_at: string | null;
+  kelpie_notification_error: string | null;
+  kelpie_case_id: string | null;
+  kelpie_case_number: string | null;
   title: string;
   description: string | null;
   created_at: string;
@@ -138,6 +143,7 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
   const openCount = alerts.filter((alert) => alert.status === "open").length;
   const slackSentCount = alerts.filter((alert) => alert.slack_notification_status === "sent").length;
   const sentinelSentCount = alerts.filter((alert) => alert.sentinel_notification_status === "sent").length;
+  const kelpieSentCount = alerts.filter((alert) => alert.kelpie_notification_status === "sent").length;
 
   return (
     <section className="mt-6">
@@ -146,6 +152,7 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
           <SummaryPill label="Open" value={openCount} />
           <SummaryPill label="Slack sent" value={slackSentCount} />
           <SummaryPill label="Sentinel sent" value={sentinelSentCount} />
+          <SummaryPill label="Kelpie cases" value={kelpieSentCount} />
           <SummaryPill label="Shown" value={alerts.length} />
         </div>
         <p className="text-sm text-[color:var(--color-muted-foreground)]">
@@ -165,13 +172,14 @@ export function AlertsTable({ alerts }: { alerts: Alert[] }) {
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Slack</th>
               <th className="px-4 py-3 font-medium">Sentinel</th>
+              <th className="px-4 py-3 font-medium">Kelpie</th>
               <th className="px-4 py-3 font-medium">Created</th>
             </tr>
           </thead>
           <tbody>
             {alerts.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
+                <td colSpan={10} className="px-4 py-12 text-center text-[color:var(--color-muted-foreground)]">
                   No alerts have fired yet.
                 </td>
               </tr>
@@ -252,13 +260,18 @@ function FragmentRow({
             {formatNotificationStatus(alert.sentinel_notification_status)}
           </Badge>
         </td>
+        <td className="px-4 py-3">
+          <Badge tone={notificationTone[alert.kelpie_notification_status]}>
+            {formatNotificationStatus(alert.kelpie_notification_status)}
+          </Badge>
+        </td>
         <td className="whitespace-nowrap px-4 py-3 text-[color:var(--color-muted-foreground)]">
           {formatDate(alert.created_at)}
         </td>
       </tr>
       {isExpanded ? (
         <tr className="border-t border-[color:var(--color-border)]">
-          <td colSpan={9} className="bg-[color:var(--color-background)] px-4 py-4">
+          <td colSpan={10} className="bg-[color:var(--color-background)] px-4 py-4">
             <AlertDetails alert={alert} evidence={evidence} />
           </td>
         </tr>
@@ -276,6 +289,7 @@ function AlertDetails({ alert, evidence }: { alert: Alert; evidence: EvidenceSec
         <DetailItem label="Received" value={formatDate(alert.received_at)} />
         <DetailItem label="Slack delivery" value={formatSlackDelivery(alert)} />
         <DetailItem label="Sentinel delivery" value={formatSentinelDelivery(alert)} />
+        <DetailItem label="Kelpie delivery" value={formatKelpieDelivery(alert)} />
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
@@ -571,6 +585,21 @@ function formatSentinelDelivery(alert: Alert) {
   }
 
   return formatNotificationStatus(alert.sentinel_notification_status);
+}
+
+function formatKelpieDelivery(alert: Alert) {
+  if (alert.kelpie_notification_status === "sent") {
+    const caseLabel = alert.kelpie_case_number ?? alert.kelpie_case_id ?? "case created";
+    return alert.kelpie_notified_at
+      ? `${caseLabel} · ${formatDate(alert.kelpie_notified_at)}`
+      : caseLabel;
+  }
+
+  if (alert.kelpie_notification_status === "failed") {
+    return alert.kelpie_notification_error ? `Failed: ${alert.kelpie_notification_error}` : "Failed";
+  }
+
+  return formatNotificationStatus(alert.kelpie_notification_status);
 }
 
 function formatDate(value: string) {

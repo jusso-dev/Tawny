@@ -126,7 +126,8 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 - Multi-tenant data model and request scoping across agents, telemetry, alerts, enrollment tokens, audit logs, and response actions.
 - Alert rule evaluation on ingest with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
 - IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domain strings seen in process command lines.
-- Alert review workflow with severity, status, matched telemetry payloads, Slack delivery state, and generated Wazuh-compatible syslog events.
+- Alert review workflow with severity, status, matched telemetry payloads, Slack delivery state, Kelpie case delivery, and generated Wazuh-compatible syslog events.
+- Repo-scoped Codex personal-agent skill for Tawny TI lookups, configurable local UniFi event hunts, Kelpie case creation, deduplication, and safe cron command generation.
 - Response action queue with heartbeat dispatch and agent result reporting. `kill_process` is implemented; host isolation is modeled but waits for OS firewall handlers.
 - Hangfire jobs for stale/offline agent status, retention cleanup, telemetry backups, and GitHub release synchronization.
 - Better Auth dashboard login with email/password and optional GitHub OAuth, plus HMAC-signed server-to-API calls.
@@ -173,6 +174,19 @@ Open the dashboard at the URL printed by the script. It is usually:
 ```text
 http://localhost:3000
 ```
+
+For a remote homelab host, set public LAN URLs before bootstrap so browser
+sessions and generated agent enrollment commands do not point at the remote
+host's loopback interface:
+
+```bash
+TAWNY_PUBLIC_WEB_URL=http://192.168.1.10:3000
+TAWNY_PUBLIC_API_URL=http://192.168.1.10:5080
+docker/scripts/bootstrap-docker.sh
+```
+
+The backend and web app still communicate over Docker's private network.
+Only browser-facing and agent-facing URLs use these public settings.
 
 Default local login:
 
@@ -331,6 +345,24 @@ TAWNY_SENTINEL_TELEMETRY_STREAM_NAME=Custom-TawnyTelemetry_CL
 ```
 
 Create the destination tables and DCR streams first, then assign the Tawny app registration or managed identity the `Monitoring Metrics Publisher` role on the DCR. Telemetry forwarding stays disabled by default to avoid unexpected ingestion cost. Full setup notes and sample KQL are in [docs/production.md](docs/production.md).
+
+## Kelpie case sink
+
+Tawny can create a detailed [Kelpie](https://github.com/jusso-dev/Kelpie) case
+for every new alert. Each case includes rule, endpoint, telemetry, enrichment,
+and a stable `tawny-alert-<id>` tag. Delivery state and Kelpie case number appear
+on the alert.
+
+```bash
+TAWNY_KELPIE_ENABLED=true
+TAWNY_KELPIE_BASE_URL=http://kelpie:3000
+TAWNY_KELPIE_API_TOKEN=...
+TAWNY_KELPIE_INCLUDE_TELEMETRY_PAYLOAD=true
+```
+
+Kelpie token needs `cases:write`. See
+[Personal AI agent](docs/personal-agent.md) for Codex/local-agent TI lookup,
+UniFi matching, case creation, and cron setup.
 
 ## Security notes
 

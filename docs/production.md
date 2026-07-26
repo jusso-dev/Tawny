@@ -177,6 +177,29 @@ TAWNY_SLACK_TIMEOUT_SECONDS=5
 
 Only new alerts generated after Slack is enabled are posted. Tawny records Slack delivery state on the alert row so the dashboard can show whether the webhook send was `sent`, `failed`, `pending`, or `not_configured`.
 
+## Kelpie case sink
+
+Kelpie delivery is disabled by default. Configure a Kelpie API token with
+`cases:write` and the base URL visible from the Tawny API container:
+
+```bash
+Tawny__Kelpie__Enabled=true
+Tawny__Kelpie__BaseUrl=https://kelpie.example.com
+Tawny__Kelpie__ApiToken=...
+Tawny__Kelpie__IncludeTelemetryPayload=true
+Tawny__Kelpie__MaxSummaryCharacters=24000
+Tawny__Kelpie__TimeoutSeconds=10
+```
+
+Docker deployments use matching `TAWNY_KELPIE_*` environment variables. Each
+new alert creates one case with endpoint facts, rule identifiers, timestamps,
+matched telemetry, optional enrichment, and a `tawny-alert-<id>` tag. Tawny
+stores returned case ID/number and delivery status on the alert row.
+
+Telemetry can contain sensitive paths, commands, usernames, IPs, and domains.
+Set `IncludeTelemetryPayload=false` when Kelpie is outside the same trust
+boundary.
+
 ## Microsoft Sentinel / Azure Monitor sink
 
 Tawny can send generated alerts and, separately, raw telemetry batches to Microsoft Sentinel through the Azure Monitor Logs Ingestion API. This uses Microsoft Entra OAuth and a Data Collection Rule (DCR); Tawny does not implement the legacy Log Analytics workspace ID/shared-key collector path.

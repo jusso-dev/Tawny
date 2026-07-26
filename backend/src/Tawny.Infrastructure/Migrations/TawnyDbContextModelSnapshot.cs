@@ -140,6 +140,24 @@ namespace Tawny.Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("Enrichment");
 
+                    b.Property<string>("KelpieCaseId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("KelpieCaseNumber")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("KelpieNotificationError")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<int>("KelpieNotificationStatus")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("KelpieNotifiedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("SentinelNotificationError")
                         .HasMaxLength(1024)
                         .HasColumnType("nvarchar(1024)");

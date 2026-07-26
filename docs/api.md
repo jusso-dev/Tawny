@@ -6,10 +6,11 @@ All request and response bodies are JSON. Timestamps are RFC 3339 in UTC.
 
 ## Authentication
 
-Two schemes:
+Three schemes:
 
 - **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. RS256, issued at enrollment.
 - **Web user.** Internal hop from Next.js. Requests carry `X-User-Id`, `X-User-Role`, `X-Timestamp`, `X-Signature`. The signature is `HMAC-SHA256(secret, "<method>\n<path>\n<timestamp>\n<userId>\n<role>")` hex-encoded. Requests older than 30 seconds are rejected.
+- **API token.** `Authorization: Bearer twny_...` on automation endpoints. Tokens inherit one tenant and an Admin or Viewer role.
 
 ## Agent endpoints
 
@@ -122,6 +123,42 @@ Auth: public or agent JWT. Returns the current latest release for a platform.
 ### GET `/api/dashboard/summary`
 
 Auth: web user. Counts for the home page (total agents, online vs offline, recent event volume).
+
+## Automation endpoints
+
+### POST `/api/threat-intel/lookup`
+
+Auth: web user or API token. Looks up as many as 500 IP, domain, or hash values
+against enabled, feed-backed IoC rules for the caller's tenant.
+
+```json
+{
+  "values": ["203.0.113.20", "payload.example"]
+}
+```
+
+Response:
+
+```json
+{
+  "matches": [
+    {
+      "value": "203.0.113.20",
+      "kind": "ipv4",
+      "rule_id": "18eb9df0-...",
+      "rule_name": "TI feed OTX: ipv4 203.0.113.20",
+      "description": "Known command-and-control host",
+      "severity": "high",
+      "feed_id": "17c2f11f-...",
+      "feed_name": "OTX"
+    }
+  ]
+}
+```
+
+Manually imported global IoC rules are excluded because they do not currently
+carry tenant ownership. Feed-backed rules are joined to their tenant before
+being returned.
 
 ## Errors
 
