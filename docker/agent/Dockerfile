@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG ZIG_VERSION=0.14.1
+ARG ZIG_VERSION=0.16.0
 
 FROM debian:bookworm-slim AS build
 ARG TARGETARCH
