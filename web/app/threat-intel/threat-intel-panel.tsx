@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, PlayCircle, Plus, Radio, Trash2, X } from "lucide-react";
+import { Check, ExternalLink, Loader2, PlayCircle, Plus, Radio, Trash2, X } from "lucide-react";
 
 export type TiFeed = {
   id: string;
@@ -23,7 +23,62 @@ export type TiFeed = {
   updated_at: string;
 };
 
-const FEED_KINDS: TiFeed["kind"][] = ["urlhaus_csv", "urlhaus_json", "otx_pulse", "misp_events", "taxii21", "generic_csv"];
+const FEED_KINDS: { value: TiFeed["kind"]; label: string }[] = [
+  { value: "generic_csv", label: "Generic CSV or text" },
+  { value: "otx_pulse", label: "AlienVault OTX pulse" },
+  { value: "misp_events", label: "MISP events" },
+  { value: "taxii21", label: "TAXII 2.1" },
+  { value: "urlhaus_csv", label: "URLhaus CSV (legacy)" },
+  { value: "urlhaus_json", label: "URLhaus JSON (legacy)" },
+];
+
+type FeedPreset = {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  sourceUrl: string;
+  url: string;
+  kind: TiFeed["kind"];
+  severity: TiFeed["default_severity"];
+  intervalMinutes: number;
+};
+
+const FEED_PRESETS: FeedPreset[] = [
+  {
+    id: "feodo-tracker",
+    name: "Botnet C2 blocklist",
+    provider: "abuse.ch Feodo Tracker",
+    description: "Recommended active command-and-control IPv4 addresses.",
+    sourceUrl: "https://feodotracker.abuse.ch/blocklist/",
+    url: "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt",
+    kind: "generic_csv",
+    severity: "high",
+    intervalMinutes: 15,
+  },
+  {
+    id: "cins-army",
+    name: "CINS Army list",
+    provider: "CINS Score",
+    description: "Broad hostile scanners and attacking IPv4 addresses.",
+    sourceUrl: "https://cinsscore.com/",
+    url: "https://cinsscore.com/list/ci-badguys.txt",
+    kind: "generic_csv",
+    severity: "medium",
+    intervalMinutes: 60,
+  },
+  {
+    id: "openphish-community",
+    name: "Community phishing feed",
+    provider: "OpenPhish",
+    description: "Phishing URLs normalized to domains for network matching.",
+    sourceUrl: "https://www.openphish.com/phishing_feeds.html",
+    url: "https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt",
+    kind: "generic_csv",
+    severity: "high",
+    intervalMinutes: 720,
+  },
+];
 
 const STATUS_TONE: Record<TiFeed["status"], string> = {
   healthy: "bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]",
@@ -37,7 +92,10 @@ export function ThreatIntelPanel({ initial, role }: { initial: TiFeed[]; role: "
   const [feeds, setFeeds] = useState<TiFeed[]>(initial);
   const [creating, setCreating] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [presetError, setPresetError] = useState<string | null>(null);
   const canEdit = role === "Admin";
+  const installedUrls = new Set(feeds.map((feed) => feed.url.toLowerCase()));
 
   async function deleteFeed(id: string) {
     if (!window.confirm("Delete this feed? Existing imported IoCs will stay as alert rules.")) return;
@@ -62,6 +120,56 @@ export function ThreatIntelPanel({ initial, role }: { initial: TiFeed[]; role: "
     }
   }
 
+  async function createPreset(preset: FeedPreset) {
+    const res = await fetch("/api/threat-intel-feeds", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `${preset.provider} — ${preset.name}`,
+        kind: preset.kind,
+        url: preset.url,
+        auth_header_name: null,
+        auth_header_value: null,
+        default_severity: preset.severity,
+        interval_minutes: preset.intervalMinutes,
+        is_enabled: true,
+      }),
+    });
+    const body = (await res.json().catch(() => null)) as TiFeed | { error?: string } | null;
+    if (!res.ok || !body || "error" in body) {
+      throw new Error((body && "error" in body && body.error) || `Create failed with ${res.status}`);
+    }
+    setFeeds((current) => [body as TiFeed, ...current]);
+  }
+
+  async function installPreset(preset: FeedPreset) {
+    setPresetError(null);
+    setInstalling(preset.id);
+    try {
+      await createPreset(preset);
+      router.refresh();
+    } catch (err) {
+      setPresetError(err instanceof Error ? err.message : "Could not add feed.");
+    } finally {
+      setInstalling(null);
+    }
+  }
+
+  async function installAllPresets() {
+    const missing = FEED_PRESETS.filter((preset) => !installedUrls.has(preset.url.toLowerCase()));
+    if (missing.length === 0) return;
+    setPresetError(null);
+    setInstalling("all");
+    try {
+      for (const preset of missing) await createPreset(preset);
+      router.refresh();
+    } catch (err) {
+      setPresetError(err instanceof Error ? err.message : "Could not add recommended feeds.");
+    } finally {
+      setInstalling(null);
+    }
+  }
+
   return (
     <div className="mt-6 grid gap-5">
       {canEdit ? (
@@ -76,8 +184,84 @@ export function ThreatIntelPanel({ initial, role }: { initial: TiFeed[]; role: "
         </div>
       ) : null}
 
-      <section className="overflow-hidden rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
-        <table className="w-full text-sm">
+      <section className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+        <div className="flex flex-col gap-3 border-b border-[color:var(--color-border)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-semibold">Known public sources</h2>
+            <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">
+              Curated, keyless feeds with conservative severity and polling defaults.
+            </p>
+          </div>
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={installAllPresets}
+              disabled={installing !== null || FEED_PRESETS.every((preset) => installedUrls.has(preset.url.toLowerCase()))}
+              className="inline-flex min-h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-[color:var(--color-border)] px-3 text-sm font-medium hover:bg-[color:var(--color-muted)] disabled:opacity-60"
+            >
+              {installing === "all" ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              Add all
+            </button>
+          ) : null}
+        </div>
+        <div className="divide-y divide-[color:var(--color-border)]">
+          {FEED_PRESETS.map((preset) => {
+            const installed = installedUrls.has(preset.url.toLowerCase());
+            return (
+              <div key={preset.id} className="flex flex-col gap-3 px-4 py-4 md:flex-row md:items-center">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p className="font-medium">{preset.provider}</p>
+                    <span className="text-xs text-[color:var(--color-muted-foreground)]">· {preset.name}</span>
+                    <a
+                      href={preset.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-[color:var(--color-accent)] hover:underline"
+                    >
+                      Source <ExternalLink size={11} />
+                    </a>
+                  </div>
+                  <p className="mt-1 text-sm text-[color:var(--color-muted-foreground)]">{preset.description}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                  <span className="rounded-full bg-[color:var(--color-muted)] px-2 py-1 text-xs capitalize text-[color:var(--color-muted-foreground)]">
+                    {preset.severity}
+                  </span>
+                  <span className="whitespace-nowrap text-xs text-[color:var(--color-muted-foreground)]">
+                    every {preset.intervalMinutes < 60 ? `${preset.intervalMinutes}m` : `${preset.intervalMinutes / 60}h`}
+                  </span>
+                  {canEdit ? (
+                    <button
+                      type="button"
+                      onClick={() => installPreset(preset)}
+                      disabled={installed || installing !== null}
+                      className="inline-flex min-h-8 min-w-20 items-center justify-center gap-1.5 rounded-md border border-[color:var(--color-border)] px-2.5 text-xs font-medium hover:bg-[color:var(--color-muted)] disabled:opacity-60"
+                    >
+                      {installing === preset.id ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : installed ? (
+                        <Check size={12} />
+                      ) : (
+                        <Plus size={12} />
+                      )}
+                      {installed ? "Added" : "Add"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {presetError ? (
+          <p className="border-t border-[color:var(--color-danger)]/30 bg-[color:var(--color-danger)]/10 px-4 py-3 text-sm text-[color:var(--color-danger)]">
+            {presetError}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="overflow-x-auto rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
+        <table className="w-full min-w-[760px] text-sm">
           <thead className="bg-[color:var(--color-muted)] text-left">
             <tr>
               <th className="px-4 py-3 font-medium">Feed</th>
@@ -189,8 +373,8 @@ function CreateFeedDialog({
   onCreated: (feed: TiFeed) => void;
 }) {
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<TiFeed["kind"]>("urlhaus_csv");
-  const [url, setUrl] = useState("https://urlhaus.abuse.ch/downloads/csv_recent/");
+  const [kind, setKind] = useState<TiFeed["kind"]>("generic_csv");
+  const [url, setUrl] = useState("");
   const [authHeaderName, setAuthHeaderName] = useState("");
   const [authHeaderValue, setAuthHeaderValue] = useState("");
   const [severity, setSeverity] = useState<TiFeed["default_severity"]>("high");
@@ -248,7 +432,7 @@ function CreateFeedDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 text-sm"
-            placeholder="abuse.ch URLhaus"
+            placeholder="Private SOC feed"
           />
         </label>
 
@@ -259,9 +443,9 @@ function CreateFeedDialog({
             onChange={(e) => setKind(e.target.value as TiFeed["kind"])}
             className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 text-sm"
           >
-            {FEED_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
+            {FEED_KINDS.map((kindOption) => (
+              <option key={kindOption.value} value={kindOption.value}>
+                {kindOption.label}
               </option>
             ))}
           </select>
@@ -273,6 +457,7 @@ function CreateFeedDialog({
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             className="min-h-9 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 text-sm font-mono"
+            placeholder="https://feed.example/indicators.csv"
           />
         </label>
 

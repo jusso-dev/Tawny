@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -32,10 +33,9 @@ public class ThreatIntelFetchException(string message, Exception? inner = null) 
 /// </summary>
 public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log)
 {
-    private static readonly Regex Sha256Re = new(@"\b[a-fA-F0-9]{64}\b", RegexOptions.Compiled);
-    private static readonly Regex Sha1Re = new(@"\b[a-fA-F0-9]{40}\b", RegexOptions.Compiled);
-    private static readonly Regex Ipv4Re = new(@"\b(?:\d{1,3}\.){3}\d{1,3}\b", RegexOptions.Compiled);
-    private static readonly Regex DomainRe = new(@"\b(?=.{4,253}\b)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b", RegexOptions.Compiled);
+    private static readonly Regex Sha256Re = new(@"^[a-fA-F0-9]{64}$", RegexOptions.Compiled);
+    private static readonly Regex Sha1Re = new(@"^[a-fA-F0-9]{40}$", RegexOptions.Compiled);
+    private static readonly Regex DomainRe = new(@"^(?=.{4,253}$)([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$", RegexOptions.Compiled);
     private const int MaxIndicatorsPerFeed = 5_000;
 
     public async Task<FetchResult> FetchAsync(ThreatIntelFeed feed, CancellationToken ct)
@@ -361,29 +361,52 @@ public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log
 
     private static List<FetchedIndicator> ParseGenericCsv(string body)
     {
-        // One indicator per line (or first column of a CSV). Auto-detect kind by shape.
+        // One indicator per line or CSV row. Scan columns and normalize URLs to hosts.
         var result = new List<FetchedIndicator>();
         foreach (var rawLine in body.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var cols = SplitCsv(line);
-            var value = cols.Count == 0 ? line : cols[0].Trim('"');
-            var kind = DetectKind(value);
-            if (kind is not null)
+            foreach (var column in cols.Count == 0 ? [line] : cols)
             {
-                result.Add(new FetchedIndicator(kind, value, "Generic CSV"));
+                var indicator = NormalizeIndicator(column);
+                if (indicator is null) continue;
+                result.Add(indicator);
+                break;
             }
         }
         return result;
     }
 
-    private static string? DetectKind(string value)
+    private static FetchedIndicator? NormalizeIndicator(string rawValue)
     {
-        if (Sha256Re.IsMatch(value) && value.Length == 64) return "sha256";
-        if (Sha1Re.IsMatch(value) && value.Length == 40) return "sha1";
-        if (Ipv4Re.IsMatch(value)) return "ipv4";
-        if (DomainRe.IsMatch(value)) return "domain";
+        var value = rawValue.Trim().Trim('"');
+        if (Sha256Re.IsMatch(value)) return new FetchedIndicator("sha256", value.ToLowerInvariant(), "Generic CSV");
+        if (Sha1Re.IsMatch(value)) return new FetchedIndicator("sha1", value.ToLowerInvariant(), "Generic CSV");
+        if (IPAddress.TryParse(value, out var address))
+        {
+            var kind = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? "ipv6" : "ipv4";
+            return new FetchedIndicator(kind, address.ToString(), "Generic CSV");
+        }
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrWhiteSpace(uri.IdnHost))
+        {
+            if (IPAddress.TryParse(uri.IdnHost, out var hostAddress))
+            {
+                var kind = hostAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? "ipv6" : "ipv4";
+                return new FetchedIndicator(kind, hostAddress.ToString(), $"Generic CSV URL: {value}");
+            }
+            if (DomainRe.IsMatch(uri.IdnHost))
+            {
+                return new FetchedIndicator("domain", uri.IdnHost.ToLowerInvariant(), $"Generic CSV URL: {value}");
+            }
+        }
+        if (DomainRe.IsMatch(value))
+        {
+            return new FetchedIndicator("domain", value.ToLowerInvariant(), "Generic CSV");
+        }
         return null;
     }
 

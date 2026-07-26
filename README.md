@@ -301,6 +301,19 @@ The detections page also imports common advisory IoCs from STIX 2.1 indicator bu
 
 MD5 values are reported as skipped because the agents do not currently emit MD5 file hashes.
 
+## Threat intelligence feeds
+
+Administrators can add scheduled feeds from **Threat Intel**. Tawny includes
+opt-in presets for the public abuse.ch Feodo Tracker botnet C2 blocklist, CINS
+Army hostile-IP list, and OpenPhish community phishing feed. Each preset uses a
+source-appropriate polling interval and severity; OpenPhish URLs are normalized
+to domains for network matching.
+
+Authenticated OTX, MISP, TAXII, and private CSV/text feeds can be added with
+**New feed**. Imported indicators become normal IoC alert rules. Tawny keeps at
+most 5,000 unique indicators from each run so unusually large public feeds
+cannot grow the rule set without bound.
+
 ## Wazuh sink
 
 Tawny can forward generated alerts to Wazuh over syslog. Enable the sink by pointing the API at a Wazuh manager or syslog listener:
