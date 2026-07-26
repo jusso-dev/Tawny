@@ -22,7 +22,7 @@ public class ResponseActionsController(TawnyDbContext db, AuditLogger audit) : C
     };
 
     [HttpPost("agents/{agentId:guid}/actions")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<ActionResult<ResponseActionResponse>> Create(
         Guid agentId,
         CreateResponseActionRequest req,
@@ -63,11 +63,15 @@ public class ResponseActionsController(TawnyDbContext db, AuditLogger audit) : C
     }
 
     [HttpGet("agents/{agentId:guid}/actions")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken)]
     public async Task<ActionResult<IReadOnlyList<ResponseActionResponse>>> ListForAgent(
         Guid agentId,
         CancellationToken ct)
     {
+        if (User.HasClaim(claim => claim.Type == "api_token_id") && !User.IsInRole("Admin"))
+        {
+            return Forbid();
+        }
         var tenantId = User.GetTenantId();
         if (!await db.Agents.AnyAsync(a => a.Id == agentId && a.TenantId == tenantId, ct))
         {

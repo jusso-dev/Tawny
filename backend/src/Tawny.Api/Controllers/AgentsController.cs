@@ -143,7 +143,7 @@ public class AgentsController(
     }
 
     [HttpGet]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken)]
     public async Task<ActionResult<IReadOnlyList<AgentSummary>>> List(CancellationToken ct)
     {
         var agents = await db.Agents
@@ -158,7 +158,7 @@ public class AgentsController(
     }
 
     [HttpGet("{id:guid}")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken)]
     public async Task<ActionResult<AgentSummary>> Get(Guid id, CancellationToken ct)
     {
         var a = await db.Agents.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == User.GetTenantId(), ct);

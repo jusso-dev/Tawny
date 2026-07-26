@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Tawny.Api.Auth;
 using Tawny.Api.Services;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
@@ -130,6 +131,66 @@ public class AgentFlowIntegrationTests(TawnyWebApplicationFactory factory)
         var otherAgents = await otherRead.Content.ReadFromJsonAsync<AgentSummaryBody[]>();
         otherAgents.Should().ContainSingle(a => a.Id == otherAgentId);
         otherAgents.Should().NotContain(a => a.Id == defaultAgentId);
+    }
+
+    [Fact]
+    public async Task ApiTokens_ReadTenantInventory_AndAdminTokenCreatesResponseAction()
+    {
+        await factory.ResetDatabaseAsync();
+        const string viewerToken = "twny_test-muster-viewer-token";
+        const string adminToken = "twny_test-muster-admin-token";
+        var otherTenantId = Guid.NewGuid();
+        var defaultAgentId = Guid.NewGuid();
+        var otherAgentId = Guid.NewGuid();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.Tenants.Add(new Tenant
+            {
+                Id = otherTenantId,
+                Slug = "other-api-token",
+                Name = "Other API token tenant",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            db.Agents.AddRange(
+                NewAgent(defaultAgentId, TenantDefaults.DefaultTenantId, "muster-default-host"),
+                NewAgent(otherAgentId, otherTenantId, "muster-other-host"));
+            db.ApiTokens.AddRange(
+                NewApiToken(viewerToken, UserRole.Viewer),
+                NewApiToken(adminToken, UserRole.Admin));
+            await db.SaveChangesAsync();
+        }
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", viewerToken);
+        var inventory = await client.GetAsync("/api/agents");
+        inventory.EnsureSuccessStatusCode();
+        var agents = await inventory.Content.ReadFromJsonAsync<AgentSummaryBody[]>();
+        agents.Should().ContainSingle(a => a.Id == defaultAgentId);
+        agents.Should().NotContain(a => a.Id == otherAgentId);
+
+        var viewerAction = await client.PostAsJsonAsync(
+            $"/api/agents/{defaultAgentId}/actions",
+            new { action_type = "isolate_host", payload = new { reason = "synthetic test" } });
+        viewerAction.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", adminToken);
+        var crossTenantAction = await client.PostAsJsonAsync(
+            $"/api/agents/{otherAgentId}/actions",
+            new { action_type = "isolate_host", payload = new { reason = "synthetic test" } });
+        crossTenantAction.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        var created = await client.PostAsJsonAsync(
+            $"/api/agents/{defaultAgentId}/actions",
+            new { action_type = "isolate_host", payload = new { reason = "synthetic test" } });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        var listed = await client.GetAsync($"/api/agents/{defaultAgentId}/actions");
+        listed.EnsureSuccessStatusCode();
+        (await listed.Content.ReadFromJsonAsync<System.Text.Json.JsonElement[]>())
+            .Should().ContainSingle();
     }
 
     [Fact]
@@ -620,6 +681,17 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         EnrolledAt = DateTimeOffset.UtcNow,
         LastHeartbeatAt = DateTimeOffset.UtcNow,
         Status = AgentStatus.Online,
+    };
+
+    private static ApiToken NewApiToken(string rawToken, UserRole role) => new()
+    {
+        Id = Guid.NewGuid(),
+        TenantId = TenantDefaults.DefaultTenantId,
+        Name = $"Muster {role}",
+        TokenHash = ApiTokenAuthHandler.HashToken(rawToken),
+        TokenPrefix = rawToken[..12],
+        Role = role,
+        CreatedAt = DateTimeOffset.UtcNow,
     };
 
     private static TelemetryEvent NewEvent(Guid agentId, Guid tenantId) => new()
