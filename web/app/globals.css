@@ -9,12 +9,17 @@
   --color-muted-foreground: oklch(0.72 0.018 70);
   --color-border: oklch(0.305 0.012 58);
   --color-accent: oklch(0.62 0.13 60);     /* desaturated amber, the eagle tone */
+  --color-accent-foreground: oklch(0.16 0.01 58);
+  --color-overlay: oklch(0.08 0.01 58 / 0.52);
   --color-success: oklch(0.7 0.15 145);
   --color-warning: oklch(0.78 0.16 80);
   --color-danger: oklch(0.65 0.2 25);
 
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --radius-md: 0.5rem;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-short: 220ms;
+  --shadow-drawer: 0 24px 70px oklch(0.08 0.01 58 / 0.32);
 }
 
 @media (prefers-color-scheme: light) {
@@ -51,18 +56,25 @@ html[data-theme="light"] {
   --color-border: oklch(0.875 0.014 76);
 }
 
+/* Hallmark · genre: modern-minimal · macrostructure: workbench · design-system: DESIGN.md · designed-as-app */
 html, body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  overflow-x: clip;
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100svh;
 }
 
 * {
   border-color: var(--color-border);
+}
+
+table,
+[data-tabular] {
+  font-variant-numeric: tabular-nums;
 }
 
 ::selection {
@@ -72,4 +84,15 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 150ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 150ms !important;
+  }
 }
