@@ -7,7 +7,6 @@ import type { Route } from "next";
 import {
   Activity,
   BellRing,
-  Briefcase,
   Compass,
   FileClock,
   KeyRound,
@@ -29,7 +28,6 @@ export type AppSection =
   | "dashboard"
   | "agents"
   | "alerts"
-  | "cases"
   | "detections"
   | "hunt"
   | "suppressions"
@@ -54,7 +52,6 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
       { href: "/", label: "Dashboard", key: "dashboard", icon: LayoutDashboard },
       { href: "/agents", label: "Agents", key: "agents", icon: Activity },
       { href: "/alerts", label: "Alerts", key: "alerts", icon: BellRing },
-      { href: "/cases" as Route, label: "Cases", key: "cases", icon: Briefcase },
     ],
   },
   {

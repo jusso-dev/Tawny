@@ -348,6 +348,9 @@ Create the destination tables and DCR streams first, then assign the Tawny app r
 
 ## Kelpie case sink
 
+Tawny owns endpoint telemetry, detections, and alerts. It does not provide an
+internal case-management workspace; optional cases live in Kelpie.
+
 Tawny can create a detailed [Kelpie](https://github.com/jusso-dev/Kelpie) case
 for every new alert. Each case includes rule, endpoint, telemetry, enrichment,
 and a stable `tawny-alert-<id>` tag. Delivery state and Kelpie case number appear
