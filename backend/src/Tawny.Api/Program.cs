@@ -30,6 +30,7 @@ builder.Services.Configure<WazuhSinkOptions>(builder.Configuration.GetSection("T
 builder.Services.Configure<SlackSinkOptions>(builder.Configuration.GetSection("Tawny:Slack"));
 builder.Services.Configure<SentinelSinkOptions>(builder.Configuration.GetSection("Tawny:Sentinel"));
 builder.Services.Configure<KelpieSinkOptions>(builder.Configuration.GetSection("Tawny:Kelpie"));
+builder.Services.Configure<UniFiKelpieOptions>(builder.Configuration.GetSection("Tawny:Kelpie"));
 builder.Services.Configure<ReputationOptions>(builder.Configuration.GetSection("Tawny:Reputation"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
@@ -60,6 +61,7 @@ builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProv
 builder.Services.AddHttpClient<AzureMonitorLogsIngestionClient>();
 builder.Services.AddSingleton<SentinelAlertSink>();
 builder.Services.AddHttpClient<KelpieAlertSink>();
+builder.Services.AddScoped<UniFiConnector>();
 builder.Services.AddSingleton<ITelemetrySink, SentinelTelemetrySink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
 builder.Services.AddRateLimiter(options =>
@@ -135,6 +137,7 @@ if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
     builder.Services.AddScoped<ScheduledHuntsJob>();
     builder.Services.AddScoped<ThreatIntelFeedsJob>();
     builder.Services.AddScoped<ReputationEnrichmentJob>();
+    builder.Services.AddScoped<UniFiThreatIntelJob>();
     builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
     builder.Services.AddHangfire(cfg => cfg
@@ -191,6 +194,8 @@ if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
         "threat-intel-feeds", j => j.ExecuteAsync(default), "*/10 * * * *");
     RecurringJob.AddOrUpdate<ReputationEnrichmentJob>(
         "reputation-enrichment", j => j.ExecuteAsync(default), "*/5 * * * *");
+    RecurringJob.AddOrUpdate<UniFiThreatIntelJob>(
+        "unifi-threat-intel", j => j.ExecuteAsync(default), Cron.Minutely);
 }
 
 app.Run();

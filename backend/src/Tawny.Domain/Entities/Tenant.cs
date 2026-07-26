@@ -17,4 +17,6 @@ public class Tenant
     public List<ApiToken> ApiTokens { get; set; } = [];
     public List<ThreatIntelFeed> ThreatIntelFeeds { get; set; } = [];
     public List<Case> Cases { get; set; } = [];
+    public List<UniFiIntegration> UniFiIntegrations { get; set; } = [];
+    public List<UniFiEventMatch> UniFiEventMatches { get; set; } = [];
 }

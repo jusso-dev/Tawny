@@ -4,8 +4,12 @@ import { AlertTriangle, CheckCircle2, KeyRound, PlugZap, ServerCog, ShieldCheck 
 import type { LucideIcon } from "lucide-react";
 import { auth } from "@/lib/auth";
 import { authRole } from "@/lib/auth-role";
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import { AppShell, PageHeader } from "@/components/app-shell";
+import {
+  UniFiIntegrationPanel,
+  type UniFiIntegration,
+} from "./unifi-integration-panel";
 
 type Agent = {
   id: string;
@@ -42,18 +46,30 @@ export default async function IntegrationsPage() {
   if (!session) redirect("/login");
 
   const role = authRole(session.user);
-  const agents = await apiGet<Agent[]>("/api/agents", session.user.id, role);
+  const [agents, unifi] = await Promise.all([
+    apiGet<Agent[]>("/api/agents", session.user.id, role),
+    role === "Admin"
+      ? apiGet<UniFiIntegration>("/api/integrations/unifi", session.user.id, role).catch(
+          (error) => {
+            if (error instanceof ApiError && error.status === 404) return null;
+            throw error;
+          },
+        )
+      : Promise.resolve(null),
+  ]);
 
   return (
     <AppShell agents={agents} active="integrations">
       <main className="mx-auto max-w-6xl px-6 py-8">
         <PageHeader
           eyebrow="Integrations"
-          title="SIEM and notification sinks"
-          description="Configure alert delivery destinations and decide whether full telemetry should leave Tawny."
+          title="Connected systems"
+          description="Configure local data sources, threat-intelligence workflows, and alert delivery destinations."
         />
 
-        <section className="mt-6 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+        <UniFiIntegrationPanel initial={unifi} isAdmin={role === "Admin"} />
+
+        <section className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
           <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">
             <div className="flex flex-col gap-3 border-b border-[color:var(--color-border)] px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
               <div>

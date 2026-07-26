@@ -25,6 +25,8 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<Case> Cases => Set<Case>();
     public DbSet<CaseAlert> CaseAlerts => Set<CaseAlert>();
     public DbSet<CaseNote> CaseNotes => Set<CaseNote>();
+    public DbSet<UniFiIntegration> UniFiIntegrations => Set<UniFiIntegration>();
+    public DbSet<UniFiEventMatch> UniFiEventMatches => Set<UniFiEventMatch>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -316,6 +318,46 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
                 .HasForeignKey(n => n.CaseId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(n => new { n.CaseId, n.CreatedAt });
+        });
+
+        b.Entity<UniFiIntegration>(e =>
+        {
+            e.HasKey(i => i.Id);
+            e.Property(i => i.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(i => i.BaseUrl).HasMaxLength(1024).IsRequired();
+            e.Property(i => i.EventsUrl).HasMaxLength(2048).IsRequired();
+            e.Property(i => i.ApiKeyHeader).HasMaxLength(64).IsRequired();
+            e.Property(i => i.ApiKeyEncrypted).HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(i => i.RecordsPath).HasMaxLength(256);
+            e.Property(i => i.NetworkVersion).HasMaxLength(64);
+            e.Property(i => i.LastError).HasMaxLength(2048);
+            e.HasOne(i => i.Tenant)
+                .WithMany(t => t.UniFiIntegrations)
+                .HasForeignKey(i => i.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(i => i.TenantId).IsUnique();
+            e.HasIndex(i => new { i.IsEnabled, i.LastRunAt });
+        });
+
+        b.Entity<UniFiEventMatch>(e =>
+        {
+            e.HasKey(m => m.Id);
+            e.Property(m => m.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(m => m.DedupeKey).HasMaxLength(64).IsRequired();
+            e.Property(m => m.EventReference).HasMaxLength(255).IsRequired();
+            e.Property(m => m.MatchedValuesJson).HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(m => m.KelpieCaseId).HasMaxLength(128).IsRequired();
+            e.Property(m => m.KelpieCaseNumber).HasMaxLength(64);
+            e.HasOne(m => m.Tenant)
+                .WithMany(t => t.UniFiEventMatches)
+                .HasForeignKey(m => m.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(m => m.UniFiIntegration)
+                .WithMany(i => i.EventMatches)
+                .HasForeignKey(m => m.UniFiIntegrationId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(m => new { m.TenantId, m.DedupeKey }).IsUnique();
+            e.HasIndex(m => new { m.UniFiIntegrationId, m.CreatedAt });
         });
     }
 }

@@ -13,9 +13,47 @@ Codex or a local model decides which command fits the request; the CLI owns API
 authentication, indicator extraction, TI lookup, case payloads, and local
 deduplication.
 
+## UI-managed UniFi connector
+
+The normal deployment path is now the Tawny dashboard:
+
+1. In UniFi Network, open **Settings > Control Plane > Integrations**.
+2. Create a local API key and open the API documentation generated for the
+   installed Network application version.
+3. Find a supported `GET` endpoint that returns the event records you want to
+   match. Do not copy an undocumented browser route.
+4. In Tawny, open **Integrations > UniFi Network** and enter:
+   - **Controller URL**: the console's private IP, for example
+     `https://192.168.1.1`.
+   - **Events URL**: the full supported local API endpoint.
+   - **API key header**: normally `X-API-Key`.
+   - **API key**: stored encrypted and never returned after save.
+   - **Records path**: dot-separated path to the response array, such as
+     `data` or `result.events`; leave blank for a top-level array.
+   - **Check every**: 1 to 1440 minutes.
+5. Use **Save and test**. Tawny calls
+   `/proxy/network/integration/v1/info` and records the installed Network
+   application version.
+6. Enable scheduled matching. A Hangfire job checks due connectors every
+   minute. Successful event/indicator pairs are persisted and will not create
+   duplicate Kelpie cases.
+
+The API accepts only loopback or private-LAN IP destinations to limit
+server-side request forgery. Keep TLS verification enabled when the console
+certificate is trusted. For a self-signed local console, install its CA where
+possible; disable verification only when that risk is understood.
+
+UniFi OS 5.1.19 is new enough for the local integration info route, but it does
+not identify the installed Network application version. Traffic Flows require
+Network 9.1 or later and a supported gateway. If the version-specific local API
+does not expose historical events or flows, use UniFi CEF/syslog or IPFIX export
+instead of an undocumented UI endpoint.
+
 ## Configure
 
-Create `~/.config/tawny-agent/config.json` and restrict it to your user:
+For Codex CLI, Hermes, or another local agent that should own the schedule
+outside Tawny, create `~/.config/tawny-agent/config.json` and restrict it to
+your user:
 
 ```json
 {

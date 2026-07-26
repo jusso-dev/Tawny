@@ -364,12 +364,30 @@ Kelpie token needs `cases:write`. See
 [Personal AI agent](docs/personal-agent.md) for Codex/local-agent TI lookup,
 UniFi matching, case creation, and cron setup.
 
+## UniFi integration
+
+Administrators can configure the local UniFi connector from **Integrations >
+UniFi Network**. Tawny encrypts the API key before storing it, tests the local
+Network API, polls a configured JSON event endpoint on schedule, matches IPs and
+domains against imported threat intelligence, and creates deduplicated Kelpie
+cases.
+
+Create the API key and find the supported read endpoint in **UniFi Network >
+Settings > Control Plane > Integrations**. Use the controller's private IP in
+Tawny; public destinations are rejected. UniFi OS and Network versions are
+separate: **Save and test** reports the installed Network application version.
+See [Personal AI agent](docs/personal-agent.md#ui-managed-unifi-connector) for
+field-by-field setup and transport limitations.
+
 ## Security notes
 
 - Agent JWTs are bearer tokens. Anyone with the file on disk can impersonate the agent. Mitigate later with the OS keystore.
 - No Authenticode signing or macOS notarisation is in place yet. The install scripts verify release SHA-256 sidecar files when available, and both scripts accept an explicit `--sha256` / `-Sha256` value for pinned deployments.
 - Enrollment tokens are single-use and short-lived. Rotate the signing key if leaked.
 - SQL Server creds live in env vars; use Key Vault or similar in production.
+- Integration credentials are encrypted with `TAWNY_INTEGRATION_ENCRYPTION_KEY`.
+  Back up this key with the database; rotating or losing it makes stored
+  integration secrets unreadable.
 - The agent runs as the local user in MVP, not as root or SYSTEM. Telemetry is limited accordingly.
 - Response actions are queued through the API and dispatched on heartbeat. `kill_process` requires a positive `pid`; host isolation is represented as an action type but the current agent reports it unsupported until OS firewall handlers are implemented.
 

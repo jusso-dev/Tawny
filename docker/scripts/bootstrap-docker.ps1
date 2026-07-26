@@ -238,6 +238,7 @@ if (-not (Test-Path $JwtKey)) {
 
 Ensure-EnvValue "TAWNY_WEB_HMAC_SECRET" (New-RandomHex 32)
 Ensure-EnvValue "BETTER_AUTH_SECRET" (New-RandomHex 32)
+Ensure-EnvValue "TAWNY_INTEGRATION_ENCRYPTION_KEY" (New-RandomHex 32)
 Ensure-EnvValue "TAWNY_APPLY_MIGRATIONS_ON_STARTUP" "true"
 Ensure-EnvValue "MSSQL_SA_PASSWORD" "DevPassw0rd!"
 
