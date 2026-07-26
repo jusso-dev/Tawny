@@ -44,8 +44,21 @@ export async function PUT(request: NextRequest) {
 
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const field = issue?.path[0];
+    const label = field === "base_url"
+      ? "Controller URL"
+      : field === "events_url"
+        ? "Events URL"
+        : field === "api_key_header"
+          ? "API key header"
+          : field === "records_path"
+            ? "Records path"
+            : field === "interval_minutes"
+              ? "Check interval"
+              : "UniFi configuration";
     return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Invalid UniFi configuration." },
+      { error: `${label}: ${issue?.message ?? "invalid value."}` },
       { status: 400 },
     );
   }

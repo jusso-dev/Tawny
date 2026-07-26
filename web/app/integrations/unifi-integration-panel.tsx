@@ -142,7 +142,10 @@ export function UniFiIntegrationPanel({
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Controller URL" hint="Private IP for your UniFi console.">
               <input
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                spellCheck={false}
                 required
                 value={form.baseUrl}
                 onChange={(event) => setForm({ ...form, baseUrl: event.target.value })}
@@ -153,7 +156,10 @@ export function UniFiIntegrationPanel({
             </Field>
             <Field label="Events URL" hint="GET endpoint from Network > Integrations.">
               <input
-                type="url"
+                type="text"
+                inputMode="url"
+                autoCapitalize="none"
+                spellCheck={false}
                 required
                 value={form.eventsUrl}
                 onChange={(event) => setForm({ ...form, eventsUrl: event.target.value })}
