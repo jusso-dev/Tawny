@@ -107,7 +107,7 @@ export function UniFiIntegrationPanel({
           : current,
       );
       setMessage(
-        `Connected to UniFi Network ${tested.application_version}; read ${tested.records_found.toLocaleString()} event records.`,
+        `Connected to UniFi Network ${tested.application_version}; read ${tested.records_found.toLocaleString()} records.`,
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "UniFi configuration failed.");
@@ -125,7 +125,7 @@ export function UniFiIntegrationPanel({
             <h2 className="font-semibold">UniFi Network</h2>
           </div>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-[color:var(--color-muted-foreground)]">
-            Pull local event records, match IPs and domains against Tawny threat intelligence, then create deduplicated Kelpie cases.
+            Query a supported UniFi Network collection, match IPs and domains against Tawny threat intelligence, then create deduplicated Kelpie cases.
           </p>
         </div>
         <StatusPill integration={integration} />
@@ -139,6 +139,38 @@ export function UniFiIntegrationPanel({
             void save(false);
           }}
         >
+          <div className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-muted)] px-3 py-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-medium">Starter values test API access only</p>
+              <button
+                type="button"
+                disabled={!isAdmin || pending !== null}
+                onClick={() => setForm((current) => ({
+                  ...current,
+                  baseUrl: defaultControllerUrl,
+                  eventsUrl: defaultRecordsUrl,
+                  recordsPath: "data",
+                }))}
+                className="min-h-8 rounded-md px-2.5 text-xs font-medium text-[color:var(--color-accent)] hover:bg-[color:var(--color-background)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Use test defaults
+              </button>
+            </div>
+            <p className="mt-1 max-w-3xl leading-5 text-[color:var(--color-muted-foreground)]">
+              Sites returns inventory, not traffic events. UniFi Network currently exposes traffic logs through IPFIX and system logs through CEF.
+              {" "}
+              <a
+                href="https://help.ui.com/hc/en-us/articles/30076656117655-Getting-Started-with-the-Official-UniFi-API"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-[color:var(--color-accent)] underline-offset-4 hover:underline"
+              >
+                UniFi API guidance
+              </a>
+              .
+            </p>
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Controller URL" hint="Private IP for your UniFi console.">
               <input
@@ -149,12 +181,12 @@ export function UniFiIntegrationPanel({
                 required
                 value={form.baseUrl}
                 onChange={(event) => setForm({ ...form, baseUrl: event.target.value })}
-                placeholder="https://192.168.1.1"
+                placeholder={defaultControllerUrl}
                 disabled={!isAdmin || pending !== null}
                 className={inputClass}
               />
             </Field>
-            <Field label="Events URL" hint="GET endpoint from Network > Integrations.">
+            <Field label="Records URL" hint="Supported collection GET endpoint from Network > Integrations.">
               <input
                 type="text"
                 inputMode="url"
@@ -163,7 +195,7 @@ export function UniFiIntegrationPanel({
                 required
                 value={form.eventsUrl}
                 onChange={(event) => setForm({ ...form, eventsUrl: event.target.value })}
-                placeholder="https://192.168.1.1/proxy/network/integration/v1/…"
+                placeholder={defaultRecordsUrl}
                 disabled={!isAdmin || pending !== null}
                 className={inputClass}
               />
@@ -322,10 +354,14 @@ export function UniFiIntegrationPanel({
 const inputClass =
   "min-h-11 w-full rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-background)] px-3 text-sm outline-2 outline-transparent focus-visible:outline-[color:var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-55";
 
+const defaultControllerUrl = "https://192.168.1.1";
+const defaultRecordsUrl =
+  "https://192.168.1.1/proxy/network/integration/v1/sites?offset=0&limit=25";
+
 function toForm(integration: UniFiIntegration | null): FormState {
   return {
-    baseUrl: integration?.base_url ?? "https://192.168.1.1",
-    eventsUrl: integration?.events_url ?? "",
+    baseUrl: integration?.base_url ?? defaultControllerUrl,
+    eventsUrl: integration?.events_url ?? defaultRecordsUrl,
     apiKeyHeader: integration?.api_key_header ?? "X-API-Key",
     apiKey: "",
     recordsPath: integration?.records_path ?? "data",

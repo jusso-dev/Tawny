@@ -49,7 +49,7 @@ export async function PUT(request: NextRequest) {
     const label = field === "base_url"
       ? "Controller URL"
       : field === "events_url"
-        ? "Events URL"
+        ? "Records URL"
         : field === "api_key_header"
           ? "API key header"
           : field === "records_path"
