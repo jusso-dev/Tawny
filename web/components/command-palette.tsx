@@ -45,7 +45,7 @@ export function CommandPalette({ agents }: { agents: Agent[] }) {
         <Search size={17} className="shrink-0 text-[color:var(--color-muted-foreground)]" />
         <Command.Input
           placeholder="Search agents by hostname"
-          className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-[color:var(--color-muted-foreground)]"
+          className="h-11 w-full bg-transparent text-sm outline-none focus-visible:outline-none! placeholder:text-[color:var(--color-muted-foreground)]"
         />
         <kbd className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-muted)] px-1.5 py-0.5 text-[11px] text-[color:var(--color-muted-foreground)]">
           esc
