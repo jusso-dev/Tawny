@@ -125,10 +125,11 @@ pub const Client = struct {
     pub fn flushEvents(self: *Client, buf: *buffer_mod.Buffer) !void {
         if (buf.len() == 0) return;
 
+        const batch = buf.items()[0..@min(buf.len(), 500)];
         var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
         try body.appendSlice("{\"events\":[");
-        for (buf.items(), 0..) |ev, i| {
+        for (batch, 0..) |ev, i| {
             if (i > 0) try body.append(',');
             try body.print(
                 \\{{"type":"{s}","occurred_at":{d},"payload":{s}}}
@@ -138,7 +139,7 @@ pub const Client = struct {
 
         const response = try self.post("/api/agents/events", body.items);
         defer self.allocator.free(response);
-        buf.clear();
+        buf.discardFirst(batch.len);
     }
 
     fn post(self: *Client, path: []const u8, body: []const u8) ![]u8 {

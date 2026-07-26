@@ -53,6 +53,22 @@ pub const Buffer = struct {
         self.list.clearRetainingCapacity();
     }
 
+    pub fn discardFirst(self: *Buffer, count: usize) void {
+        const discard_count = @min(count, self.list.items.len);
+        for (self.list.items[0..discard_count]) |ev| {
+            self.allocator.free(ev.event_type);
+            self.allocator.free(ev.payload);
+        }
+
+        const remaining = self.list.items.len - discard_count;
+        std.mem.copyForwards(
+            Event,
+            self.list.items[0..remaining],
+            self.list.items[discard_count..],
+        );
+        self.list.items.len = remaining;
+    }
+
     pub fn shouldSpill(self: *const Buffer) bool {
         return self.capacity > 0 and self.list.items.len > self.capacity;
     }
@@ -158,4 +174,19 @@ test "buffer owns pushed event type" {
     event_type[0] = 'x';
 
     try std.testing.expectEqualStrings("process_snapshot", b.items()[0].event_type);
+}
+
+test "buffer discards a sent prefix" {
+    var b = Buffer.init(std.testing.allocator, 4);
+    defer b.deinit();
+
+    try b.push(.{ .event_type = "x", .occurred_at = 1, .payload = "1" });
+    try b.push(.{ .event_type = "y", .occurred_at = 2, .payload = "2" });
+    try b.push(.{ .event_type = "z", .occurred_at = 3, .payload = "3" });
+
+    b.discardFirst(2);
+
+    try std.testing.expectEqual(@as(usize, 1), b.len());
+    try std.testing.expectEqualStrings("z", b.items()[0].event_type);
+    try std.testing.expectEqualStrings("3", b.items()[0].payload);
 }
