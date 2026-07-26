@@ -135,7 +135,10 @@ pub fn save(cfg: *const Config) !void {
     defer cfg.allocator.free(tmp_path);
 
     {
-        var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{ .truncate = true });
+        var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{
+            .truncate = true,
+            .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+        });
         defer file.close(io);
         var writer_buffer: [4096]u8 = undefined;
         var file_writer = file.writer(io, &writer_buffer);
