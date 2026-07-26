@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+/* Hallmark · genre: modern-minimal · macrostructure: workbench · design-system: DESIGN.md · designed-as-app · pre-emit critique: P5 H5 E4 S5 R5 V5 · contrast: pass (40–41) · nav: workbench-sidebar · slop: pass (42–49) · mobile: code-audited (34, 49–57) */
 @theme {
   --color-background: oklch(0.145 0.008 58);
   --color-foreground: oklch(0.965 0.008 76);
@@ -56,12 +57,17 @@ html[data-theme="light"] {
   --color-border: oklch(0.875 0.014 76);
 }
 
-/* Hallmark · genre: modern-minimal · macrostructure: workbench · design-system: DESIGN.md · designed-as-app */
 html, body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
   overflow-x: clip;
+}
+
+h1,
+h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 body {
