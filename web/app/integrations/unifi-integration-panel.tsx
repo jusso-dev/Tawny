@@ -88,7 +88,11 @@ export function UniFiIntegrationPanel({
       }
 
       const testResponse = await fetch("/api/integrations/unifi/test", { method: "POST" });
-      const tested = await readResponse<{ application_version: string; tested_at: string }>(
+      const tested = await readResponse<{
+        application_version: string;
+        records_found: number;
+        tested_at: string;
+      }>(
         testResponse,
         "Connection test failed.",
       );
@@ -102,7 +106,9 @@ export function UniFiIntegrationPanel({
             }
           : current,
       );
-      setMessage(`Connected to UniFi Network ${tested.application_version}.`);
+      setMessage(
+        `Connected to UniFi Network ${tested.application_version}; read ${tested.records_found.toLocaleString()} event records.`,
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "UniFi configuration failed.");
     } finally {

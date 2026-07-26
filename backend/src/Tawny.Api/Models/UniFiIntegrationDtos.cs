@@ -34,4 +34,5 @@ public sealed record UniFiIntegrationResponse(
 
 public sealed record UniFiConnectionTestResponse(
     string ApplicationVersion,
+    int RecordsFound,
     DateTimeOffset TestedAt);

@@ -375,7 +375,8 @@ cases.
 Create the API key and find the supported read endpoint in **UniFi Network >
 Settings > Control Plane > Integrations**. Use the controller's private IP in
 Tawny; public destinations are rejected. UniFi OS and Network versions are
-separate: **Save and test** reports the installed Network application version.
+separate: **Save and test** reports the installed Network application version
+and verifies the configured event endpoint and records path.
 See [Personal AI agent](docs/personal-agent.md#ui-managed-unifi-connector) for
 field-by-field setup and transport limitations.
 

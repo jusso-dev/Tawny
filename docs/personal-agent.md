@@ -33,7 +33,8 @@ The normal deployment path is now the Tawny dashboard:
    - **Check every**: 1 to 1440 minutes.
 5. Use **Save and test**. Tawny calls
    `/proxy/network/integration/v1/info` and records the installed Network
-   application version.
+   application version, then verifies the configured event endpoint and records
+   path.
 6. Enable scheduled matching. A Hangfire job checks due connectors every
    minute. Successful event/indicator pairs are persisted and will not create
    duplicate Kelpie cases.

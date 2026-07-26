@@ -121,6 +121,7 @@ public sealed partial class UniFiIntegrationsController(
         try
         {
             var info = await connector.FetchInfoAsync(integration, ct);
+            var records = await connector.FetchRecordsAsync(integration, ct);
             integration.NetworkVersion = info.ApplicationVersion;
             integration.LastError = null;
             integration.UpdatedAt = testedAt;
@@ -128,9 +129,13 @@ public sealed partial class UniFiIntegrationsController(
             {
                 Success = true,
                 info.ApplicationVersion,
+                RecordsFound = records.Count,
             });
             await db.SaveChangesAsync(ct);
-            return Ok(new UniFiConnectionTestResponse(info.ApplicationVersion, testedAt));
+            return Ok(new UniFiConnectionTestResponse(
+                info.ApplicationVersion,
+                records.Count,
+                testedAt));
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
