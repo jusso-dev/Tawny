@@ -22,6 +22,24 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
     try appendProcNetRows(alloc, w, "/proc/net/tcp6", "tcp6", &first);
     try appendProcNetRows(alloc, w, "/proc/net/udp", "udp", &first);
     try appendProcNetRows(alloc, w, "/proc/net/udp6", "udp6", &first);
+    try w.writeAll("],\"neighbors\":[");
+    const arp = readFileAbsoluteAlloc(alloc, "/proc/net/arp", 512 * 1024) catch null;
+    if (arp) |raw| {
+        defer alloc.free(raw);
+        try appendArpRows(w, raw);
+    }
+    try w.writeAll("],\"dns_servers\":[");
+    const resolv_conf = readFileAbsoluteAlloc(alloc, "/etc/resolv.conf", 64 * 1024) catch null;
+    defer if (resolv_conf) |raw| alloc.free(raw);
+    if (resolv_conf) |raw| try appendResolvValues(w, raw, "nameserver");
+    try w.writeAll("],\"search_domains\":[");
+    if (resolv_conf) |raw| try appendResolvValues(w, raw, "search");
+    try w.writeAll("],\"host_mappings\":[");
+    const hosts = readFileAbsoluteAlloc(alloc, "/etc/hosts", 512 * 1024) catch null;
+    if (hosts) |raw| {
+        defer alloc.free(raw);
+        try appendHostMappings(w, raw);
+    }
     try w.writeAll("]}");
 
     return out.toOwnedSlice();
@@ -98,10 +116,111 @@ fn parseProcNetEndpoint(alloc: std.mem.Allocator, protocol: []const u8, endpoint
         };
     }
 
+    if (address_hex.len != 32) {
+        return .{
+            .address = try alloc.dupe(u8, address_hex),
+            .port = port,
+        };
+    }
+
+    var bytes: [16]u8 = undefined;
+    _ = std.fmt.hexToBytes(&bytes, address_hex) catch {
+        return .{
+            .address = try alloc.dupe(u8, address_hex),
+            .port = port,
+        };
+    };
+    for (0..4) |word| {
+        const start = word * 4;
+        std.mem.reverse(u8, bytes[start..][0..4]);
+    }
+
+    const unresolved = std.Io.net.Ip6Address.Unresolved{
+        .bytes = bytes,
+        .interface_name = null,
+    };
+    var address: std.Io.Writer.Allocating = .init(alloc);
+    errdefer address.deinit();
+    try address.writer.print("{f}", .{unresolved});
     return .{
-        .address = try alloc.dupe(u8, address_hex),
+        .address = try address.toOwnedSlice(),
         .port = port,
     };
+}
+
+fn appendArpRows(writer: anytype, raw: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    _ = lines.next(); // header
+    var first = true;
+    while (lines.next()) |line_raw| {
+        const line = stripComment(line_raw);
+        if (line.len == 0) continue;
+
+        var fields = std.mem.tokenizeAny(u8, line, " \t\r");
+        const address = fields.next() orelse continue;
+        _ = fields.next(); // hardware type
+        _ = fields.next(); // flags
+        const mac = fields.next() orelse "";
+        _ = fields.next(); // mask
+        const device = fields.next() orelse "";
+
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try writer.writeAll("{\"address\":");
+        try std.json.Stringify.value(address, .{}, writer);
+        try writer.writeAll(",\"mac\":");
+        try std.json.Stringify.value(mac, .{}, writer);
+        try writer.writeAll(",\"device\":");
+        try std.json.Stringify.value(device, .{}, writer);
+        try writer.writeByte('}');
+    }
+}
+
+fn appendResolvValues(writer: anytype, raw: []const u8, key: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    var first = true;
+    while (lines.next()) |line_raw| {
+        const line = stripComment(line_raw);
+        var fields = std.mem.tokenizeAny(u8, line, " \t\r");
+        const directive = fields.next() orelse continue;
+        const matches = std.mem.eql(u8, directive, key) or (std.mem.eql(u8, key, "search") and std.mem.eql(u8, directive, "domain"));
+        if (!matches) continue;
+
+        while (fields.next()) |value| {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try std.json.Stringify.value(value, .{}, writer);
+            if (std.mem.eql(u8, key, "nameserver")) break;
+        }
+    }
+}
+
+fn appendHostMappings(writer: anytype, raw: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    var first_mapping = true;
+    while (lines.next()) |line_raw| {
+        const line = stripComment(line_raw);
+        var fields = std.mem.tokenizeAny(u8, line, " \t\r");
+        const address = fields.next() orelse continue;
+        const first_name = fields.next() orelse continue;
+
+        if (!first_mapping) try writer.writeByte(',');
+        first_mapping = false;
+        try writer.writeAll("{\"address\":");
+        try std.json.Stringify.value(address, .{}, writer);
+        try writer.writeAll(",\"names\":[");
+        try std.json.Stringify.value(first_name, .{}, writer);
+        while (fields.next()) |name| {
+            try writer.writeByte(',');
+            try std.json.Stringify.value(name, .{}, writer);
+        }
+        try writer.writeAll("]}");
+    }
+}
+
+fn stripComment(raw: []const u8) []const u8 {
+    const hash = std.mem.indexOfScalar(u8, raw, '#') orelse raw.len;
+    return std.mem.trim(u8, raw[0..hash], " \t\r");
 }
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
@@ -202,4 +321,48 @@ fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: 
 
 test "network collector module loads" {
     _ = collect;
+}
+
+test "procfs IPv6 endpoint is canonicalized" {
+    const endpoint = try parseProcNetEndpoint(
+        std.testing.allocator,
+        "tcp6",
+        "0000000000000000FFFF00000100007F:01BB",
+    );
+    defer std.testing.allocator.free(endpoint.address);
+
+    try std.testing.expectEqualStrings("::ffff:127.0.0.1", endpoint.address);
+    try std.testing.expectEqual(@as(u16, 443), endpoint.port);
+}
+
+test "Linux network context parsers emit searchable addresses and domains" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    try appendArpRows(
+        &out.writer,
+        "IP address HW type Flags HW address Mask Device\n10.0.1.1 0x1 0x2 00:11:22:33:44:55 * eth0\n",
+    );
+    try out.writer.writeByte('\n');
+    try appendResolvValues(
+        &out.writer,
+        "nameserver 10.0.0.2\nsearch corp.example internal.example\n",
+        "nameserver",
+    );
+    try out.writer.writeByte('\n');
+    try appendResolvValues(
+        &out.writer,
+        "nameserver 10.0.0.2\nsearch corp.example internal.example\n",
+        "search",
+    );
+    try out.writer.writeByte('\n');
+    try appendHostMappings(
+        &out.writer,
+        "127.0.0.1 localhost\n10.0.1.25 app.corp.example app\n",
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "10.0.1.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "10.0.0.2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "corp.example") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "app.corp.example") != null);
 }

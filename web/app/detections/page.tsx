@@ -93,7 +93,7 @@ export default async function DetectionsPage() {
               <SubsetItem label="Formats" value="STIX 2.1 indicators, OpenIOC XML, CSV, raw advisory text" />
               <SubsetItem label="File hashes" value="SHA-256 and SHA-1 match file integrity telemetry" />
               <SubsetItem label="Network" value="IPv4 and IPv6 match remote connection addresses" />
-              <SubsetItem label="Domains" value="Domain IoCs match process command lines until DNS telemetry is added" />
+              <SubsetItem label="Domains" value="Domain IoCs match DNS queries, hosts-file mappings, and process command lines" />
               <SubsetItem label="Skipped" value="MD5 is reported but not imported because agents do not emit MD5" />
             </div>
           </section>

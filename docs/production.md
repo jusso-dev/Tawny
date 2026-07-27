@@ -29,6 +29,28 @@ Agent JWTs are bearer credentials. The MVP config file supports plaintext for lo
 
 If a host is rebuilt or the service account changes, re-enroll the agent or restore the OS credential item with the same protection scope.
 
+## Linux and Amazon EC2 network collection
+
+Linux agents collect current TCP/UDP sockets from procfs, ARP neighbors, DNS servers and search domains from `/etc/resolv.conf`, and address-to-host mappings from `/etc/hosts`. Procfs IPv6 values are normalized to canonical text so IPv6 IoCs can match stored telemetry.
+
+On Amazon EC2, the hourly system snapshot also records instance ID, Region, Availability Zone, private/public hostnames, and private IPv4, public IPv4, and IPv6 values across up to 16 attached network interfaces when available. The agent:
+
+- confirms EC2 through DMI before contacting the link-local metadata address;
+- uses IMDSv2 tokens only and never emits the token;
+- bypasses proxies for `169.254.169.254`;
+- applies one-second connect and two-second total request limits;
+- needs `curl` installed, but no IAM permissions.
+
+If IMDS is disabled, or an instance has no public address or hostname, those fields are omitted. No AWS credentials are read.
+
+Live DNS query events come from the journals for `systemd-resolved`, dnsmasq, Unbound, and BIND. The agent service account needs journal read access. `systemd-resolved` usually needs query logging enabled:
+
+```bash
+sudo resolvectl log-level debug
+```
+
+`/etc/hosts` entries are emitted once at startup and again only after file content changes. Hosts without a supported resolver log still contribute static host mappings, resolver settings, EC2 hostnames, and domains found in process command lines; packet-level DNS visibility remains a future eBPF capability.
+
 ## Rate limiting and audit logs
 
 `POST /api/agents/events` is rate limited with a per-agent token bucket. The API returns `429` and a JSON error body when an agent exceeds the ingest budget.
@@ -254,6 +276,22 @@ Tawny__Sentinel__ClientId=<user-assigned-managed-identity-client-id-if-needed>
 Telemetry ingestion is off by default because full agent telemetry can increase Azure Monitor ingestion cost quickly. Enable `TelemetryEnabled` only after the DCR/table schema is ready and you have chosen retention and cost controls.
 
 Tawny records Sentinel alert delivery state on each alert row as `sent`, `failed`, `pending`, or `not_configured`. Telemetry batches are high-volume, so Tawny logs delivery failures with the agent ID and batch size instead of persisting per-event delivery state.
+
+## Tawny SOC HTTP sink
+
+The generic SOC sink posts snake-case JSON batches to one HTTP endpoint. Alert batches include related telemetry when available; telemetry batches forward raw stored event payloads. Configure the API directly with:
+
+```bash
+Tawny__TawnySoc__Enabled=true
+Tawny__TawnySoc__AlertsEnabled=true
+Tawny__TawnySoc__TelemetryEnabled=false
+Tawny__TawnySoc__EndpointUrl=https://soc.example.com/api/ingest/tawny
+Tawny__TawnySoc__ApiToken=replace-me
+Tawny__TawnySoc__BatchSize=100
+Tawny__TawnySoc__TimeoutSeconds=10
+```
+
+For Docker Compose, use the matching `TAWNY_SOC_*` variables. `ApiToken` becomes a bearer token and should come from the deployment secret store. Use HTTPS in production. Keep telemetry forwarding disabled until the downstream schema, data handling, retention, and ingest volume are approved.
 
 Sample KQL:
 

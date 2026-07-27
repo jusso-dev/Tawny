@@ -31,6 +31,7 @@ builder.Services.Configure<SlackSinkOptions>(builder.Configuration.GetSection("T
 builder.Services.Configure<SentinelSinkOptions>(builder.Configuration.GetSection("Tawny:Sentinel"));
 builder.Services.Configure<KelpieSinkOptions>(builder.Configuration.GetSection("Tawny:Kelpie"));
 builder.Services.Configure<UniFiKelpieOptions>(builder.Configuration.GetSection("Tawny:Kelpie"));
+builder.Services.Configure<TawnySocSinkOptions>(builder.Configuration.GetSection("Tawny:TawnySoc"));
 builder.Services.Configure<ReputationOptions>(builder.Configuration.GetSection("Tawny:Reputation"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
@@ -57,12 +58,15 @@ builder.Services.AddHttpClient<ThreatIntelFetcher>();
 builder.Services.AddHttpClient<ReputationEnricher>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
+builder.Services.AddHttpClient<TawnySocAlertSink>();
+builder.Services.AddHttpClient<TawnySocTelemetrySink>();
 builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProvider>();
 builder.Services.AddHttpClient<AzureMonitorLogsIngestionClient>();
 builder.Services.AddSingleton<SentinelAlertSink>();
 builder.Services.AddHttpClient<KelpieAlertSink>();
 builder.Services.AddScoped<UniFiConnector>();
-builder.Services.AddSingleton<ITelemetrySink, SentinelTelemetrySink>();
+builder.Services.AddSingleton<SentinelTelemetrySink>();
+builder.Services.AddSingleton<ITelemetrySink, CompositeTelemetrySink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
 builder.Services.AddRateLimiter(options =>
 {

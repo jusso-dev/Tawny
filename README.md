@@ -260,7 +260,7 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - Kernel-level collection (ETW, EndpointSecurity)
 - Code signing and notarisation (ship SHA256 in releases, sign later)
 - Enterprise OIDC SSO and SCIM provisioning
-- First-class DNS telemetry; domain IoCs currently match process command lines
+- Privileged packet-level DNS capture on hosts without a supported local resolver log
 - Full host isolation enforcement; the action exists but agents currently report it unsupported
 
 ## Roadmap
@@ -287,7 +287,7 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - [x] Multi-tenant persistence and request scoping
 - [x] Optional GitHub OAuth for dashboard login
 
-Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, DNS telemetry, enforced host isolation, enterprise OIDC SSO.
+Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, packet-level DNS telemetry, enforced host isolation, enterprise OIDC SSO.
 
 ## Detection rules
 
@@ -297,7 +297,7 @@ The detections page also imports common advisory IoCs from STIX 2.1 indicator bu
 
 - SHA-256 and SHA-1 file hashes in file integrity telemetry.
 - IPv4 and IPv6 addresses in network connection telemetry.
-- Domains in process command-line telemetry, which catches common URL/download usage until first-class DNS telemetry is added.
+- Domains in DNS query telemetry from `systemd-resolved`, dnsmasq, Unbound, BIND, and `/etc/hosts`, with process command lines retained as a fallback.
 
 MD5 values are reported as skipped because the agents do not currently emit MD5 file hashes.
 
@@ -358,6 +358,20 @@ TAWNY_SENTINEL_TELEMETRY_STREAM_NAME=Custom-TawnyTelemetry_CL
 ```
 
 Create the destination tables and DCR streams first, then assign the Tawny app registration or managed identity the `Monitoring Metrics Publisher` role on the DCR. Telemetry forwarding stays disabled by default to avoid unexpected ingestion cost. Full setup notes and sample KQL are in [docs/production.md](docs/production.md).
+
+## Tawny SOC HTTP sink
+
+Tawny can post alert batches and optional raw telemetry batches to a downstream SOC HTTP ingest endpoint:
+
+```bash
+TAWNY_SOC_ENABLED=true
+TAWNY_SOC_ALERTS_ENABLED=true
+TAWNY_SOC_TELEMETRY_ENABLED=false
+TAWNY_SOC_ENDPOINT_URL=https://soc.example.com/api/ingest/tawny
+TAWNY_SOC_API_TOKEN=replace-me
+```
+
+Requests use JSON and an optional bearer token. Raw telemetry is off by default because it is sensitive and high-volume. Use HTTPS outside a trusted local development network.
 
 ## Kelpie case sink
 

@@ -175,7 +175,7 @@ public partial class IocRuleImporter
             ? $"{sourceFormat.ToUpperInvariant()} import"
             : indicator.Title.Trim();
         var note = indicator.Type is IocIndicatorType.Domain
-            ? " Domain IoCs currently match process command lines that contain the domain."
+            ? " Domain IoCs match DNS query names and process command lines that contain the domain."
             : "";
         return $"{source}: imported {indicator.Type} indicator {indicator.Value}.{note}".Trim();
     }
