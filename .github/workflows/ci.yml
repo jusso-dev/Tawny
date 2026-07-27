@@ -66,10 +66,19 @@ jobs:
       - run: pnpm build
 
   agent:
-    name: agent (Zig)
+    name: agent (${{ matrix.target.name }})
     runs-on: ubuntu-latest
     env:
       ZIG_VERSION: 0.16.0
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: windows-x64, zig: x86_64-windows-gnu, ext: ".exe" }
+          - { name: linux-x64, zig: x86_64-linux-gnu, ext: "" }
+          - { name: linux-arm64, zig: aarch64-linux-gnu, ext: "" }
+          - { name: macos-arm64, zig: aarch64-macos, ext: "" }
+          - { name: macos-x64, zig: x86_64-macos, ext: "" }
     defaults:
       run:
         working-directory: agent
@@ -84,14 +93,20 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$zig_dir" --strip-components=1
           echo "$zig_dir" >> "$GITHUB_PATH"
           "$zig_dir/zig" version
-      - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall
-      - run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSmall
-      - run: zig build -Dtarget=aarch64-linux-gnu -Doptimize=ReleaseSmall
-      - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSmall
-      - run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSmall
-      - run: zig build test -Dtarget=x86_64-linux-musl
+      - name: build
+        run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
+      - name: test
+        if: matrix.target.name == 'linux-x64'
+        run: zig build test -Dtarget=x86_64-linux-musl
+      - name: package CI artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "zig-out/bin/tawny-agent${{ matrix.target.ext }}" \
+            "dist/tawny-agent-${{ matrix.target.name }}${{ matrix.target.ext }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: tawny-agent-builds
-          path: agent/zig-out/
+          name: tawny-agent-${{ matrix.target.name }}
+          path: agent/dist/
+          if-no-files-found: error
           retention-days: 7
