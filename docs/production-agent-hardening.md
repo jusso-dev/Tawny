@@ -102,15 +102,44 @@ threat-model approval.
 
 ```bash
 sudo launchctl print system/dev.jusso.tawny-agent
-sudo tail -n 100 /var/log/tawny-agent.err
+sudo tail -n 100 "/Library/Application Support/Tawny/agent.err"
 sudo plutil -lint /Library/LaunchDaemons/dev.jusso.tawny-agent.plist
 ```
+
+For a developer workstation where a system daemon is not appropriate, `--user`
+installs a LaunchAgent under the current account with configuration in
+`~/.config/tawny` and mutable state in `~/.local/state/tawny`. Do not use this
+reduced-visibility mode for production SOC coverage.
 
 ## Upgrade, rollback, and uninstall
 
 Re-run same installer with new release asset. It stages download on same
 filesystem, verifies checksum and provenance before replacement, retains existing
 config, restarts service, and restores prior binary if service activation fails.
+When the configured path already contains a config file, enrollment URL and token
+are not required and are never rewritten:
+
+```bash
+# Linux/macOS system install: fetch and verify the latest release.
+sudo ./install.sh
+
+# Existing macOS user install.
+./install.sh --user
+```
+
+An approved binary can also be reinstalled without release-network access.
+Supply its recorded checksum; attestation verification remains enabled:
+
+```bash
+sudo ./install.sh \
+  --binary-path /secure/change-record/tawny-agent-linux-x64 \
+  --sha256 "$APPROVED_SHA256"
+```
+
+Use `--skip-attestation` only for a documented source-build recovery where no
+GitHub attestation exists. Windows upgrades follow the same rules: omit
+`-BackendUrl` and `-EnrollmentToken` when the config exists, and use
+`-LocalBinaryPath` with `-Sha256` for a pinned local artifact.
 
 Manual Linux rollback:
 

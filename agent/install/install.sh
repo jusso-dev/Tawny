@@ -4,9 +4,12 @@ set -euo pipefail
 backend_url=""
 enrollment_token=""
 download_url=""
+source_binary_path=""
 sha256=""
-install_dir="/usr/local/tawny"
+install_dir=""
 config_path=""
+state_dir=""
+service_scope="system"
 dry_run=0
 allow_insecure_http=0
 skip_attestation=0
@@ -19,13 +22,18 @@ os_family=""
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh --backend-url URL --enrollment-token TOKEN [options]
+Usage:
+  install.sh --backend-url URL --enrollment-token TOKEN [options]
+  install.sh --config-path EXISTING_CONFIG [options]
 
 Options:
   --download-url URL          HTTPS agent binary URL. Defaults to latest GitHub release asset.
+  --binary-path PATH          Local agent binary. Requires --sha256.
   --sha256 HASH               Expected SHA-256. Required for explicit download URLs.
   --install-dir DIR           Binary install directory. Default: /usr/local/tawny
   --config-path PATH          Config path. Default: platform system path.
+  --state-dir DIR             State directory. Default: platform system path.
+  --user                      Install a per-user macOS LaunchAgent.
   --allow-insecure-http       Allow an HTTP backend URL. Intended only for isolated development.
   --skip-attestation          Skip GitHub artifact attestation verification. Not for production.
   --dry-run                   Print actions without changing the host.
@@ -37,9 +45,12 @@ while [[ $# -gt 0 ]]; do
     --backend-url) backend_url="${2:-}"; shift 2 ;;
     --enrollment-token) enrollment_token="${2:-}"; shift 2 ;;
     --download-url) download_url="${2:-}"; shift 2 ;;
+    --binary-path) source_binary_path="${2:-}"; shift 2 ;;
     --sha256) sha256="${2:-}"; shift 2 ;;
     --install-dir) install_dir="${2:-}"; shift 2 ;;
     --config-path) config_path="${2:-}"; shift 2 ;;
+    --state-dir) state_dir="${2:-}"; shift 2 ;;
+    --user) service_scope="user"; shift ;;
     --allow-insecure-http) allow_insecure_http=1; shift ;;
     --skip-attestation) skip_attestation=1; shift ;;
     --dry-run) dry_run=1; shift ;;
@@ -53,35 +64,33 @@ if [[ -n "$download_url" ]]; then
   explicit_download_url=1
 fi
 
-if [[ -z "$backend_url" || -z "$enrollment_token" ]]; then
-  usage >&2
-  exit 2
-fi
-if [[ "$backend_url" != https://* && "$allow_insecure_http" -ne 1 ]]; then
-  echo "Backend URL must use HTTPS. Use --allow-insecure-http only for isolated development." >&2
-  exit 2
-fi
-if [[ "$backend_url" == *$'\n'* || "$backend_url" == *$'\r'* ||
-      "$enrollment_token" == *$'\n'* || "$enrollment_token" == *$'\r'* ]]; then
-  echo "Backend URL and enrollment token must be single-line values." >&2
-  exit 2
-fi
-if [[ "$dry_run" -ne 1 && "$(id -u)" -ne 0 ]]; then
-  echo "Run installer as root (for example, sudo install.sh ...)." >&2
-  exit 1
-fi
-
 os_name="$(uname -s)"
 case "$os_name" in
   Darwin)
     os_family="macos"
-    default_config_path="/Library/Application Support/Tawny/config.toml"
-    state_dir="/Library/Application Support/Tawny"
+    if [[ "$service_scope" == "user" ]]; then
+      default_config_path="$HOME/.config/tawny/config.toml"
+      : "${state_dir:=$HOME/.local/state/tawny}"
+      : "${install_dir:=$HOME/.local/bin}"
+      plist_path="$HOME/Library/LaunchAgents/dev.jusso.tawny-agent.plist"
+      launchd_domain="gui/$(id -u)"
+    else
+      default_config_path="/Library/Application Support/Tawny/config.toml"
+      : "${state_dir:=/Library/Application Support/Tawny}"
+      : "${install_dir:=/usr/local/tawny}"
+      plist_path="/Library/LaunchDaemons/dev.jusso.tawny-agent.plist"
+      launchd_domain="system"
+    fi
     ;;
   Linux)
+    if [[ "$service_scope" == "user" ]]; then
+      echo "--user is currently supported only on macOS." >&2
+      exit 2
+    fi
     os_family="linux"
     default_config_path="/etc/tawny/config.toml"
-    state_dir="/var/lib/tawny"
+    : "${state_dir:=/var/lib/tawny}"
+    : "${install_dir:=/usr/local/tawny}"
     ;;
   *)
     echo "Unsupported operating system: $os_name" >&2
@@ -92,9 +101,39 @@ esac
 if [[ -z "$config_path" ]]; then
   config_path="$default_config_path"
 fi
-if [[ -z "$install_dir" || "$install_dir" == "/" || -z "$config_path" || "$config_path" == "/" ]]; then
-  echo "Install and config paths must not be filesystem root." >&2
+if [[ -z "$install_dir" || "$install_dir" == "/" || -z "$config_path" || "$config_path" == "/" ||
+      -z "$state_dir" || "$state_dir" == "/" ]]; then
+  echo "Install, config, and state paths must not be filesystem root." >&2
   exit 2
+fi
+if [[ ! -f "$config_path" && ( -z "$backend_url" || -z "$enrollment_token" ) ]]; then
+  echo "--backend-url and --enrollment-token are required for a new installation." >&2
+  exit 2
+fi
+if [[ -n "$backend_url" && "$backend_url" != https://* && "$allow_insecure_http" -ne 1 ]]; then
+  echo "Backend URL must use HTTPS. Use --allow-insecure-http only for isolated development." >&2
+  exit 2
+fi
+if [[ "$backend_url" == *$'\n'* || "$backend_url" == *$'\r'* ||
+      "$enrollment_token" == *$'\n'* || "$enrollment_token" == *$'\r'* ]]; then
+  echo "Backend URL and enrollment token must be single-line values." >&2
+  exit 2
+fi
+if [[ -n "$download_url" && -n "$source_binary_path" ]]; then
+  echo "--download-url and --binary-path are mutually exclusive." >&2
+  exit 2
+fi
+if [[ -n "$source_binary_path" && ! -f "$source_binary_path" ]]; then
+  echo "Local agent binary does not exist: $source_binary_path" >&2
+  exit 2
+fi
+if [[ -n "$source_binary_path" && -z "$sha256" ]]; then
+  echo "--sha256 is required with --binary-path." >&2
+  exit 2
+fi
+if [[ "$dry_run" -ne 1 && "$service_scope" == "system" && "$(id -u)" -ne 0 ]]; then
+  echo "Run installer as root (for example, sudo install.sh ...)." >&2
+  exit 1
 fi
 
 run() {
@@ -145,13 +184,13 @@ rollback() {
     if [[ "$os_family" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
       systemctl stop tawny-agent.service >/dev/null 2>&1 || true
     elif [[ "$os_family" == "macos" ]]; then
-      launchctl bootout system/dev.jusso.tawny-agent >/dev/null 2>&1 || true
+      launchctl bootout "$launchd_domain/dev.jusso.tawny-agent" >/dev/null 2>&1 || true
     fi
     mv -f "$backup_path" "$binary_path"
     if [[ "$os_family" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
       systemctl start tawny-agent.service >/dev/null 2>&1 || true
     elif [[ "$os_family" == "macos" ]]; then
-      launchctl bootstrap system /Library/LaunchDaemons/dev.jusso.tawny-agent.plist >/dev/null 2>&1 || true
+      launchctl bootstrap "$launchd_domain" "$plist_path" >/dev/null 2>&1 || true
     fi
   elif [[ "$rollback_needed" -eq 2 && -n "$binary_path" ]]; then
     rm -f "$binary_path"
@@ -169,7 +208,7 @@ case "$os_family:$arch" in
   *) echo "Unsupported ${os_family} architecture: $arch" >&2; exit 1 ;;
 esac
 
-if [[ -z "$download_url" && "$dry_run" -eq 0 ]]; then
+if [[ -z "$download_url" && -z "$source_binary_path" && "$dry_run" -eq 0 ]]; then
   download_url="$(latest_asset_url "${platform}$")" || {
     echo "No latest release asset found for $platform." >&2
     exit 1
@@ -183,7 +222,7 @@ if [[ "$explicit_download_url" -eq 1 && -z "$sha256" ]]; then
   echo "--sha256 is required with --download-url." >&2
   exit 2
 fi
-if [[ -z "$sha256" && "$dry_run" -eq 0 ]]; then
+if [[ -z "$sha256" && -z "$source_binary_path" && "$dry_run" -eq 0 ]]; then
   sha_url="$(latest_asset_url "${platform}\\.sha256$")" || {
     echo "Release is missing mandatory SHA-256 sidecar for $platform." >&2
     exit 1
@@ -220,16 +259,22 @@ if [[ "$os_family" == "linux" ]]; then
     chmod 0750 "$state_dir"
   fi
 else
-  run chown root:wheel "$state_dir"
+  if [[ "$service_scope" == "system" ]]; then
+    run chown root:wheel "$state_dir"
+  fi
   run chmod 0700 "$state_dir"
 fi
 
 if [[ "$dry_run" -eq 1 ]]; then
-  printf '[dry-run] download, verify SHA-256, and verify GitHub attestation for %s\n' \
-    "${download_url:-<latest release asset>}"
+  printf '[dry-run] stage, verify SHA-256, and verify GitHub attestation for %s\n' \
+    "${source_binary_path:-${download_url:-<latest release asset>}}"
 else
   candidate="$(mktemp "$install_dir/.tawny-agent.XXXXXX")"
-  download "$download_url" "$candidate"
+  if [[ -n "$source_binary_path" ]]; then
+    install -m 0755 "$source_binary_path" "$candidate"
+  else
+    download "$download_url" "$candidate"
+  fi
   if command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$candidate" | awk '{print $1}')"
   else
@@ -288,7 +333,9 @@ if [[ ! -e "$config_path" ]]; then
       chown root:tawny "$config_path"
       chmod 0640 "$config_path"
     else
-      chown root:wheel "$config_path"
+      if [[ "$service_scope" == "system" ]]; then
+        chown root:wheel "$config_path"
+      fi
       chmod 0600 "$config_path"
     fi
   fi
@@ -309,7 +356,9 @@ else
     mv -f "$config_candidate" "$config_path"
     config_candidate=""
   elif [[ "$dry_run" -ne 1 ]]; then
-    chown root:wheel "$config_path"
+    if [[ "$service_scope" == "system" ]]; then
+      chown root:wheel "$config_path"
+    fi
     chmod 0600 "$config_path"
   fi
 fi
@@ -327,10 +376,10 @@ if [[ "$dry_run" -ne 1 ]]; then
 fi
 
 if [[ "$os_family" == "macos" ]]; then
-  plist_path="/Library/LaunchDaemons/dev.jusso.tawny-agent.plist"
   if [[ "$dry_run" -eq 1 ]]; then
-    printf '[dry-run] write and bootstrap hardened launchd job %s\n' "$plist_path"
+    printf '[dry-run] write and bootstrap %s launchd job %s\n' "$service_scope" "$plist_path"
   else
+    mkdir -p "$(dirname "$plist_path")"
     plist_candidate="$(mktemp "$(dirname "$plist_path")/.tawny-agent.plist.XXXXXX")"
     cat > "$plist_candidate" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -351,19 +400,21 @@ if [[ "$os_family" == "macos" ]]; then
   <key>ProcessType</key><string>Background</string>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>Umask</key><integer>27</integer>
-  <key>StandardOutPath</key><string>/var/log/tawny-agent.log</string>
-  <key>StandardErrorPath</key><string>/var/log/tawny-agent.err</string>
+  <key>StandardOutPath</key><string>$state_dir/agent.log</string>
+  <key>StandardErrorPath</key><string>$state_dir/agent.err</string>
 </dict>
 </plist>
 EOF
     plutil -lint "$plist_candidate" >/dev/null
-    chown root:wheel "$plist_candidate"
+    if [[ "$service_scope" == "system" ]]; then
+      chown root:wheel "$plist_candidate"
+    fi
     chmod 0644 "$plist_candidate"
     mv -f "$plist_candidate" "$plist_path"
-    launchctl bootout system/dev.jusso.tawny-agent >/dev/null 2>&1 || true
-    launchctl bootstrap system "$plist_path"
-    launchctl kickstart -k system/dev.jusso.tawny-agent
-    launchctl print system/dev.jusso.tawny-agent >/dev/null
+    launchctl bootout "$launchd_domain/dev.jusso.tawny-agent" >/dev/null 2>&1 || true
+    launchctl bootstrap "$launchd_domain" "$plist_path"
+    launchctl kickstart -k "$launchd_domain/dev.jusso.tawny-agent"
+    launchctl print "$launchd_domain/dev.jusso.tawny-agent" >/dev/null
   fi
 else
   service_path="/etc/systemd/system/tawny-agent.service"

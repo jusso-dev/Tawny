@@ -98,6 +98,9 @@ jobs:
       - name: test
         if: matrix.target.name == 'linux-x64'
         run: zig build test -Dtarget=x86_64-linux-musl
+      - name: test installer upgrade and recovery paths
+        if: matrix.target.name == 'linux-x64'
+        run: bash install/test-install.sh
       - name: package CI artifact
         run: |
           set -euo pipefail

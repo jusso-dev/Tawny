@@ -1,15 +1,12 @@
 function Install-TawnyAgent {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         [string]$BackendUrl,
 
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
         [string]$EnrollmentToken,
 
         [string]$DownloadUrl,
+        [string]$LocalBinaryPath,
         [string]$Sha256,
         [string]$InstallDir = "$env:ProgramFiles\Tawny",
         [string]$ConfigPath = "$env:ProgramData\Tawny\config.toml",
@@ -82,13 +79,28 @@ function Install-TawnyAgent {
         return $asset
     }
 
-    Assert-HttpsUrl $BackendUrl "Backend URL" $AllowInsecureHttp.IsPresent
+    $configExists = Test-Path -LiteralPath $ConfigPath -PathType Leaf
+    if (-not $configExists -and (-not $BackendUrl -or -not $EnrollmentToken)) {
+        throw "-BackendUrl and -EnrollmentToken are required for a new installation."
+    }
+    if ($BackendUrl) {
+        Assert-HttpsUrl $BackendUrl "Backend URL" $AllowInsecureHttp.IsPresent
+    }
     if ($DownloadUrl) {
         Assert-HttpsUrl $DownloadUrl "Agent download URL" $false
+    }
+    if ($DownloadUrl -and $LocalBinaryPath) {
+        throw "-DownloadUrl and -LocalBinaryPath are mutually exclusive."
+    }
+    if ($LocalBinaryPath -and -not (Test-Path -LiteralPath $LocalBinaryPath -PathType Leaf)) {
+        throw "Local agent binary does not exist: $LocalBinaryPath"
     }
     $explicitDownloadUrl = [bool]$DownloadUrl
     if ($explicitDownloadUrl -and -not $Sha256) {
         throw "-Sha256 is required with -DownloadUrl."
+    }
+    if ($LocalBinaryPath -and -not $Sha256) {
+        throw "-Sha256 is required with -LocalBinaryPath."
     }
     Assert-SafeDirectory $InstallDir "InstallDir"
     Assert-SafeDirectory (Split-Path -Parent $ConfigPath) "ConfigPath parent"
@@ -101,11 +113,11 @@ function Install-TawnyAgent {
         throw "Run installer from an elevated PowerShell session."
     }
 
-    if (-not $DownloadUrl -and -not $DryRun) {
+    if (-not $DownloadUrl -and -not $LocalBinaryPath -and -not $DryRun) {
         $asset = Get-LatestAsset "windows-x64\.exe$"
         $DownloadUrl = $asset.browser_download_url
     }
-    if (-not $Sha256 -and -not $DryRun) {
+    if (-not $Sha256 -and -not $LocalBinaryPath -and -not $DryRun) {
         $shaAsset = Get-LatestAsset "windows-x64\.sha256$"
         $Sha256 = ((Invoke-WebRequest -UseBasicParsing `
             -Uri $shaAsset.browser_download_url).Content -split "\s+")[0]
@@ -132,8 +144,12 @@ function Install-TawnyAgent {
     }
 
     try {
-        Invoke-Step "Downloading Tawny agent to a staging file" {
-            Invoke-WebRequest -UseBasicParsing -Uri $DownloadUrl -OutFile $candidatePath
+        Invoke-Step "Staging Tawny agent binary" {
+            if ($LocalBinaryPath) {
+                Copy-Item -LiteralPath $LocalBinaryPath -Destination $candidatePath
+            } else {
+                Invoke-WebRequest -UseBasicParsing -Uri $DownloadUrl -OutFile $candidatePath
+            }
         }
 
         Invoke-Step "Verifying mandatory SHA-256 $Sha256" {
