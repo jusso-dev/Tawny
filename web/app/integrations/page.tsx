@@ -10,6 +10,12 @@ import {
   UniFiIntegrationPanel,
   type UniFiIntegration,
 } from "./unifi-integration-panel";
+import {
+  CloudIntegrationPanel,
+  type CloudConnection,
+  type CloudFinding,
+  type CloudHunt,
+} from "./cloud-integration-panel";
 
 type Agent = {
   id: string;
@@ -46,7 +52,7 @@ export default async function IntegrationsPage() {
   if (!session) redirect("/login");
 
   const role = authRole(session.user);
-  const [agents, unifi] = await Promise.all([
+  const [agents, unifi, cloudConnections, cloudHunts, cloudFindings] = await Promise.all([
     apiGet<Agent[]>("/api/agents", session.user.id, role),
     role === "Admin"
       ? apiGet<UniFiIntegration>("/api/integrations/unifi", session.user.id, role).catch(
@@ -56,6 +62,15 @@ export default async function IntegrationsPage() {
           },
         )
       : Promise.resolve(null),
+    role === "Admin"
+      ? apiGet<CloudConnection[]>("/api/cloud-connections", session.user.id, role)
+      : Promise.resolve([]),
+    role === "Admin"
+      ? apiGet<CloudHunt[]>("/api/cloud-hunts", session.user.id, role)
+      : Promise.resolve([]),
+    role === "Admin"
+      ? apiGet<CloudFinding[]>("/api/cloud-findings?limit=20", session.user.id, role)
+      : Promise.resolve([]),
   ]);
 
   return (
@@ -68,6 +83,13 @@ export default async function IntegrationsPage() {
         />
 
         <UniFiIntegrationPanel initial={unifi} isAdmin={role === "Admin"} />
+
+        <CloudIntegrationPanel
+          initialConnections={cloudConnections}
+          initialHunts={cloudHunts}
+          initialFindings={cloudFindings}
+          isAdmin={role === "Admin"}
+        />
 
         <section className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
           <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-card)]">

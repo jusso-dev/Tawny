@@ -410,6 +410,20 @@ and verifies the configured event endpoint and records path.
 See [Personal AI agent](docs/personal-agent.md#ui-managed-unifi-connector) for
 field-by-field setup and transport limitations.
 
+## Cloud hunting and monitoring
+
+Administrators can configure least-privilege AWS and Azure connections from
+**Integrations > Cloud hunting**. Tawny queries CloudTrail, GuardDuty, Azure
+Activity Logs, and Microsoft Entra audit/sign-in logs on demand or on a
+per-hunt schedule, then stores bounded,
+deduplicated findings with actor, resource, severity, and raw evidence. It does
+not ingest every provider log or attempt CSPM posture management.
+
+AWS uses AssumeRole plus external ID; Azure prefers managed/workload identity
+and supports an encrypted client-secret fallback. Setup policies, query JSON,
+watermark behavior, and operational limits are documented in
+[Cloud hunting and monitoring](docs/cloud-hunting.md).
+
 ## Security notes
 
 - Agent JWTs are bearer tokens. Mutable identity is kept in a mode-`0600`

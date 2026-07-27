@@ -27,6 +27,10 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
     public DbSet<CaseNote> CaseNotes => Set<CaseNote>();
     public DbSet<UniFiIntegration> UniFiIntegrations => Set<UniFiIntegration>();
     public DbSet<UniFiEventMatch> UniFiEventMatches => Set<UniFiEventMatch>();
+    public DbSet<CloudConnection> CloudConnections => Set<CloudConnection>();
+    public DbSet<CloudHunt> CloudHunts => Set<CloudHunt>();
+    public DbSet<CloudHuntRun> CloudHuntRuns => Set<CloudHuntRun>();
+    public DbSet<CloudFinding> CloudFindings => Set<CloudFinding>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -362,6 +366,76 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(m => new { m.TenantId, m.DedupeKey }).IsUnique();
             e.HasIndex(m => new { m.UniFiIntegrationId, m.CreatedAt });
+        });
+
+        b.Entity<CloudConnection>(e =>
+        {
+            e.HasKey(c => c.Id);
+            e.Property(c => c.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(c => c.Name).HasMaxLength(160).IsRequired();
+            e.Property(c => c.ExternalAccountId).HasMaxLength(128).IsRequired();
+            e.Property(c => c.ConfigurationJson).HasColumnName("Configuration").HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(c => c.CredentialEncrypted).HasColumnType("nvarchar(max)");
+            e.Property(c => c.LastError).HasMaxLength(2048);
+            e.HasOne(c => c.Tenant)
+                .WithMany(t => t.CloudConnections)
+                .HasForeignKey(c => c.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(c => new { c.TenantId, c.Provider, c.Name }).IsUnique();
+            e.HasIndex(c => new { c.TenantId, c.IsEnabled });
+        });
+
+        b.Entity<CloudHunt>(e =>
+        {
+            e.HasKey(h => h.Id);
+            e.Property(h => h.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(h => h.Name).HasMaxLength(160).IsRequired();
+            e.Property(h => h.Description).HasColumnType("nvarchar(max)");
+            e.Property(h => h.QueryJson).HasColumnName("Query").HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(h => h.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
+            e.Property(h => h.LastError).HasMaxLength(2048);
+            e.HasOne(h => h.Tenant)
+                .WithMany(t => t.CloudHunts)
+                .HasForeignKey(h => h.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasOne(h => h.CloudConnection)
+                .WithMany(c => c.Hunts)
+                .HasForeignKey(h => h.CloudConnectionId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(h => new { h.TenantId, h.Name }).IsUnique();
+            e.HasIndex(h => new { h.TenantId, h.IsEnabled, h.LastRunAt });
+        });
+
+        b.Entity<CloudHuntRun>(e =>
+        {
+            e.HasKey(r => r.Id);
+            e.Property(r => r.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(r => r.ErrorMessage).HasMaxLength(2048);
+            e.HasOne(r => r.CloudHunt)
+                .WithMany(h => h.Runs)
+                .HasForeignKey(r => r.CloudHuntId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(r => new { r.TenantId, r.CloudHuntId, r.StartedAt })
+                .IsDescending(false, false, true);
+        });
+
+        b.Entity<CloudFinding>(e =>
+        {
+            e.HasKey(f => f.Id);
+            e.Property(f => f.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
+            e.Property(f => f.ProviderEventId).HasMaxLength(512).IsRequired();
+            e.Property(f => f.DedupeKey).HasMaxLength(64).IsRequired();
+            e.Property(f => f.Title).HasMaxLength(255).IsRequired();
+            e.Property(f => f.Actor).HasMaxLength(1024);
+            e.Property(f => f.Resource).HasMaxLength(2048);
+            e.Property(f => f.EvidenceJson).HasColumnName("Evidence").HasColumnType("nvarchar(max)").IsRequired();
+            e.HasOne(f => f.CloudHunt)
+                .WithMany(h => h.Findings)
+                .HasForeignKey(f => f.CloudHuntId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(f => new { f.CloudHuntId, f.DedupeKey }).IsUnique();
+            e.HasIndex(f => new { f.TenantId, f.Status, f.OccurredAt })
+                .IsDescending(false, false, true);
         });
     }
 }

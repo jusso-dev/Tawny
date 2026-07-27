@@ -148,3 +148,39 @@ public enum ReputationVerdict
     Malicious = 3,
     Error = 4,
 }
+
+public enum CloudProvider
+{
+    Aws = 0,
+    Azure = 1,
+}
+
+public enum CloudSourceKind
+{
+    AwsCloudTrail = 0,
+    AwsGuardDuty = 1,
+    AzureActivityLog = 2,
+    AzureEntraAuditLog = 3,
+    AzureEntraSignInLog = 4,
+}
+
+public enum CloudCredentialMode
+{
+    AwsAssumeRole = 0,
+    AzureManagedIdentity = 1,
+    AzureClientSecret = 2,
+}
+
+public enum CloudRunStatus
+{
+    Running = 0,
+    Succeeded = 1,
+    Failed = 2,
+}
+
+public enum CloudFindingStatus
+{
+    Open = 0,
+    Acknowledged = 1,
+    Resolved = 2,
+}

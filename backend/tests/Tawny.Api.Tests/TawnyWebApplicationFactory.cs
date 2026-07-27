@@ -26,6 +26,7 @@ public sealed class TawnyWebApplicationFactory : WebApplicationFactory<Program>
                 ["Tawny:ApplyMigrationsOnStartup"] = "false",
                 ["Tawny:WebUserHmacSecret"] = HmacSecret,
                 ["Tawny:AgentJwt:RequireConfiguredSigningKey"] = "false",
+                ["Tawny:IntegrationEncryptionKey"] = "test-integration-encryption-key",
             });
         });
 

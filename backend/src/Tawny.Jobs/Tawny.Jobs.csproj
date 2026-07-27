@@ -12,5 +12,10 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Hangfire.AspNetCore" />
     <PackageReference Include="AWSSDK.S3" />
+    <PackageReference Include="AWSSDK.CloudTrail" />
+    <PackageReference Include="AWSSDK.GuardDuty" />
+    <PackageReference Include="AWSSDK.SecurityToken" />
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Azure.Monitor.Query" />
   </ItemGroup>
 </Project>

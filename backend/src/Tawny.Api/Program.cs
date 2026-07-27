@@ -17,6 +17,7 @@ using Tawny.Infrastructure;
 using Tawny.Infrastructure.Hunting;
 using Tawny.Infrastructure.ThreatIntel;
 using Tawny.Jobs;
+using Tawny.Jobs.Cloud;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -67,6 +68,9 @@ builder.Services.AddHttpClient<AzureMonitorLogsIngestionClient>();
 builder.Services.AddSingleton<SentinelAlertSink>();
 builder.Services.AddHttpClient<KelpieAlertSink>();
 builder.Services.AddScoped<UniFiConnector>();
+builder.Services.AddScoped<ICloudLogProvider, AwsCloudLogProvider>();
+builder.Services.AddScoped<ICloudLogProvider, AzureMonitorLogProvider>();
+builder.Services.AddScoped<CloudHuntCoordinator>();
 builder.Services.AddSingleton<SentinelTelemetrySink>();
 builder.Services.AddSingleton<ITelemetrySink, CompositeTelemetrySink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
@@ -169,6 +173,7 @@ if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
     builder.Services.AddScoped<ThreatIntelFeedsJob>();
     builder.Services.AddScoped<ReputationEnrichmentJob>();
     builder.Services.AddScoped<UniFiThreatIntelJob>();
+    builder.Services.AddScoped<CloudMonitoringJob>();
     builder.Services.AddHttpClient<CheckAgentReleasesJob>();
 
     builder.Services.AddHangfire(cfg => cfg
@@ -227,6 +232,8 @@ if (!app.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
         "reputation-enrichment", j => j.ExecuteAsync(default), "*/5 * * * *");
     RecurringJob.AddOrUpdate<UniFiThreatIntelJob>(
         "unifi-threat-intel", j => j.ExecuteAsync(default), Cron.Minutely);
+    RecurringJob.AddOrUpdate<CloudMonitoringJob>(
+        "cloud-monitoring", j => j.ExecuteAsync(default), Cron.Minutely);
 }
 
 app.Run();

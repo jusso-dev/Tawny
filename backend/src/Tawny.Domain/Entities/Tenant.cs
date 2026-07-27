@@ -19,4 +19,6 @@ public class Tenant
     public List<Case> Cases { get; set; } = [];
     public List<UniFiIntegration> UniFiIntegrations { get; set; } = [];
     public List<UniFiEventMatch> UniFiEventMatches { get; set; } = [];
+    public List<CloudConnection> CloudConnections { get; set; } = [];
+    public List<CloudHunt> CloudHunts { get; set; } = [];
 }

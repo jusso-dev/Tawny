@@ -7,9 +7,9 @@
     <!-- ASP.NET Core & framework extensions (ship with .NET 10 SDK) -->
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />
 
     <!-- EF Core -->
@@ -28,6 +28,13 @@
 
     <!-- AWS -->
     <PackageVersion Include="AWSSDK.S3" Version="4.0.16.2" />
+    <PackageVersion Include="AWSSDK.CloudTrail" Version="4.0.100.6" />
+    <PackageVersion Include="AWSSDK.GuardDuty" Version="4.0.103" />
+    <PackageVersion Include="AWSSDK.SecurityToken" Version="4.0.100.6" />
+
+    <!-- Azure -->
+    <PackageVersion Include="Azure.Identity" Version="1.21.0" />
+    <PackageVersion Include="Azure.Monitor.Query" Version="1.7.1" />
 
     <!-- Validation -->
     <PackageVersion Include="FluentValidation.AspNetCore" Version="11.3.0" />
