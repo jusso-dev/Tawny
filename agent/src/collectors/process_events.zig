@@ -1,6 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
+const privacy = @import("privacy.zig");
+
+const max_launches_per_collection: usize = 2048;
+const max_hashed_image_bytes: u64 = 512 * 1024 * 1024;
 
 /// Diff-based process launch collector. Tracks the set of live PIDs across
 /// invocations and emits a per-launch event for every PID that has appeared
@@ -14,12 +18,12 @@ const iox = @import("../io_compat.zig");
 /// telemetry (Phase 2's eBPF / ETW path, deliberately out of scope here).
 pub const Tracker = struct {
     allocator: std.mem.Allocator,
-    seen: std.AutoHashMap(u32, void),
+    seen: std.AutoHashMap(u32, u64),
 
     pub fn init(alloc: std.mem.Allocator) Tracker {
         return .{
             .allocator = alloc,
-            .seen = std.AutoHashMap(u32, void).init(alloc),
+            .seen = std.AutoHashMap(u32, u64).init(alloc),
         };
     }
 
@@ -54,14 +58,20 @@ pub const Tracker = struct {
 
         var iter = proc_dir.iterate();
         while (try iter.next(io)) |entry| {
+            if (payloads.items.len >= max_launches_per_collection) break;
             if (entry.kind != .directory) continue;
             const pid = std.fmt.parseInt(u32, entry.name, 10) catch continue;
-            if (self.seen.contains(pid)) continue;
+            const start_time = readProcessStartTime(self.allocator, pid) catch 0;
+            if (self.seen.get(pid)) |seen_start| {
+                if (seen_start == start_time) continue;
+            }
 
-            // First sighting of this PID: emit a launch event and remember it.
-            try self.seen.put(pid, {});
             const payload = buildLinuxLaunchEvent(self.allocator, pid) catch continue;
-            try payloads.append(payload);
+            payloads.append(payload) catch |err| {
+                self.allocator.free(payload);
+                return err;
+            };
+            try self.seen.put(pid, start_time);
         }
     }
 
@@ -95,6 +105,8 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
 
     const command_line = readCommandLine(alloc, pid) catch try alloc.dupe(u8, trimmed_name);
     defer alloc.free(command_line);
+    const safe_command_line = try privacy.sanitizeCommandLine(alloc, command_line);
+    defer alloc.free(safe_command_line);
 
     const exe_path = readExeLink(alloc, pid) catch try alloc.dupe(u8, "");
     defer alloc.free(exe_path);
@@ -119,7 +131,7 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
     try w.print("{{\"pid\":{d},\"ppid\":{d},\"uid\":{d},\"name\":", .{ pid, ppid, uid });
     try std.json.Stringify.value(trimmed_name, .{}, w);
     try w.writeAll(",\"command_line\":");
-    try std.json.Stringify.value(command_line, .{}, w);
+    try std.json.Stringify.value(safe_command_line, .{}, w);
     try w.writeAll(",\"image_path\":");
     try std.json.Stringify.value(exe_path, .{}, w);
     if (hashed) {
@@ -165,6 +177,23 @@ fn readParentPid(alloc: std.mem.Allocator, pid: u32) !u32 {
     return std.fmt.parseInt(u32, ppid, 10);
 }
 
+fn readProcessStartTime(alloc: std.mem.Allocator, pid: u32) !u64 {
+    const stat = try readProcText(alloc, pid, "stat");
+    defer alloc.free(stat);
+    return parseProcessStartTime(stat);
+}
+
+fn parseProcessStartTime(stat: []const u8) !u64 {
+    const close = std.mem.lastIndexOfScalar(u8, stat, ')') orelse return error.BadProcStat;
+    var fields = std.mem.tokenizeAny(u8, stat[close + 1 ..], " \t\r\n");
+    var index: usize = 0;
+    while (fields.next()) |field| : (index += 1) {
+        // Field 22 overall; token zero is field 3 (process state).
+        if (index == 19) return std.fmt.parseInt(u64, field, 10);
+    }
+    return error.BadProcStat;
+}
+
 fn readUid(alloc: std.mem.Allocator, pid: u32) !u32 {
     const status = try readProcText(alloc, pid, "status");
     defer alloc.free(status);
@@ -191,6 +220,8 @@ fn hashImage(path: []const u8) ![32]u8 {
     const io = iox.current();
     var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
     defer file.close(io);
+    const stat = try file.stat(io);
+    if (stat.kind != .file or stat.size > max_hashed_image_bytes) return error.ImageTooLarge;
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [16 * 1024]u8 = undefined;
     var offset: u64 = 0;
@@ -208,4 +239,10 @@ fn hashImage(path: []const u8) ![32]u8 {
 test "tracker module loads" {
     var t = Tracker.init(std.testing.allocator);
     defer t.deinit();
+}
+
+test "process start time distinguishes PID reuse" {
+    const stat = "123 (name with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 424242";
+    try std.testing.expectEqual(@as(u64, 424242), try parseProcessStartTime(stat));
+    try std.testing.expectError(error.BadProcStat, parseProcessStartTime("123 malformed"));
 }

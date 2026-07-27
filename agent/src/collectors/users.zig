@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 
+const max_sessions: usize = 1024;
+const max_session_line_bytes: usize = 1024;
+const command_timeout: std.Io.Timeout = .{ .duration = .{
+    .clock = .awake,
+    .raw = .fromSeconds(5),
+} };
+
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
@@ -25,11 +32,14 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     defer c.endutxent();
 
     var first = true;
+    var count: usize = 0;
     while (c.getutxent()) |entry| {
+        if (count >= max_sessions) break;
         const session = entry.*;
         if (session.ut_type != c.USER_PROCESS) continue;
         if (!first) try w.writeByte(',');
         first = false;
+        count += 1;
 
         try w.writeAll("{\"user\":");
         try std.json.Stringify.value(std.mem.sliceTo(&session.ut_user, 0), .{}, w);
@@ -44,14 +54,18 @@ fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
 
 fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
     const result = std.process.run(alloc, iox.current(), .{
-        .argv = &.{ "who" },
+        .argv = &.{"who"},
         .stdout_limit = .limited(128 * 1024),
-        .stderr_limit = .limited(128 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+        .timeout = command_timeout,
     }) catch {
         return alloc.dupe(u8, "{\"source\":\"who\",\"sessions\":[]}");
     };
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
+    if (!termSucceeded(result.term)) {
+        return alloc.dupe(u8, "{\"source\":\"who\",\"sessions\":[]}");
+    }
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -59,15 +73,18 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
 
     try w.writeAll("{\"source\":\"who\",\"sessions\":[");
     var first = true;
+    var count: usize = 0;
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line_raw| {
+        if (count >= max_sessions) break;
         const line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0) continue;
+        if (line.len == 0 or line.len > max_session_line_bytes) continue;
         var fields = std.mem.tokenizeAny(u8, line, " \t");
         const user = fields.next() orelse continue;
         const tty = fields.next() orelse "";
         if (!first) try w.writeByte(',');
         first = false;
+        count += 1;
         try w.writeAll("{\"user\":");
         try std.json.Stringify.value(user, .{}, w);
         try w.writeAll(",\"line\":");
@@ -114,7 +131,8 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
 
     try w.writeAll("{\"source\":\"wts\",\"sessions\":[");
     var first = true;
-    const sessions = sessions_ptr.?[0..count];
+    const bounded_count = @min(count, @as(u32, @intCast(max_sessions)));
+    const sessions = sessions_ptr.?[0..bounded_count];
     for (sessions) |session| {
         if (session.State != WTSActive) continue;
         if (!first) try w.writeByte(',');
@@ -133,6 +151,13 @@ fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     try w.writeAll("]}");
 
     return out.toOwnedSlice();
+}
+
+fn termSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }
 
 test "users collector module loads" {

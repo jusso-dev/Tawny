@@ -89,6 +89,68 @@ public class AgentFlowIntegrationTests(TawnyWebApplicationFactory factory)
     }
 
     [Fact]
+    public async Task IngestEvents_RetryWithSameClientEventId_IsAcceptedWithoutDuplicate()
+    {
+        await factory.ResetDatabaseAsync();
+        var enrollmentToken = TokenHashing.NewToken();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.EnrollmentTokens.Add(new EnrollmentToken
+            {
+                Id = Guid.NewGuid(),
+                TenantId = TenantDefaults.DefaultTenantId,
+                TokenHash = TokenHashing.Hash(enrollmentToken),
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                CreatedByUserId = Guid.Empty,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var client = factory.CreateClient();
+        var enroll = await client.PostAsJsonAsync("/api/agents/enroll", new
+        {
+            enrollment_token = enrollmentToken,
+            hostname = "retry-safe-host",
+            os = "linux",
+            os_version = "6.12",
+            arch = "x64",
+            agent_version = "0.1.0",
+        });
+        enroll.EnsureSuccessStatusCode();
+        var enrollBody = await enroll.Content.ReadFromJsonAsync<EnrollBody>();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", enrollBody!.Jwt);
+
+        var clientEventId = Guid.NewGuid();
+        var body = new
+        {
+            events = new[]
+            {
+                new
+                {
+                    client_event_id = clientEventId,
+                    type = "system_info",
+                    occurred_at = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    payload = new { platform = "linux" },
+                },
+            },
+        };
+
+        (await client.PostAsJsonAsync("/api/agents/events", body)).StatusCode
+            .Should().Be(HttpStatusCode.Accepted);
+        (await client.PostAsJsonAsync("/api/agents/events", body)).StatusCode
+            .Should().Be(HttpStatusCode.Accepted);
+
+        using var verifyScope = factory.Services.CreateScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var stored = await verifyDb.TelemetryEvents
+            .Where(e => e.ClientEventId == clientEventId)
+            .ToListAsync();
+        stored.Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task WebReads_AreScopedToSignedTenant()
     {
         await factory.ResetDatabaseAsync();

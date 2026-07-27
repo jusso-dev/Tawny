@@ -412,17 +412,30 @@ field-by-field setup and transport limitations.
 
 ## Security notes
 
-- Agent JWTs are bearer tokens. Anyone with the file on disk can impersonate the agent. Mitigate later with the OS keystore.
-- No Authenticode signing or macOS notarisation is in place yet. The install scripts verify release SHA-256 sidecar files when available, and both scripts accept an explicit `--sha256` / `-Sha256` value for pinned deployments.
+- Agent JWTs are bearer tokens. Mutable identity is kept in a mode-`0600`
+  state file, separate from the read-only static config. Anyone who can read
+  that state can impersonate the agent; OS-keystore integration remains future
+  hardening.
+- No Authenticode signing or macOS notarisation is in place yet. Production
+  installers fail closed on a missing or invalid SHA-256 and verify GitHub
+  artifact provenance by default.
 - Enrollment tokens are single-use and short-lived. Rotate the signing key if leaked.
 - SQL Server creds live in env vars; use Key Vault or similar in production.
 - Integration credentials are encrypted with `TAWNY_INTEGRATION_ENCRYPTION_KEY`.
   Back up this key with the database; rotating or losing it makes stored
   integration secrets unreadable.
-- The agent runs as the local user in MVP, not as root or SYSTEM. Telemetry is limited accordingly.
-- Response actions are queued through the API and dispatched on heartbeat. `kill_process` requires a positive `pid`; host isolation is represented as an action type but the current agent reports it unsupported until OS firewall handlers are implemented.
+- Linux uses a locked `tawny` service account and Windows uses a restricted
+  virtual service account. macOS currently runs the launch daemon as root.
+  Protected process and file data may require narrowly scoped ACLs.
+- Response actions are queued through the API and dispatched on heartbeat.
+  `kill_process` requires a positive `pid`; host isolation remains unsupported.
+  Delivery does not yet have a durable lease/journal/ack protocol, so a crash
+  around execution can leave an action outcome unknown.
 
-Production deployments must terminate TLS before traffic reaches the API or web containers. See [docs/production.md](docs/production.md) for a Caddy reverse proxy sample, rate-limit behavior, audit logging notes, and the OS keystore path for agent JWTs.
+Production deployments must terminate TLS before traffic reaches the API or web
+containers. See [docs/production.md](docs/production.md) for server deployment
+and [docs/production-agent-hardening.md](docs/production-agent-hardening.md) for
+release trust, service permissions, EC2 guidance, rollout gates, and rollback.
 
 ## Agent install scripts
 
@@ -436,7 +449,13 @@ irm https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install
 curl -fsSL https://raw.githubusercontent.com/jusso-dev/Tawny/main/agent/install/install.sh | sudo bash -s -- --backend-url 'https://api.example.com' --enrollment-token 'wte_xxx'
 ```
 
-Both scripts write the platform default `config.toml`, download the latest matching release asset, verify SHA-256 when a release sidecar is present, and register the agent as a Windows service, macOS launchd job, or Linux systemd service. Use `-DryRun` on Windows or `--dry-run` on macOS/Linux to inspect local actions without changing the host.
+Both scripts preserve the platform `config.toml`, keep mutable identity in a
+separate protected state directory, download the latest matching release,
+require SHA-256 verification, verify GitHub artifact provenance, stage upgrades
+atomically, and retain the previous binary for rollback. They register a
+Windows service, macOS launchd job, or hardened Linux systemd service. Use
+`-DryRun` on Windows or `--dry-run` on macOS/Linux to inspect local actions
+without changing the host.
 
 ## Production secrets
 

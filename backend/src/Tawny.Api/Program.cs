@@ -58,8 +58,10 @@ builder.Services.AddHttpClient<ThreatIntelFetcher>();
 builder.Services.AddHttpClient<ReputationEnricher>();
 builder.Services.AddSingleton<WazuhAlertSink>();
 builder.Services.AddHttpClient<SlackAlertSink>();
-builder.Services.AddHttpClient<TawnySocAlertSink>();
-builder.Services.AddHttpClient<TawnySocTelemetrySink>();
+builder.Services.AddHttpClient<TawnySocAlertSink>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<TawnySocTelemetrySink>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient<IAzureMonitorTokenProvider, AzureMonitorTokenProvider>();
 builder.Services.AddHttpClient<AzureMonitorLogsIngestionClient>();
 builder.Services.AddSingleton<SentinelAlertSink>();
@@ -70,6 +72,31 @@ builder.Services.AddSingleton<ITelemetrySink, CompositeTelemetrySink>();
 builder.Services.AddScoped<IAlertSink, CompositeAlertSink>();
 builder.Services.AddRateLimiter(options =>
 {
+    options.AddPolicy("agent-enrollment", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(remoteIp, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        });
+    });
+    options.AddPolicy("agent-heartbeat", httpContext =>
+    {
+        var agentId = httpContext.User.FindFirst("agent_id")?.Value
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+        return RateLimitPartition.GetTokenBucketLimiter(agentId, _ => new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 12,
+            TokensPerPeriod = 12,
+            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        });
+    });
     options.AddPolicy("agent-events", httpContext =>
     {
         var agentId = httpContext.User.FindFirst("agent_id")?.Value
@@ -91,8 +118,8 @@ builder.Services.AddRateLimiter(options =>
         context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         await context.HttpContext.Response.WriteAsJsonAsync(new
         {
-            error = "event_ingest_rate_limited",
-            detail = "Too many telemetry ingest requests for this agent.",
+            error = "agent_request_rate_limited",
+            detail = "Too many agent requests.",
         }, cancellationToken: ct);
     };
 });

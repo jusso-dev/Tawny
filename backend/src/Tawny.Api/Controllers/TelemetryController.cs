@@ -58,9 +58,27 @@ public class TelemetryController(
             return ValidationProblem(new ValidationProblemDetails(validation.ToDictionary()));
         }
 
+        var clientEventIds = req.Events
+            .Where(ev => ev.ClientEventId is not null)
+            .Select(ev => ev.ClientEventId!.Value)
+            .ToHashSet();
+        var seenClientEventIds = clientEventIds.Count == 0
+            ? []
+            : await db.TelemetryEvents
+                .AsNoTracking()
+                .Where(e => e.TenantId == tenantId
+                    && e.AgentId == agentId
+                    && e.ClientEventId != null
+                    && clientEventIds.Contains(e.ClientEventId.Value))
+                .Select(e => e.ClientEventId!.Value)
+                .ToHashSetAsync(ct);
+
         var receivedAt = DateTimeOffset.UtcNow;
-        var events = req.Events.Select(ev => new TelemetryEvent
+        var events = req.Events
+            .Where(ev => ev.ClientEventId is null || seenClientEventIds.Add(ev.ClientEventId.Value))
+            .Select(ev => new TelemetryEvent
         {
+            ClientEventId = ev.ClientEventId,
             TenantId = tenantId,
             AgentId = agentId,
             EventType = ev.Type,
@@ -69,13 +87,42 @@ public class TelemetryController(
             Payload = ev.Payload.GetRawText(),
         }).ToList();
 
+        if (events.Count == 0)
+        {
+            return Accepted();
+        }
+
         db.TelemetryEvents.AddRange(events);
         audit.Add((Guid?)null, tenantId, "telemetry.ingest", agentId.ToString(), new
         {
             event_count = req.Events.Count,
             received_at = receivedAt,
         });
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (events.All(e => e.ClientEventId is not null))
+        {
+            // Two retry requests can both pass the initial existence check. Treat a
+            // unique-key race as a successful replay only after verifying every ID.
+            var attemptedIds = events.Select(e => e.ClientEventId!.Value).ToHashSet();
+            db.ChangeTracker.Clear();
+            var persistedIds = await db.TelemetryEvents
+                .AsNoTracking()
+                .Where(e => e.TenantId == tenantId
+                    && e.AgentId == agentId
+                    && e.ClientEventId != null
+                    && attemptedIds.Contains(e.ClientEventId.Value))
+                .Select(e => e.ClientEventId!.Value)
+                .ToHashSetAsync(ct);
+            if (persistedIds.SetEquals(attemptedIds))
+            {
+                return Accepted();
+            }
+
+            throw;
+        }
         eventBroker.Publish(agent, events);
         await telemetrySink.PublishAsync(agent, events, ct);
 
@@ -153,6 +200,7 @@ public class TelemetryController(
 
         return Ok(rows.Select(e => new TelemetryEventResponse(
             e.Id,
+            e.ClientEventId,
             e.AgentId,
             e.EventType,
             e.OccurredAt,

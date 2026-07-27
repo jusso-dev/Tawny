@@ -1,6 +1,8 @@
 using System.Text.Json;
+using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
@@ -17,14 +19,26 @@ public class AgentsController(
     TawnyDbContext db,
     AgentJwtService jwt,
     AuditLogger audit,
+    IValidator<EnrollRequest> enrollValidator,
+    IValidator<HeartbeatRequest> heartbeatValidator,
     ILogger<AgentsController> log) : ControllerBase
 {
+    private const int MaxAgentRequestBytes = 16 * 1024;
+
     [HttpPost("enroll")]
     [AllowAnonymous]
+    [EnableRateLimiting("agent-enrollment")]
+    [RequestSizeLimit(MaxAgentRequestBytes)]
     public async Task<ActionResult<EnrollResponse>> Enroll(
         [FromBody] EnrollRequest req,
         CancellationToken ct)
     {
+        var validation = await enrollValidator.ValidateAsync(req, ct);
+        if (!validation.IsValid)
+        {
+            return ValidationProblem(new ValidationProblemDetails(validation.ToDictionary()));
+        }
+
         var hash = TokenHashing.Hash(req.EnrollmentToken);
         var token = await db.EnrollmentTokens
             .FirstOrDefaultAsync(t => t.TokenHash == hash, ct);
@@ -68,7 +82,16 @@ public class AgentsController(
             token_id = token.Id,
             remote_ip = agent.PublicIp,
         });
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "Enrollment token already used.");
+        }
 
         var (jwtToken, exp) = jwt.Issue(agent.Id, agent.TenantId);
         log.LogInformation("Agent {AgentId} enrolled (hostname={Hostname})", agent.Id, agent.Hostname);
@@ -78,10 +101,18 @@ public class AgentsController(
 
     [HttpPost("heartbeat")]
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.AgentJwt)]
+    [EnableRateLimiting("agent-heartbeat")]
+    [RequestSizeLimit(MaxAgentRequestBytes)]
     public async Task<ActionResult<HeartbeatResponse>> Heartbeat(
         [FromBody] HeartbeatRequest req,
         CancellationToken ct)
     {
+        var validation = await heartbeatValidator.ValidateAsync(req, ct);
+        if (!validation.IsValid)
+        {
+            return ValidationProblem(new ValidationProblemDetails(validation.ToDictionary()));
+        }
+
         if (!TryGetAgentId(out var agentId) || !User.TryGetTenantId(out var tenantId))
         {
             return Unauthorized();

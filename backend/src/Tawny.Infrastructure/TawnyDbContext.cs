@@ -80,6 +80,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasKey(t => t.Id);
             e.Property(t => t.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
             e.Property(t => t.TokenHash).HasMaxLength(128).IsRequired();
+            e.Property(t => t.UsedAt).IsConcurrencyToken();
             e.HasOne(t => t.Tenant)
                 .WithMany(t => t.EnrollmentTokens)
                 .HasForeignKey(t => t.TenantId)
@@ -104,6 +105,9 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasIndex(t => new { t.TenantId, t.AgentId, t.EventType, t.OccurredAt })
                 .IsDescending(false, false, false, true);
             e.HasIndex(t => new { t.TenantId, t.ReceivedAt });
+            e.HasIndex(t => new { t.TenantId, t.AgentId, t.ClientEventId })
+                .IsUnique()
+                .HasFilter("[ClientEventId] IS NOT NULL");
         });
 
         b.Entity<AlertRule>(e =>

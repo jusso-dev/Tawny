@@ -3,6 +3,7 @@ namespace Tawny.Domain.Entities;
 public class TelemetryEvent
 {
     public long Id { get; set; }
+    public Guid? ClientEventId { get; set; }
     public Guid TenantId { get; set; }
     public Guid AgentId { get; set; }
     public TelemetryEventType EventType { get; set; }

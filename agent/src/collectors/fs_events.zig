@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
 
+const max_events_per_collection: usize = 2048;
+const max_watch_paths: usize = 4096;
+
 /// Event-driven file system monitor. Wraps inotify on Linux so we don't have
 /// to poll every configured path on a fixed interval; modifications surface
 /// within milliseconds. Other platforms get a no-op stub today — FSEvents on
@@ -21,27 +24,28 @@ pub const Watcher = struct {
     wd_to_path: std.AutoHashMap(i32, []const u8),
 
     pub fn init(alloc: std.mem.Allocator, paths: []const []const u8) !Watcher {
+        const bounded_paths = paths[0..@min(paths.len, max_watch_paths)];
         var watcher = Watcher{
             .allocator = alloc,
-            .paths = try alloc.alloc([]u8, paths.len),
+            .paths = try alloc.alloc([]u8, bounded_paths.len),
             .wd_to_path = std.AutoHashMap(i32, []const u8).init(alloc),
         };
-        errdefer watcher.deinit();
 
-        for (paths, 0..) |path, i| {
-            watcher.paths[i] = try alloc.dupe(u8, path);
+        for (bounded_paths, 0..) |path, i| {
+            watcher.paths[i] = alloc.dupe(u8, path) catch |err| {
+                for (watcher.paths[0..i]) |initialized| alloc.free(initialized);
+                alloc.free(watcher.paths);
+                watcher.wd_to_path.deinit();
+                return err;
+            };
         }
+        errdefer watcher.deinit();
 
         if (comptime builtin.os.tag == .linux) {
             const fd = std.c.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
             if (std.c.errno(fd) != .SUCCESS) return watcher;
             watcher.inotify_fd = fd;
-            const mask = linux.IN.MODIFY
-                | linux.IN.CREATE
-                | linux.IN.DELETE
-                | linux.IN.MOVED_FROM
-                | linux.IN.MOVED_TO
-                | linux.IN.ATTRIB;
+            const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE | linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB;
             for (watcher.paths) |path| {
                 const path_z = alloc.dupeZ(u8, path) catch continue;
                 defer alloc.free(path_z);
@@ -85,8 +89,9 @@ pub const Watcher = struct {
 fn drainLinux(self: *Watcher, fd: i32, payloads: *std.array_list.Managed([]u8)) !void {
     if (comptime builtin.os.tag != .linux) return;
 
-    var buf: [4096]u8 = undefined;
+    var buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
     while (true) {
+        if (payloads.items.len >= max_events_per_collection) break;
         const n = std.posix.read(fd, &buf) catch |err| switch (err) {
             error.WouldBlock => break,
             else => return err,
@@ -95,20 +100,27 @@ fn drainLinux(self: *Watcher, fd: i32, payloads: *std.array_list.Managed([]u8)) 
 
         var offset: usize = 0;
         while (offset + @sizeOf(linux.inotify_event) <= n) {
+            if (payloads.items.len >= max_events_per_collection) return;
             const ev: *const linux.inotify_event = @ptrCast(@alignCast(&buf[offset]));
-            const name_len = ev.len;
+            const name_len: usize = @intCast(ev.len);
             const name_start = offset + @sizeOf(linux.inotify_event);
+            const record_len = @sizeOf(linux.inotify_event) + name_len;
+            if (record_len > n - offset) break;
             const raw_name: []const u8 = if (name_len > 0) blk: {
                 const name_buf = buf[name_start .. name_start + name_len];
                 const null_idx = std.mem.indexOfScalar(u8, name_buf, 0) orelse name_buf.len;
                 break :blk name_buf[0..null_idx];
             } else "";
 
-            const base_path = self.wd_to_path.get(ev.wd) orelse "";
+            const is_overflow = (ev.mask & linux.IN.Q_OVERFLOW) != 0;
+            const base_path = self.wd_to_path.get(ev.wd) orelse if (is_overflow) "" else {
+                offset += record_len;
+                continue;
+            };
             const payload = try buildEvent(self.allocator, base_path, raw_name, ev.mask);
             try payloads.append(payload);
 
-            offset += @sizeOf(linux.inotify_event) + name_len;
+            offset += record_len;
         }
     }
 }
@@ -137,6 +149,7 @@ fn buildEvent(alloc: std.mem.Allocator, base: []const u8, name: []const u8, mask
 }
 
 fn actionName(mask: u32) []const u8 {
+    if ((mask & linux.IN.Q_OVERFLOW) != 0) return "overflow";
     if ((mask & linux.IN.CREATE) != 0) return "create";
     if ((mask & linux.IN.DELETE) != 0) return "delete";
     if ((mask & linux.IN.MOVED_FROM) != 0) return "moved_from";

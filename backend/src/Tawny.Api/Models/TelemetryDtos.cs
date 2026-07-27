@@ -7,12 +7,14 @@ namespace Tawny.Api.Models;
 public record IngestEventsRequest(IReadOnlyList<TelemetryEventIngest> Events);
 
 public record TelemetryEventIngest(
+    Guid? ClientEventId,
     TelemetryEventType Type,
     long OccurredAt,
     JsonElement Payload);
 
 public record TelemetryEventResponse(
     long Id,
+    Guid? ClientEventId,
     Guid AgentId,
     TelemetryEventType Type,
     DateTimeOffset OccurredAt,
@@ -32,6 +34,9 @@ public class IngestEventsRequestValidator : AbstractValidator<IngestEventsReques
 
         RuleForEach(x => x.Events).ChildRules(ev =>
         {
+            ev.RuleFor(x => x.ClientEventId)
+                .Must(id => id is null || id != Guid.Empty)
+                .WithMessage("client_event_id must be a non-empty UUID when supplied.");
             ev.RuleFor(x => x.Type).IsInEnum();
             ev.RuleFor(x => x.OccurredAt)
                 .GreaterThan(0)

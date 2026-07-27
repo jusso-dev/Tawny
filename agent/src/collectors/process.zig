@@ -1,5 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const privacy = @import("privacy.zig");
+
+const max_processes: usize = 2048;
+const max_process_name_bytes: usize = 256;
 
 const platform = switch (builtin.os.tag) {
     .windows => @import("../platform/windows.zig"),
@@ -25,17 +29,20 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     const w = &out.writer;
 
     try w.writeAll("{\"processes\":[");
-    for (procs, 0..) |p, i| {
+    const process_count = @min(procs.len, max_processes);
+    for (procs[0..process_count], 0..) |p, i| {
+        const safe_command_line = try privacy.sanitizeCommandLine(alloc, p.command_line);
+        defer alloc.free(safe_command_line);
         if (i > 0) try w.writeByte(',');
         try w.print(
             \\{{"pid":{d},"ppid":{d},"name":
         , .{ p.pid, p.ppid });
-        try writeJsonString(w, p.name);
+        try writeJsonString(w, p.name[0..@min(p.name.len, max_process_name_bytes)]);
         try w.writeAll(",\"command_line\":");
-        try writeJsonString(w, p.command_line);
+        try writeJsonString(w, safe_command_line);
         try w.writeByte('}');
     }
-    try w.writeAll("]}");
+    try w.print("],\"truncated\":{any}}}", .{procs.len > process_count});
 
     return out.toOwnedSlice();
 }

@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 
+const max_dns_events: usize = 4096;
+const max_journal_line_bytes: usize = 64 * 1024;
+const journal_timeout: std.Io.Timeout = .{ .duration = .{
+    .clock = .awake,
+    .raw = .fromSeconds(10),
+} };
+
 /// DNS query collector. Linux: shells out to `journalctl -u systemd-resolved`
 /// since the last collection and pulls structured JSON lines, then matches
 /// log entries that look like DNS queries.
@@ -24,6 +31,7 @@ pub const Collector = struct {
     /// Returns one JSON payload per detected DNS query since the last call.
     /// Caller owns the outer slice and each inner payload.
     pub fn collectQueries(self: *Collector) ![][]u8 {
+        const collection_started = iox.timestamp();
         var payloads = std.array_list.Managed([]u8).init(self.allocator);
         errdefer {
             for (payloads.items) |p| self.allocator.free(p);
@@ -33,16 +41,18 @@ pub const Collector = struct {
         switch (builtin.os.tag) {
             .linux => {
                 try self.collectStaticHosts(&payloads);
-                try self.collectLinux(&payloads);
+                if (try self.collectLinux(&payloads)) {
+                    self.last_run_unix = collection_started;
+                }
             },
             else => {}, // Win/macOS DNS capture needs ETW / NetworkExtension; not in this collector.
         }
 
-        self.last_run_unix = iox.timestamp();
+        try dedupePayloads(self.allocator, &payloads);
         return payloads.toOwnedSlice();
     }
 
-    fn collectLinux(self: *Collector, payloads: *std.array_list.Managed([]u8)) !void {
+    fn collectLinux(self: *Collector, payloads: *std.array_list.Managed([]u8)) !bool {
         const since_arg = if (self.last_run_unix == 0)
             try self.allocator.dupe(u8, "60 seconds ago")
         else
@@ -63,20 +73,26 @@ pub const Collector = struct {
                 "--since",
                 since_arg,
                 "--output=json",
+                "--lines=4096",
                 "--no-pager",
                 "--quiet",
             },
-            .stdout_limit = .limited(4 * 1024 * 1024),
-            .stderr_limit = .limited(4 * 1024 * 1024),
-        }) catch return; // journalctl missing or not permitted; silently skip.
+            .stdout_limit = .limited(2 * 1024 * 1024),
+            .stderr_limit = .limited(64 * 1024),
+            .timeout = journal_timeout,
+        }) catch return false; // journalctl missing, blocked, or timed out.
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
+        if (!termSucceeded(result.term)) return false;
 
         var lines = std.mem.splitScalar(u8, result.stdout, '\n');
         while (lines.next()) |line| {
+            if (payloads.items.len >= max_dns_events) break;
             if (line.len == 0) continue;
+            if (line.len > max_journal_line_bytes) continue;
             try parseLine(self.allocator, line, payloads);
         }
+        return true;
     }
 
     fn collectStaticHosts(self: *Collector, payloads: *std.array_list.Managed([]u8)) !void {
@@ -99,6 +115,7 @@ pub const Collector = struct {
 ///   "Looking up RR for example.com IN A"
 ///   "Got DNS reply ... example.com IN A -> 93.184.216.34"
 fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.array_list.Managed([]u8)) !void {
+    if (out.items.len >= max_dns_events or line.len > max_journal_line_bytes) return;
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, line, .{}) catch return;
     defer parsed.deinit();
 
@@ -109,7 +126,9 @@ fn parseLine(alloc: std.mem.Allocator, line: []const u8, out: *std.array_list.Ma
     const message = message_entry.string;
 
     const qname = extractQname(message) orelse return;
+    if (!isValidDomain(qname)) return;
     const qtype = extractQtype(message) orelse "A";
+    if (!isValidQtype(qtype)) return;
     const reply_ip = extractReplyIp(message);
     const resolver = resolverName(obj);
     const ts_secs: i64 = blk: {
@@ -209,6 +228,7 @@ fn extractReplyIp(message: []const u8) ?[]const u8 {
 fn resolverName(obj: std.json.ObjectMap) []const u8 {
     const unit_entry = obj.get("_SYSTEMD_UNIT") orelse return "systemd-resolved";
     if (unit_entry != .string) return "systemd-resolved";
+    if (unit_entry.string.len == 0 or unit_entry.string.len > 128) return "systemd-resolved";
     const suffix = ".service";
     if (std.mem.endsWith(u8, unit_entry.string, suffix)) {
         return unit_entry.string[0 .. unit_entry.string.len - suffix.len];
@@ -217,15 +237,38 @@ fn resolverName(obj: std.json.ObjectMap) []const u8 {
 }
 
 fn looksLikeIp(text: []const u8) bool {
-    if (text.len == 0) return false;
-    var has_digit = false;
-    var has_dot_or_colon = false;
-    for (text) |c| {
-        if (std.ascii.isDigit(c)) has_digit = true;
-        if (c == '.' or c == ':') has_dot_or_colon = true;
-        if (!std.ascii.isAlphanumeric(c) and c != '.' and c != ':') return false;
+    _ = std.Io.net.IpAddress.parse(text, 0) catch return false;
+    return true;
+}
+
+fn isValidDomain(value: []const u8) bool {
+    if (value.len == 0 or value.len > 253) return false;
+    var label_len: usize = 0;
+    for (value) |ch| {
+        if (ch == '.') {
+            if (label_len == 0 or label_len > 63) return false;
+            label_len = 0;
+            continue;
+        }
+        if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') return false;
+        label_len += 1;
     }
-    return has_digit and has_dot_or_colon;
+    return label_len > 0 and label_len <= 63;
+}
+
+fn isValidQtype(value: []const u8) bool {
+    const known = [_][]const u8{ "A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SOA", "SRV", "CAA", "ANY" };
+    for (known) |candidate| {
+        if (std.ascii.eqlIgnoreCase(value, candidate)) return true;
+    }
+    return false;
+}
+
+fn termSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
 }
 
 fn appendHostsEntries(
@@ -235,6 +278,7 @@ fn appendHostsEntries(
 ) !void {
     var lines = std.mem.splitScalar(u8, raw, '\n');
     while (lines.next()) |line_raw| {
+        if (out.items.len >= max_dns_events) break;
         const hash = std.mem.indexOfScalar(u8, line_raw, '#') orelse line_raw.len;
         const line = std.mem.trim(u8, line_raw[0..hash], " \t\r");
         var fields = std.mem.tokenizeAny(u8, line, " \t\r");
@@ -243,7 +287,8 @@ fn appendHostsEntries(
         const qtype = if (std.mem.indexOfScalar(u8, address, ':') != null) "AAAA" else "A";
 
         while (fields.next()) |qname| {
-            if (qname.len == 0 or qname.len > 253) continue;
+            if (out.items.len >= max_dns_events) break;
+            if (!isValidDomain(qname)) continue;
 
             var payload: std.Io.Writer.Allocating = .init(alloc);
             errdefer payload.deinit();
@@ -258,6 +303,24 @@ fn appendHostsEntries(
             try out.append(try payload.toOwnedSlice());
         }
     }
+}
+
+fn dedupePayloads(alloc: std.mem.Allocator, payloads: *std.array_list.Managed([]u8)) !void {
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+    try seen.ensureTotalCapacity(@intCast(payloads.items.len));
+
+    var write_index: usize = 0;
+    for (payloads.items) |payload| {
+        if (seen.contains(payload)) {
+            alloc.free(payload);
+            continue;
+        }
+        seen.putAssumeCapacityNoClobber(payload, {});
+        payloads.items[write_index] = payload;
+        write_index += 1;
+    }
+    payloads.items.len = write_index;
 }
 
 test "qname extraction" {
@@ -303,4 +366,28 @@ test "dnsmasq journal query is parsed" {
     try std.testing.expect(std.mem.indexOf(u8, payloads.items[0], "api.corp.example") != null);
     try std.testing.expect(std.mem.indexOf(u8, payloads.items[0], "AAAA") != null);
     try std.testing.expect(std.mem.indexOf(u8, payloads.items[0], "dnsmasq") != null);
+}
+
+test "malformed DNS values are rejected and duplicates are stable" {
+    var payloads = std.array_list.Managed([]u8).init(std.testing.allocator);
+    defer {
+        for (payloads.items) |payload| std.testing.allocator.free(payload);
+        payloads.deinit();
+    }
+
+    try parseLine(
+        std.testing.allocator,
+        \\{"MESSAGE":"query[A] bad/$name from 10.0.1.25","_SYSTEMD_UNIT":"dnsmasq.service"}
+    ,
+        &payloads,
+    );
+    try appendHostsEntries(
+        std.testing.allocator,
+        "10.0.0.2 valid.example valid.example\nnot-an-ip ignored.example\n",
+        &payloads,
+    );
+    try dedupePayloads(std.testing.allocator, &payloads);
+
+    try std.testing.expectEqual(@as(usize, 1), payloads.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, payloads.items[0], "valid.example") != null);
 }

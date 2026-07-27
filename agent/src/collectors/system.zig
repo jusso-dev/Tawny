@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 
+const max_ec2_interfaces: usize = 8;
+const max_ec2_list_values: usize = 64;
+const curl_timeout: std.Io.Timeout = .{ .duration = .{
+    .clock = .awake,
+    .raw = .fromSeconds(3),
+} };
+
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.os.tag) {
         .macos => collectMacos(alloc),
@@ -94,7 +101,7 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
         mem_total_kb * 1024,
         cpu_count,
     });
-    if (ec2_identity) |*identity| try appendEc2Identity(w, identity);
+    if (ec2_identity) |*identity| try appendEc2Identity(alloc, w, identity);
     try w.writeByte('}');
 
     return out.toOwnedSlice();
@@ -147,34 +154,64 @@ fn collectEc2Identity(alloc: std.mem.Allocator) ?Ec2Identity {
         "--request",
         "PUT",
         "--header",
-        "X-aws-ec2-metadata-token-ttl-seconds: 21600",
+        "X-aws-ec2-metadata-token-ttl-seconds: 60",
         "http://169.254.169.254/latest/api/token",
     }) orelse return null;
     defer alloc.free(token);
+    if (!isValidImdsToken(token)) return null;
 
-    const token_header = std.fmt.allocPrint(
-        alloc,
-        "X-aws-ec2-metadata-token: {s}",
-        .{token},
-    ) catch return null;
-    defer alloc.free(token_header);
+    var token_header = createImdsHeaderFile(alloc, token) orelse return null;
+    defer token_header.deinit(alloc);
 
     var identity = Ec2Identity{};
-    identity.instance_id = fetchEc2Metadata(alloc, token_header, "instance-id");
-    identity.region = fetchEc2Metadata(alloc, token_header, "placement/region");
-    identity.availability_zone = fetchEc2Metadata(alloc, token_header, "placement/availability-zone");
-    identity.private_ipv4 = fetchEc2Metadata(alloc, token_header, "local-ipv4");
-    identity.public_ipv4 = fetchEc2Metadata(alloc, token_header, "public-ipv4");
-    identity.ipv6 = fetchEc2Metadata(alloc, token_header, "ipv6");
-    identity.private_hostname = fetchEc2Metadata(alloc, token_header, "local-hostname");
-    identity.public_hostname = fetchEc2Metadata(alloc, token_header, "public-hostname");
-    identity.network_macs = fetchEc2Metadata(alloc, token_header, "network/interfaces/macs/");
+    identity.instance_id = fetchEc2Metadata(alloc, token_header.curl_argument, "instance-id");
+    identity.region = fetchEc2Metadata(alloc, token_header.curl_argument, "placement/region");
+    identity.availability_zone = fetchEc2Metadata(alloc, token_header.curl_argument, "placement/availability-zone");
+    identity.private_ipv4 = fetchEc2Metadata(alloc, token_header.curl_argument, "local-ipv4");
+    identity.public_ipv4 = fetchEc2Metadata(alloc, token_header.curl_argument, "public-ipv4");
+    identity.ipv6 = fetchEc2Metadata(alloc, token_header.curl_argument, "ipv6");
+    identity.private_hostname = fetchEc2Metadata(alloc, token_header.curl_argument, "local-hostname");
+    identity.public_hostname = fetchEc2Metadata(alloc, token_header.curl_argument, "public-hostname");
+    identity.network_macs = fetchEc2Metadata(alloc, token_header.curl_argument, "network/interfaces/macs/");
     if (identity.network_macs) |macs| {
-        identity.private_ipv4s = fetchEc2InterfaceValues(alloc, token_header, macs, "local-ipv4s");
-        identity.public_ipv4s = fetchEc2InterfaceValues(alloc, token_header, macs, "public-ipv4s");
-        identity.ipv6s = fetchEc2InterfaceValues(alloc, token_header, macs, "ipv6s");
+        identity.private_ipv4s = fetchEc2InterfaceValues(alloc, token_header.curl_argument, macs, "local-ipv4s");
+        identity.public_ipv4s = fetchEc2InterfaceValues(alloc, token_header.curl_argument, macs, "public-ipv4s");
+        identity.ipv6s = fetchEc2InterfaceValues(alloc, token_header.curl_argument, macs, "ipv6s");
     }
     return identity;
+}
+
+const ImdsHeaderFile = struct {
+    path: []u8,
+    curl_argument: []u8,
+
+    fn deinit(self: *ImdsHeaderFile, alloc: std.mem.Allocator) void {
+        std.Io.Dir.deleteFileAbsolute(iox.current(), self.path) catch {};
+        alloc.free(self.curl_argument);
+        alloc.free(self.path);
+    }
+};
+
+fn createImdsHeaderFile(alloc: std.mem.Allocator, token: []const u8) ?ImdsHeaderFile {
+    var random: [16]u8 = undefined;
+    std.Io.randomSecure(iox.current(), &random) catch return null;
+    const random_hex = std.fmt.bytesToHex(random, .lower);
+    const path = std.fmt.allocPrint(alloc, "/tmp/tawny-imds-{s}.header", .{random_hex}) catch return null;
+    errdefer alloc.free(path);
+
+    const io = iox.current();
+    var file = std.Io.Dir.createFileAbsolute(io, path, .{
+        .exclusive = true,
+        .permissions = .fromMode(0o600),
+    }) catch return null;
+    defer file.close(io);
+    errdefer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+
+    file.writeStreamingAll(io, "X-aws-ec2-metadata-token: ") catch return null;
+    file.writeStreamingAll(io, token) catch return null;
+
+    const curl_argument = std.fmt.allocPrint(alloc, "@{s}", .{path}) catch return null;
+    return .{ .path = path, .curl_argument = curl_argument };
 }
 
 fn isAmazonEc2(alloc: std.mem.Allocator) bool {
@@ -200,7 +237,7 @@ fn isAmazonEc2(alloc: std.mem.Allocator) bool {
 
 fn fetchEc2Metadata(
     alloc: std.mem.Allocator,
-    token_header: []const u8,
+    header_file_argument: []const u8,
     path: []const u8,
 ) ?[]u8 {
     const url = std.fmt.allocPrint(
@@ -210,7 +247,12 @@ fn fetchEc2Metadata(
     ) catch return null;
     defer alloc.free(url);
 
-    return runCurl(alloc, &.{
+    const argv = metadataCurlArgv(header_file_argument, url);
+    return runCurl(alloc, &argv);
+}
+
+fn metadataCurlArgv(header_file_argument: []const u8, url: []const u8) [13][]const u8 {
+    return .{
         "curl",
         "--silent",
         "--show-error",
@@ -222,14 +264,14 @@ fn fetchEc2Metadata(
         "--noproxy",
         "*",
         "--header",
-        token_header,
+        header_file_argument,
         url,
-    });
+    };
 }
 
 fn fetchEc2InterfaceValues(
     alloc: std.mem.Allocator,
-    token_header: []const u8,
+    header_file_argument: []const u8,
     macs_raw: []const u8,
     field: []const u8,
 ) ?[]u8 {
@@ -239,7 +281,8 @@ fn fetchEc2InterfaceValues(
     var macs = std.mem.tokenizeAny(u8, macs_raw, " \t\r\n/");
     var count: usize = 0;
     while (macs.next()) |mac| {
-        if (count >= 16) break;
+        if (count >= max_ec2_interfaces) break;
+        if (!isValidMac(mac)) continue;
         count += 1;
 
         const path = std.fmt.allocPrint(
@@ -248,7 +291,7 @@ fn fetchEc2InterfaceValues(
             .{ mac, field },
         ) catch continue;
         defer alloc.free(path);
-        const result = fetchEc2Metadata(alloc, token_header, path) orelse continue;
+        const result = fetchEc2Metadata(alloc, header_file_argument, path) orelse continue;
         defer alloc.free(result);
 
         if (values.items.len > 0) values.append('\n') catch return null;
@@ -263,17 +306,22 @@ fn runCurl(alloc: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     const result = std.process.run(alloc, iox.current(), .{
         .argv = argv,
         .stdout_limit = .limited(16 * 1024),
-        .stderr_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(4 * 1024),
+        .timeout = curl_timeout,
     }) catch return null;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
+    if (!termSucceeded(result.term)) return null;
 
     const value = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (value.len == 0 or value.len > 4096) return null;
+    for (value) |byte| {
+        if (byte < 0x20 and byte != '\n' and byte != '\r' and byte != '\t') return null;
+    }
     return alloc.dupe(u8, value) catch null;
 }
 
-fn appendEc2Identity(writer: anytype, identity: *const Ec2Identity) !void {
+fn appendEc2Identity(alloc: std.mem.Allocator, writer: anytype, identity: *const Ec2Identity) !void {
     try writer.writeAll(",\"cloud\":{\"provider\":\"aws\",\"service\":\"ec2\"");
     try appendOptionalJsonField(writer, "instance_id", identity.instance_id);
     try appendOptionalJsonField(writer, "region", identity.region);
@@ -283,10 +331,10 @@ fn appendEc2Identity(writer: anytype, identity: *const Ec2Identity) !void {
     try appendOptionalJsonField(writer, "ipv6", identity.ipv6);
     try appendOptionalJsonField(writer, "private_hostname", identity.private_hostname);
     try appendOptionalJsonField(writer, "public_hostname", identity.public_hostname);
-    try appendOptionalJsonList(writer, "network_macs", identity.network_macs);
-    try appendOptionalJsonList(writer, "private_ipv4s", identity.private_ipv4s);
-    try appendOptionalJsonList(writer, "public_ipv4s", identity.public_ipv4s);
-    try appendOptionalJsonList(writer, "ipv6s", identity.ipv6s);
+    try appendOptionalJsonList(alloc, writer, "network_macs", identity.network_macs);
+    try appendOptionalJsonList(alloc, writer, "private_ipv4s", identity.private_ipv4s);
+    try appendOptionalJsonList(alloc, writer, "public_ipv4s", identity.public_ipv4s);
+    try appendOptionalJsonList(alloc, writer, "ipv6s", identity.ipv6s);
     try writer.writeByte('}');
 }
 
@@ -299,20 +347,71 @@ fn appendOptionalJsonField(writer: anytype, name: []const u8, value: ?[]const u8
     }
 }
 
-fn appendOptionalJsonList(writer: anytype, name: []const u8, raw: ?[]const u8) !void {
+fn appendOptionalJsonList(
+    alloc: std.mem.Allocator,
+    writer: anytype,
+    name: []const u8,
+    raw: ?[]const u8,
+) !void {
     const present = raw orelse return;
     var values = std.mem.tokenizeAny(u8, present, " \t\r\n/");
-    const first_value = values.next() orelse return;
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
 
-    try writer.writeByte(',');
-    try std.json.Stringify.value(name, .{}, writer);
-    try writer.writeAll(":[");
-    try std.json.Stringify.value(first_value, .{}, writer);
+    var first = true;
     while (values.next()) |value| {
-        try writer.writeByte(',');
+        if (seen.count() >= max_ec2_list_values) break;
+        const valid = if (std.mem.eql(u8, name, "network_macs"))
+            isValidMac(value)
+        else
+            isValidIp(value);
+        if (!valid or seen.contains(value)) continue;
+        try seen.put(value, {});
+
+        if (first) {
+            try writer.writeByte(',');
+            try std.json.Stringify.value(name, .{}, writer);
+            try writer.writeAll(":[");
+            first = false;
+        } else {
+            try writer.writeByte(',');
+        }
         try std.json.Stringify.value(value, .{}, writer);
     }
+    if (first) return;
     try writer.writeByte(']');
+}
+
+fn termSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn isValidIp(value: []const u8) bool {
+    _ = std.Io.net.IpAddress.parse(value, 0) catch return false;
+    return true;
+}
+
+fn isValidMac(value: []const u8) bool {
+    if (value.len != 17) return false;
+    for (value, 0..) |byte, index| {
+        if ((index + 1) % 3 == 0) {
+            if (byte != ':') return false;
+        } else if (!std.ascii.isHex(byte)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isValidImdsToken(value: []const u8) bool {
+    if (value.len == 0 or value.len > 4096) return false;
+    for (value) |byte| {
+        if (byte <= 0x20 or byte >= 0x7f) return false;
+    }
+    return true;
 }
 
 fn readMemTotalKb(alloc: std.mem.Allocator) !u64 {
@@ -417,11 +516,46 @@ test "EC2 identity includes searchable public and private network identity" {
 
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try appendEc2Identity(&out.writer, &identity);
+    try appendEc2Identity(std.testing.allocator, &out.writer, &identity);
 
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "203.0.113.10") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "10.0.1.25") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "10.0.1.26") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "203.0.113.11") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "compute.amazonaws.com") != null);
+}
+
+test "EC2 identity lists reject malformed values and deduplicate stably" {
+    var identity = Ec2Identity{
+        .network_macs = try std.testing.allocator.dupe(u8, "0a:11:22:33:44:55/\n../../bad/\n0a:11:22:33:44:55/"),
+        .private_ipv4s = try std.testing.allocator.dupe(u8, "10.0.1.25\nnot-an-ip\n10.0.1.25"),
+    };
+    defer identity.deinit(std.testing.allocator);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try appendEc2Identity(std.testing.allocator, &out.writer, &identity);
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.written(), "0a:11:22:33:44:55"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.written(), "10.0.1.25"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "../../bad") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "not-an-ip") == null);
+}
+
+test "IMDS token rejects whitespace and control characters" {
+    try std.testing.expect(isValidImdsToken("opaque-token"));
+    try std.testing.expect(!isValidImdsToken("header\ninjection"));
+    try std.testing.expect(!isValidImdsToken(""));
+}
+
+test "IMDS token never appears in metadata curl argv" {
+    const secret = "super-secret-imds-token";
+    const argv = metadataCurlArgv(
+        "@/tmp/tawny-imds-test.header",
+        "http://169.254.169.254/latest/meta-data/instance-id",
+    );
+
+    for (argv) |argument| {
+        try std.testing.expect(std.mem.indexOf(u8, argument, secret) == null);
+    }
 }

@@ -5,12 +5,20 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: read
+
 jobs:
   build-agent:
     name: build agent
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
       ZIG_VERSION: 0.16.0
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
     strategy:
       matrix:
         target:
@@ -20,12 +28,17 @@ jobs:
           - { name: macos-arm64, zig: aarch64-macos, ext: "" }
           - { name: macos-x64, zig: x86_64-macos, ext: "" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          persist-credentials: false
       - name: install Zig
         run: |
           set -euo pipefail
           zig_dir="$RUNNER_TEMP/zig-$ZIG_VERSION"
-          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+            "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" \
+            -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
           mkdir -p "$zig_dir"
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$zig_dir" --strip-components=1
           echo "$zig_dir" >> "$GITHUB_PATH"
@@ -34,15 +47,24 @@ jobs:
         working-directory: agent
         run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
       - name: rename and hash
+        id: package
         working-directory: agent/zig-out/bin
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          mv "tawny-agent${{ matrix.target.ext }}" "tawny-agent-${VERSION}-${{ matrix.target.name }}${{ matrix.target.ext }}"
-          sha256sum "tawny-agent-${VERSION}-${{ matrix.target.name }}${{ matrix.target.ext }}" > "tawny-agent-${VERSION}-${{ matrix.target.name }}.sha256"
-      - uses: actions/upload-artifact@v4
+          binary="tawny-agent-${VERSION}-${{ matrix.target.name }}${{ matrix.target.ext }}"
+          mv "tawny-agent${{ matrix.target.ext }}" "$binary"
+          sha256sum "$binary" > "tawny-agent-${VERSION}-${{ matrix.target.name }}.sha256"
+          echo "binary=agent/zig-out/bin/$binary" >> "$GITHUB_OUTPUT"
+      - name: attest agent binary
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-path: ${{ steps.package.outputs.binary }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: agent-${{ matrix.target.name }}
           path: agent/zig-out/bin/tawny-agent-*
+          if-no-files-found: error
 
   build-api-image:
     name: publish api image
@@ -51,14 +73,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: backend
           file: backend/src/Tawny.Api/Dockerfile
@@ -74,14 +98,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: web
           file: web/Dockerfile
@@ -96,13 +122,33 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: verify artifacts and create release manifest
+        run: |
+          set -euo pipefail
+          cd dist
+          for checksum in *.sha256; do
+            sha256sum -c "$checksum"
+          done
+          install -m 0755 ../agent/install/install.sh ./install.sh
+          install -m 0644 ../agent/install/install.ps1 ./install.ps1
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
+      - name: attest complete release payload
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-path: dist/*
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: dist/*
           generate_release_notes: true

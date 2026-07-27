@@ -3,6 +3,8 @@ const iox = @import("../io_compat.zig");
 
 const Sha1Digest = [20]u8;
 const Sha256Digest = [32]u8;
+const max_hashed_file_bytes: u64 = 128 * 1024 * 1024;
+const max_watched_files: usize = 4096;
 
 const WatchedFile = struct {
     path: []u8,
@@ -10,6 +12,7 @@ const WatchedFile = struct {
     sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
+    hash_complete: bool,
 };
 
 pub const Watcher = struct {
@@ -17,26 +20,27 @@ pub const Watcher = struct {
     files: std.array_list.Managed(WatchedFile),
 
     pub fn init(alloc: std.mem.Allocator, paths: []const []const u8) !Watcher {
+        const bounded_paths = paths[0..@min(paths.len, max_watched_files)];
         var watcher = Watcher{
             .allocator = alloc,
             .files = std.array_list.Managed(WatchedFile).init(alloc),
         };
         errdefer watcher.deinit();
 
-        for (paths) |path| {
-            const snapshot = snapshotFile(path) catch Snapshot{
-                .sha1 = std.mem.zeroes(Sha1Digest),
-                .sha256 = std.mem.zeroes(Sha256Digest),
-                .size_bytes = 0,
-                .exists = false,
-            };
-            try watcher.files.append(.{
-                .path = try alloc.dupe(u8, path),
+        for (bounded_paths) |path| {
+            const snapshot = snapshotFile(path) catch missingSnapshot();
+            const owned_path = try alloc.dupe(u8, path);
+            watcher.files.append(.{
+                .path = owned_path,
                 .sha1 = snapshot.sha1,
                 .sha256 = snapshot.sha256,
                 .size_bytes = snapshot.size_bytes,
                 .exists = snapshot.exists,
-            });
+                .hash_complete = snapshot.hash_complete,
+            }) catch |err| {
+                alloc.free(owned_path);
+                return err;
+            };
         }
 
         return watcher;
@@ -55,17 +59,16 @@ pub const Watcher = struct {
         }
 
         for (self.files.items) |*file| {
-            const next = snapshotFile(file.path) catch Snapshot{
-                .sha1 = std.mem.zeroes(Sha1Digest),
-                .sha256 = std.mem.zeroes(Sha256Digest),
-                .size_bytes = 0,
-                .exists = false,
+            const next = snapshotFile(file.path) catch |err| switch (err) {
+                error.FileNotFound => missingSnapshot(),
+                else => continue,
             };
 
             const changed = file.exists != next.exists or
                 !std.mem.eql(u8, &file.sha1, &next.sha1) or
                 !std.mem.eql(u8, &file.sha256, &next.sha256) or
-                file.size_bytes != next.size_bytes;
+                file.size_bytes != next.size_bytes or
+                file.hash_complete != next.hash_complete;
             if (!changed) continue;
 
             const payload = try formatChange(
@@ -77,6 +80,7 @@ pub const Watcher = struct {
                 next.sha256,
                 next.size_bytes,
                 next.exists,
+                next.hash_complete,
             );
             try payloads.append(payload);
 
@@ -84,6 +88,7 @@ pub const Watcher = struct {
             file.sha256 = next.sha256;
             file.size_bytes = next.size_bytes;
             file.exists = next.exists;
+            file.hash_complete = next.hash_complete;
         }
 
         return payloads.toOwnedSlice();
@@ -95,7 +100,18 @@ const Snapshot = struct {
     sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
+    hash_complete: bool,
 };
+
+fn missingSnapshot() Snapshot {
+    return .{
+        .sha1 = std.mem.zeroes(Sha1Digest),
+        .sha256 = std.mem.zeroes(Sha256Digest),
+        .size_bytes = 0,
+        .exists = false,
+        .hash_complete = false,
+    };
+}
 
 fn snapshotFile(path: []const u8) !Snapshot {
     const io = iox.current();
@@ -103,12 +119,23 @@ fn snapshotFile(path: []const u8) !Snapshot {
     defer file.close(io);
 
     const stat = try file.stat(io);
+    if (stat.kind != .file) return error.NotRegularFile;
+    if (stat.size > max_hashed_file_bytes) {
+        return .{
+            .sha1 = std.mem.zeroes(Sha1Digest),
+            .sha256 = std.mem.zeroes(Sha256Digest),
+            .size_bytes = stat.size,
+            .exists = true,
+            .hash_complete = false,
+        };
+    }
     var sha1 = std.crypto.hash.Sha1.init(.{});
     var sha256 = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [8192]u8 = undefined;
     var offset: u64 = 0;
-    while (true) {
-        const n = try file.readPositionalAll(io, &buf, offset);
+    while (offset < stat.size) {
+        const remaining: usize = @intCast(@min(stat.size - offset, buf.len));
+        const n = try file.readPositionalAll(io, buf[0..remaining], offset);
         if (n == 0) break;
         sha1.update(buf[0..n]);
         sha256.update(buf[0..n]);
@@ -124,6 +151,7 @@ fn snapshotFile(path: []const u8) !Snapshot {
         .sha256 = sha256_digest,
         .size_bytes = stat.size,
         .exists = true,
+        .hash_complete = true,
     };
 }
 
@@ -136,6 +164,7 @@ fn formatChange(
     new_sha256: Sha256Digest,
     size_bytes: u64,
     exists: bool,
+    hash_complete: bool,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -148,7 +177,7 @@ fn formatChange(
     try w.writeAll("{\"path\":");
     try std.json.Stringify.value(path, .{}, w);
     try w.print(
-        ",\"old_sha1\":\"{s}\",\"new_sha1\":\"{s}\",\"old_sha256\":\"{s}\",\"new_sha256\":\"{s}\",\"size_bytes\":{d},\"exists\":{any}}}",
+        ",\"old_sha1\":\"{s}\",\"new_sha1\":\"{s}\",\"old_sha256\":\"{s}\",\"new_sha256\":\"{s}\",\"size_bytes\":{d},\"exists\":{any},\"hash_complete\":{any}}}",
         .{
             old_sha1_hex,
             new_sha1_hex,
@@ -156,6 +185,7 @@ fn formatChange(
             new_sha256_hex,
             size_bytes,
             exists,
+            hash_complete,
         },
     );
 

@@ -90,6 +90,22 @@ public class TawnySocSinkTests
         errors.Should().Contain(e => e.Contains("TimeoutSeconds", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void OptionsValidate_RequiresHttpsOutsideLoopbackByDefault()
+    {
+        var options = new TawnySocSinkOptions
+        {
+            Enabled = true,
+            AlertsEnabled = true,
+            EndpointUrl = "http://soc.example.com/api/ingest/tawny",
+        };
+
+        options.Validate().Should().ContainSingle(e => e.Contains("must use HTTPS", StringComparison.Ordinal));
+
+        options.AllowInsecureHttp = true;
+        options.Validate().Should().BeEmpty();
+    }
+
     private static Agent CreateAgent() => new()
     {
         Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),

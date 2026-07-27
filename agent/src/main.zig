@@ -39,12 +39,23 @@ pub fn main(init: std.process.Init) !void {
         try config_mod.save(&cfg);
     }
 
-    var http = try transport.Client.init(alloc, cfg.backend_url, cfg.agent_jwt.?);
+    var http = try transport.Client.init(
+        alloc,
+        cfg.backend_url,
+        cfg.agent_jwt.?,
+        cfg.http_timeout_seconds,
+        cfg.max_retry_backoff_seconds,
+    );
     defer http.deinit();
 
-    var buf = buffer.Buffer.init(alloc, cfg.max_in_memory_events);
+    var buf = try buffer.Buffer.init(
+        alloc,
+        cfg.max_in_memory_events,
+        cfg.spill_path,
+        cfg.max_spool_bytes,
+    );
     defer buf.deinit();
-    try buf.replay(cfg.spill_path);
+    try buf.replay();
 
     var fim = try fim_collector.Watcher.init(alloc, cfg.fim_paths);
     defer fim.deinit();
@@ -71,16 +82,12 @@ pub fn main(init: std.process.Init) !void {
     var fs_events_timer = try iox.Timer.start();
     var dns_timer = try iox.Timer.start();
     var supply_chain_timer = try iox.Timer.start();
+    var flush_retry_timer = try iox.Timer.start();
     const start_time = iox.timestamp();
 
     if (system_collector.collect(alloc)) |payload| {
         defer alloc.free(payload);
-        try buf.push(.{
-            .event_type = "system_info",
-            .occurred_at = iox.timestamp(),
-            .payload = payload,
-        });
-        try spillIfNeeded(&buf, cfg.spill_path);
+        queueEvent(&buf, "system_info", payload);
     } else |err| {
         std.debug.print("system collector failed: {s}\n", .{@errorName(err)});
     }
@@ -88,109 +95,85 @@ pub fn main(init: std.process.Init) !void {
     while (true) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
-            var heartbeat = http.heartbeat(.{
+            if (http.heartbeat(.{
                 .agent_version = AGENT_VERSION,
                 .uptime_seconds = @intCast(iox.timestamp() - start_time),
-                .buffer_depth = buf.len(),
-            }) catch |err| {
+                .buffer_depth = buf.totalLen(),
+            })) |heartbeat_result| {
+                var heartbeat = heartbeat_result;
+                defer heartbeat.deinit(alloc);
+                if (heartbeat.rotated_jwt) |rotated| {
+                    persistRotatedJwt(alloc, &cfg, &http, rotated) catch |err| {
+                        std.debug.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
+                    };
+                }
+                for (heartbeat.actions) |action| {
+                    response_actions.execute(alloc, &http, action) catch |err| {
+                        std.debug.print("response action {s} failed: {s}\n", .{ action.id, @errorName(err) });
+                    };
+                }
+            } else |err| {
                 std.debug.print("heartbeat failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer heartbeat.deinit(alloc);
-            if (heartbeat.rotated_jwt) |rotated| {
-                persistRotatedJwt(alloc, &cfg, &http, rotated) catch |err| {
-                    std.debug.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
-                };
-            }
-            for (heartbeat.actions) |action| {
-                response_actions.execute(alloc, &http, action) catch |err| {
-                    std.debug.print("response action {s} failed: {s}\n", .{ action.id, @errorName(err) });
-                };
             }
         }
 
         if (process_timer.read() / std.time.ns_per_s >= cfg.process_interval_seconds) {
             process_timer.reset();
-            const snap = process_collector.collect(alloc) catch |err| {
+            if (process_collector.collect(alloc)) |snap| {
+                defer alloc.free(snap);
+                queueEvent(&buf, "process_snapshot", snap);
+            } else |err| {
                 std.debug.print("process collector failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer alloc.free(snap);
-            try buf.push(.{
-                .event_type = "process_snapshot",
-                .occurred_at = iox.timestamp(),
-                .payload = snap,
-            });
-            try spillIfNeeded(&buf, cfg.spill_path);
+            }
         }
 
         if (network_timer.read() / std.time.ns_per_s >= cfg.network_interval_seconds) {
             network_timer.reset();
-            const snap = network_collector.collect(alloc) catch |err| {
+            if (network_collector.collect(alloc)) |snap| {
+                defer alloc.free(snap);
+                queueEvent(&buf, "network_snapshot", snap);
+            } else |err| {
                 std.debug.print("network collector failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer alloc.free(snap);
-            try buf.push(.{
-                .event_type = "network_snapshot",
-                .occurred_at = iox.timestamp(),
-                .payload = snap,
-            });
-            try spillIfNeeded(&buf, cfg.spill_path);
+            }
         }
 
         if (users_timer.read() / std.time.ns_per_s >= cfg.users_interval_seconds) {
             users_timer.reset();
-            const snap = users_collector.collect(alloc) catch |err| {
+            if (users_collector.collect(alloc)) |snap| {
+                defer alloc.free(snap);
+                queueEvent(&buf, "user_session", snap);
+            } else |err| {
                 std.debug.print("users collector failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer alloc.free(snap);
-            try buf.push(.{
-                .event_type = "user_session",
-                .occurred_at = iox.timestamp(),
-                .payload = snap,
-            });
-            try spillIfNeeded(&buf, cfg.spill_path);
+            }
         }
 
         if (system_timer.read() / std.time.ns_per_s >= cfg.system_interval_seconds) {
             system_timer.reset();
-            const snap = system_collector.collect(alloc) catch |err| {
+            if (system_collector.collect(alloc)) |snap| {
+                defer alloc.free(snap);
+                queueEvent(&buf, "system_info", snap);
+            } else |err| {
                 std.debug.print("system collector failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer alloc.free(snap);
-            try buf.push(.{
-                .event_type = "system_info",
-                .occurred_at = iox.timestamp(),
-                .payload = snap,
-            });
-            try spillIfNeeded(&buf, cfg.spill_path);
+            }
         }
 
         if (fim_timer.read() / std.time.ns_per_s >= cfg.fim_interval_seconds) {
             fim_timer.reset();
-            const changes = fim.collectChanges() catch |err| {
+            if (fim.collectChanges()) |changes| {
+                defer alloc.free(changes);
+                for (changes) |payload| {
+                    defer alloc.free(payload);
+                    queueEvent(&buf, "file_integrity", payload);
+                }
+            } else |err| {
                 std.debug.print("fim collector failed: {s}\n", .{@errorName(err)});
-                continue;
-            };
-            defer alloc.free(changes);
-            for (changes) |payload| {
-                defer alloc.free(payload);
-                try buf.push(.{
-                    .event_type = "file_integrity",
-                    .occurred_at = iox.timestamp(),
-                    .payload = payload,
-                });
-                try spillIfNeeded(&buf, cfg.spill_path);
             }
         }
 
         if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
             process_events_timer.reset();
             if (process_tracker.collectLaunches()) |launches| {
-                try emitBatch(&buf, cfg.spill_path, "process_launch", launches, alloc);
+                emitBatch(&buf, "process_launch", launches, alloc);
             } else |err| {
                 std.debug.print("process_events collector failed: {s}\n", .{@errorName(err)});
             }
@@ -199,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
         if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
             fs_events_timer.reset();
             if (fs_watcher.collectEvents()) |events| {
-                try emitBatch(&buf, cfg.spill_path, "file_event", events, alloc);
+                emitBatch(&buf, "file_event", events, alloc);
             } else |err| {
                 std.debug.print("fs_events collector failed: {s}\n", .{@errorName(err)});
             }
@@ -208,7 +191,7 @@ pub fn main(init: std.process.Init) !void {
         if (dns_timer.read() / std.time.ns_per_s >= cfg.dns_interval_seconds) {
             dns_timer.reset();
             if (dns.collectQueries()) |queries| {
-                try emitBatch(&buf, cfg.spill_path, "dns_query", queries, alloc);
+                emitBatch(&buf, "dns_query", queries, alloc);
             } else |err| {
                 std.debug.print("dns collector failed: {s}\n", .{@errorName(err)});
             }
@@ -220,46 +203,40 @@ pub fn main(init: std.process.Init) !void {
             supply_chain_timer.reset();
 
             if (inventory.collectInventory()) |payloads| {
-                try emitBatch(&buf, cfg.spill_path, "package_inventory", payloads, alloc);
+                emitBatch(&buf, "package_inventory", payloads, alloc);
             } else |err| {
                 std.debug.print("inventory collector failed: {s}\n", .{@errorName(err)});
             }
 
             if (extensions.collectExtensions(.editor)) |payloads| {
-                try emitBatch(&buf, cfg.spill_path, "editor_extension", payloads, alloc);
+                emitBatch(&buf, "editor_extension", payloads, alloc);
             } else |err| {
                 std.debug.print("editor extensions failed: {s}\n", .{@errorName(err)});
             }
 
             if (extensions.collectExtensions(.browser)) |payloads| {
-                try emitBatch(&buf, cfg.spill_path, "browser_extension", payloads, alloc);
+                emitBatch(&buf, "browser_extension", payloads, alloc);
             } else |err| {
                 std.debug.print("browser extensions failed: {s}\n", .{@errorName(err)});
             }
 
             if (mcp.collectConfigs()) |payloads| {
-                try emitBatch(&buf, cfg.spill_path, "mcp_config", payloads, alloc);
+                emitBatch(&buf, "mcp_config", payloads, alloc);
             } else |err| {
                 std.debug.print("mcp config failed: {s}\n", .{@errorName(err)});
             }
         }
 
-        if (buf.len() == 0) {
-            buf.replay(cfg.spill_path) catch |err| {
-                std.debug.print("buffer replay failed: {s}\n", .{@errorName(err)});
-            };
-        }
-
-        if (buf.len() > 0) {
+        const retry_ready = http.backoff_seconds == 0 or
+            flush_retry_timer.read() / std.time.ns_per_s >= http.backoff_seconds;
+        if (buf.len() > 0 and retry_ready) {
             http.flushEvents(&buf) catch |err| {
-                std.debug.print("flush failed (will retry): {s}\n", .{@errorName(err)});
-                if (buf.shouldSpill()) {
-                    buf.spill(cfg.spill_path) catch |spill_err| {
-                        std.debug.print("buffer spill failed: {s}\n", .{@errorName(spill_err)});
-                    };
-                }
-                iox.sleep(http.backoff_seconds * std.time.ns_per_s);
+                std.debug.print(
+                    "flush failed (retry in {d}s): {s}\n",
+                    .{ http.backoff_seconds, @errorName(err) },
+                );
             };
+            flush_retry_timer.reset();
         }
 
         iox.sleep(1 * std.time.ns_per_s);
@@ -285,27 +262,34 @@ test "main module loads" {
     _ = response_actions;
 }
 
-fn spillIfNeeded(buf: *buffer.Buffer, path: []const u8) !void {
-    if (buf.shouldSpill()) try buf.spill(path);
-}
-
 fn emitBatch(
     buf: *buffer.Buffer,
-    spill_path: []const u8,
     event_type: []const u8,
     payloads: [][]u8,
     alloc: std.mem.Allocator,
-) !void {
+) void {
     defer alloc.free(payloads);
     for (payloads) |payload| {
         defer alloc.free(payload);
-        try buf.push(.{
+        buf.push(.{
             .event_type = event_type,
             .occurred_at = iox.timestamp(),
             .payload = payload,
-        });
-        try spillIfNeeded(buf, spill_path);
+        }) catch |err| {
+            std.debug.print("queue event batch {s} stopped: {s}\n", .{ event_type, @errorName(err) });
+            break;
+        };
     }
+}
+
+fn queueEvent(buf: *buffer.Buffer, event_type: []const u8, payload: []const u8) void {
+    buf.push(.{
+        .event_type = event_type,
+        .occurred_at = iox.timestamp(),
+        .payload = payload,
+    }) catch |err| {
+        std.debug.print("queue event {s} failed: {s}\n", .{ event_type, @errorName(err) });
+    };
 }
 
 fn persistRotatedJwt(
@@ -315,8 +299,56 @@ fn persistRotatedJwt(
     rotated: []const u8,
 ) !void {
     const owned = try alloc.dupe(u8, rotated);
-    if (cfg.agent_jwt) |old| alloc.free(old);
+    const previous = cfg.agent_jwt;
     cfg.agent_jwt = owned;
+    config_mod.save(cfg) catch |err| {
+        cfg.agent_jwt = previous;
+        alloc.free(owned);
+        return err;
+    };
     http.jwt = owned;
-    try config_mod.save(cfg);
+    if (previous) |old| alloc.free(old);
+}
+
+test "JWT rotation keeps current token when state persistence fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const blocked_parent = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "not-a-directory" },
+    );
+    defer std.testing.allocator.free(blocked_parent);
+    const io = iox.current();
+    {
+        var file = try std.Io.Dir.cwd().createFile(io, blocked_parent, .{ .truncate = true });
+        file.close(io);
+    }
+    const state_path = try std.fs.path.join(std.testing.allocator, &.{ blocked_parent, "state.toml" });
+    defer std.testing.allocator.free(state_path);
+
+    var cfg = config_mod.Config{
+        .allocator = std.testing.allocator,
+        .backend_url = try std.testing.allocator.dupe(u8, "https://tawny.example"),
+        .spill_path = try std.testing.allocator.dupe(u8, "events.spool"),
+        .config_path = try std.testing.allocator.dupe(u8, "config.toml"),
+        .state_path = try std.testing.allocator.dupe(u8, state_path),
+        .agent_id = try std.testing.allocator.dupe(u8, "agent-id"),
+        .agent_jwt = try std.testing.allocator.dupe(u8, "old-jwt"),
+    };
+    defer cfg.deinit();
+    var http = try transport.Client.init(
+        std.testing.allocator,
+        cfg.backend_url,
+        cfg.agent_jwt.?,
+        30,
+        300,
+    );
+    defer http.deinit();
+
+    try std.testing.expectError(
+        error.NotDir,
+        persistRotatedJwt(std.testing.allocator, &cfg, &http, "new-jwt"),
+    );
+    try std.testing.expectEqualStrings("old-jwt", cfg.agent_jwt.?);
+    try std.testing.expectEqualStrings("old-jwt", http.jwt);
 }

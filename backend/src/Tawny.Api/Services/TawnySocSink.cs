@@ -13,6 +13,7 @@ public sealed class TawnySocSinkOptions
     public bool AlertsEnabled { get; set; } = true;
     public bool TelemetryEnabled { get; set; }
     public string EndpointUrl { get; set; } = "http://localhost:3001/api/ingest/tawny";
+    public bool AllowInsecureHttp { get; set; }
     public string ApiToken { get; set; } = "";
     public int BatchSize { get; set; } = 100;
     public int TimeoutSeconds { get; set; } = 10;
@@ -34,6 +35,18 @@ public sealed class TawnySocSinkOptions
             || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
         {
             errors.Add("Tawny:TawnySoc:EndpointUrl must be a valid HTTP or HTTPS URL.");
+        }
+        else
+        {
+            if (!string.IsNullOrEmpty(endpoint.UserInfo))
+            {
+                errors.Add("Tawny:TawnySoc:EndpointUrl must not contain user information.");
+            }
+            if (endpoint.Scheme == Uri.UriSchemeHttp && !endpoint.IsLoopback && !AllowInsecureHttp)
+            {
+                errors.Add(
+                    "Tawny:TawnySoc:EndpointUrl must use HTTPS outside loopback unless AllowInsecureHttp is true.");
+            }
         }
 
         if (BatchSize is < 1 or > 1000)

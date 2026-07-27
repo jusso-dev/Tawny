@@ -60,6 +60,7 @@ services:
       Tawny__TawnySoc__AlertsEnabled: "${TAWNY_SOC_ALERTS_ENABLED:-true}"
       Tawny__TawnySoc__TelemetryEnabled: "${TAWNY_SOC_TELEMETRY_ENABLED:-false}"
       Tawny__TawnySoc__EndpointUrl: "${TAWNY_SOC_ENDPOINT_URL:-http://localhost:3001/api/ingest/tawny}"
+      Tawny__TawnySoc__AllowInsecureHttp: "${TAWNY_SOC_ALLOW_INSECURE_HTTP:-false}"
       Tawny__TawnySoc__ApiToken: "${TAWNY_SOC_API_TOKEN:-}"
       Tawny__TawnySoc__BatchSize: "${TAWNY_SOC_BATCH_SIZE:-100}"
       Tawny__TawnySoc__TimeoutSeconds: "${TAWNY_SOC_TIMEOUT_SECONDS:-10}"
