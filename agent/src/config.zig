@@ -192,7 +192,8 @@ fn syncParentDirectory(path: []const u8) !void {
     if (builtin.os.tag != .linux) return;
     const io = iox.current();
     const parent_path = std.fs.path.dirname(path) orelse ".";
-    const dir = try std.Io.Dir.cwd().openDir(io, parent_path, .{});
+    // `openDir` otherwise uses Linux O_PATH, which cannot be passed to fsync.
+    const dir = try std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true });
     defer dir.close(io);
     const file = std.Io.File{
         .handle = dir.handle,
