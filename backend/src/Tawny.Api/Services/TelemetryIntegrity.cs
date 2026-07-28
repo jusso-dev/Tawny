@@ -17,6 +17,12 @@ public sealed class TelemetryIntegrityOptions
     public double VolumeSpikeMultiplier { get; set; } = 10;
 
     public int VolumeSpikeMinEvents { get; set; } = 50;
+
+    /// <summary>
+    /// When true, agents that registered a device public key must sign every batch.
+    /// Agents without a registered key remain accepted (legacy enrollments).
+    /// </summary>
+    public bool RequireSignatureWhenDeviceKeyPresent { get; set; } = true;
 }
 
 public static class TelemetryIntegrity

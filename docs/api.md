@@ -8,7 +8,7 @@ All request and response bodies are JSON. Timestamps are RFC 3339 in UTC.
 
 Three schemes:
 
-- **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. RS256, short-lived (default 60m). Claims include `agent_id`, tenant, `jti`, and credential version `cv`. Revoked agents and stale `cv` values are rejected.
+- **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. RS256, short-lived (default 60m). Claims include `agent_id`, tenant, `jti`, and credential version `cv`. Revoked agents and stale `cv` values are rejected. Telemetry batches may include Ed25519 `signature` when a device public key was registered at enroll.
 - **Web user.** Internal hop from Next.js. Headers: `X-User-Id`, `X-User-Role`, `X-Tenant-Id`, `X-Timestamp`, `X-Nonce`, `X-Signature`. Canonical string (HMAC-SHA256 hex):
 
   ```
