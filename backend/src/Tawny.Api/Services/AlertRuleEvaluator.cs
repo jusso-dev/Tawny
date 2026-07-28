@@ -26,13 +26,17 @@ public class AlertRuleEvaluator(
 
         var eventTypes = events.Select(e => e.EventType).Distinct().ToArray();
         var rules = await db.AlertRules
-            .Where(r => r.IsEnabled && (r.EventType == null || eventTypes.Contains(r.EventType.Value)))
+            .Where(r => r.TenantId == agent.TenantId
+                && r.IsEnabled
+                && (r.EventType == null || eventTypes.Contains(r.EventType.Value)))
             .ToListAsync(ct);
 
         // Sequence rules need to see every event regardless of EventType filter,
         // because each step can target a different type. Load them separately.
         var sequenceRules = await db.AlertRules
-            .Where(r => r.IsEnabled && r.Format == AlertRuleFormat.Sequence)
+            .Where(r => r.TenantId == agent.TenantId
+                && r.IsEnabled
+                && r.Format == AlertRuleFormat.Sequence)
             .ToListAsync(ct);
 
         if (rules.Count == 0 && sequenceRules.Count == 0)
@@ -59,6 +63,7 @@ public class AlertRuleEvaluator(
 
                 candidates.Add(new Alert
                 {
+                    TenantId = agent.TenantId,
                     AlertRuleId = rule.Id,
                     AgentId = agent.Id,
                     TelemetryEventId = telemetryEvent.Id,
@@ -80,6 +85,7 @@ public class AlertRuleEvaluator(
             {
                 candidates.Add(new Alert
                 {
+                    TenantId = agent.TenantId,
                     AlertRuleId = rule.Id,
                     AgentId = agent.Id,
                     TelemetryEventId = match.TriggeringEventId,

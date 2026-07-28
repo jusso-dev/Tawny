@@ -76,7 +76,9 @@ public class ThreatIntelFeedsJob(
     {
         var externalIdPrefix = $"ti-feed:{feed.Id}:";
         var existingIds = await db.AlertRules
-            .Where(r => r.ExternalId != null && r.ExternalId.StartsWith(externalIdPrefix))
+            .Where(r => r.TenantId == feed.TenantId
+                && r.ExternalId != null
+                && r.ExternalId.StartsWith(externalIdPrefix))
             .Select(r => r.ExternalId!)
             .ToListAsync(ct);
         var existing = new HashSet<string>(existingIds, StringComparer.OrdinalIgnoreCase);
@@ -101,6 +103,7 @@ public class ThreatIntelFeedsJob(
             newRules.Add(new AlertRule
             {
                 Id = Guid.NewGuid(),
+                TenantId = feed.TenantId,
                 Name = $"TI feed {feed.Name}: {ind.Kind} {ind.Value}",
                 Format = AlertRuleFormat.Ioc,
                 ExternalId = externalId,
@@ -145,6 +148,7 @@ public class ThreatIntelFeedsJob(
                 newRules.Add(new AlertRule
                 {
                     Id = Guid.NewGuid(),
+                    TenantId = feed.TenantId,
                     Name = $"OSV: {exposure.Ecosystem}/{exposure.Name} {pattern}",
                     Format = AlertRuleFormat.PackageExposure,
                     ExternalId = externalId,

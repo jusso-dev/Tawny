@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
@@ -23,9 +24,10 @@ public class SequenceRulesController(
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<SequenceRuleResponse>>> List(CancellationToken ct)
     {
+        var tenantId = User.GetTenantId();
         var rows = await db.AlertRules
             .AsNoTracking()
-            .Where(r => r.Format == AlertRuleFormat.Sequence)
+            .Where(r => r.TenantId == tenantId && r.Format == AlertRuleFormat.Sequence)
             .OrderBy(r => r.Name)
             .ToListAsync(ct);
         return Ok(rows.Select(ToResponse).ToList());
@@ -65,6 +67,7 @@ public class SequenceRulesController(
         var rule = new AlertRule
         {
             Id = Guid.NewGuid(),
+            TenantId = User.GetTenantId(),
             Name = req.Name.Trim(),
             Format = AlertRuleFormat.Sequence,
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
@@ -92,14 +95,15 @@ public class SequenceRulesController(
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id, ct))
+        var tenantId = User.GetTenantId();
+        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id && a.TenantId == tenantId, ct))
         {
             return Problem(statusCode: 409, title: "Sequence rule has alerts and cannot be deleted. Disable it instead.");
         }
-        var deleted = await db.AlertRules
-            .Where(r => r.Id == id && r.Format == AlertRuleFormat.Sequence)
-            .ExecuteDeleteAsync(ct);
-        if (deleted == 0) return NotFound();
+        var rule = await db.AlertRules
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId && r.Format == AlertRuleFormat.Sequence, ct);
+        if (rule is null) return NotFound();
+        db.AlertRules.Remove(rule);
         audit.Add(User, "sequence_rule.delete", id.ToString());
         await db.SaveChangesAsync(ct);
         sequences.ResetAll();

@@ -168,8 +168,15 @@ function New-AgentEnrollmentToken {
     $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
     $userId = "00000000-0000-0000-0000-000000000000"
     $role = "Admin"
+    $tenantId = "00000000-0000-0000-0000-000000000001"
     $path = "/api/enrollment-tokens"
-    $canonical = "POST`n$path`n$timestamp`n$userId`n$role"
+    $contentType = "application/json"
+    $body = @{ lifetime_hours = 24 } | ConvertTo-Json -Compress
+    $nonceBytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($nonceBytes)
+    $nonce = -join ($nonceBytes | ForEach-Object { $_.ToString("x2") })
+    $bodyHash = -join ([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString("x2") })
+    $canonical = "v2`nPOST`n$path`n`n$bodyHash`n$contentType`n$userId`n$role`n$tenantId`n$timestamp`n$nonce"
     $secret = Get-EnvFileValue "TAWNY_WEB_HMAC_SECRET"
 
     $hmac = [System.Security.Cryptography.HMACSHA256]::new([System.Text.Encoding]::UTF8.GetBytes($secret))
@@ -183,10 +190,11 @@ function New-AgentEnrollmentToken {
     $headers = @{
         "X-User-Id" = $userId
         "X-User-Role" = $role
+        "X-Tenant-Id" = $tenantId
         "X-Timestamp" = $timestamp
+        "X-Nonce" = $nonce
         "X-Signature" = $signature
     }
-    $body = @{ lifetime_hours = 24 } | ConvertTo-Json -Compress
     $response = Invoke-RestMethod -Uri "http://localhost:$ApiPort$path" -Method Post -Headers $headers -Body $body -ContentType "application/json"
     return $response.token
 }

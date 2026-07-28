@@ -27,6 +27,8 @@ pub const Config = struct {
     spill_path: []u8,
     config_path: []u8,
     state_path: []u8,
+    /// Dangerous: permit non-loopback HTTP backends. Default false.
+    allow_insecure_http: bool = false,
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.backend_url);
@@ -129,6 +131,8 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             cfg.http_timeout_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_retry_backoff_seconds")) {
             cfg.max_retry_backoff_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "allow_insecure_http")) {
+            cfg.allow_insecure_http = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1");
         } else if (std.mem.eql(u8, key, "spill_path")) {
             alloc.free(cfg.spill_path);
             cfg.spill_path = try alloc.dupe(u8, val);
@@ -264,6 +268,8 @@ fn validate(cfg: *const Config) !void {
         return error.InvalidRetryBackoff;
     }
 
+    try validateBackendUrl(cfg.backend_url, cfg.allow_insecure_http);
+
     const intervals = [_]u32{
         cfg.heartbeat_interval_seconds,
         cfg.process_interval_seconds,
@@ -279,6 +285,33 @@ fn validate(cfg: *const Config) !void {
     for (intervals) |interval| {
         if (interval == 0) return error.InvalidCollectionInterval;
     }
+}
+
+/// Reject remote plaintext backends unless allow_insecure_http is set.
+/// Loopback HTTP remains allowed for local development without the override.
+pub fn validateBackendUrl(url: []const u8, allow_insecure_http: bool) !void {
+    const is_https = std.mem.startsWith(u8, url, "https://");
+    const is_http = std.mem.startsWith(u8, url, "http://");
+    if (!is_https and !is_http) return error.InvalidBackendUrl;
+
+    if (is_https) return;
+
+    // http://
+    if (isLoopbackHttpUrl(url)) return;
+    if (allow_insecure_http) return;
+    return error.InsecureBackendUrl;
+}
+
+fn isLoopbackHttpUrl(url: []const u8) bool {
+    // url starts with "http://"
+    if (!std.mem.startsWith(u8, url, "http://")) return false;
+    const rest = url["http://".len..];
+    const host_end = std.mem.indexOfAny(u8, rest, ":/") orelse rest.len;
+    const host = rest[0..host_end];
+    return std.mem.eql(u8, host, "localhost")
+        or std.mem.eql(u8, host, "127.0.0.1")
+        or std.mem.eql(u8, host, "[::1]")
+        or std.mem.eql(u8, host, "::1");
 }
 
 fn appendFimPaths(cfg: *Config, raw: []const u8) !void {
@@ -321,6 +354,14 @@ test "default config path" {
     const p = try defaultConfigPath(alloc);
     defer alloc.free(p);
     try std.testing.expect(p.len > 0);
+}
+
+test "backend url rejects remote http without override" {
+    try validateBackendUrl("https://tawny.example", false);
+    try validateBackendUrl("http://localhost:5080", false);
+    try validateBackendUrl("http://127.0.0.1:5080", false);
+    try std.testing.expectError(error.InsecureBackendUrl, validateBackendUrl("http://192.168.1.10:5080", false));
+    try validateBackendUrl("http://192.168.1.10:5080", true);
 }
 
 test "production limits reject hot loops and unbounded retry settings" {

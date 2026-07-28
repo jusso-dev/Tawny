@@ -18,6 +18,7 @@ pub const HeartbeatResult = struct {
             alloc.free(action.id);
             alloc.free(action.action_type);
             alloc.free(action.payload);
+            alloc.free(action.execution_token);
         }
         if (self.actions.len > 0) alloc.free(self.actions);
     }
@@ -27,6 +28,7 @@ pub const ResponseAction = struct {
     id: []u8,
     action_type: []u8,
     payload: []u8,
+    execution_token: []u8,
 };
 
 pub const Client = struct {
@@ -74,6 +76,7 @@ pub const Client = struct {
             id: []const u8,
             action_type: []const u8,
             payload: std.json.Value,
+            execution_token: []const u8,
         };
         const Parsed = struct {
             rotated_jwt: ?[]const u8 = null,
@@ -95,6 +98,7 @@ pub const Client = struct {
                     self.allocator.free(action.id);
                     self.allocator.free(action.action_type);
                     self.allocator.free(action.payload);
+                    self.allocator.free(action.execution_token);
                 }
                 actions.deinit();
             }
@@ -107,6 +111,7 @@ pub const Client = struct {
                     .id = try self.allocator.dupe(u8, action.id),
                     .action_type = try self.allocator.dupe(u8, action.action_type),
                     .payload = try payload.toOwnedSlice(),
+                    .execution_token = try self.allocator.dupe(u8, action.execution_token),
                 });
             }
             result.actions = try actions.toOwnedSlice();
@@ -117,6 +122,7 @@ pub const Client = struct {
     pub fn reportActionResult(
         self: *Client,
         action_id: []const u8,
+        execution_token: []const u8,
         status: []const u8,
         message: []const u8,
     ) !void {
@@ -125,7 +131,14 @@ pub const Client = struct {
 
         var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
-        try body.print("{{\"status\":\"{s}\",\"message\":", .{status});
+        try body.print("{{\"status\":\"{s}\",\"execution_token\":", .{status});
+        {
+            var token_writer: std.Io.Writer.Allocating = .init(self.allocator);
+            defer token_writer.deinit();
+            try std.json.Stringify.value(execution_token, .{}, &token_writer.writer);
+            try body.appendSlice(token_writer.written());
+        }
+        try body.appendSlice(",\"message\":");
         var body_writer: std.Io.Writer.Allocating = .init(self.allocator);
         defer body_writer.deinit();
         try std.json.Stringify.value(message, .{}, &body_writer.writer);
@@ -141,10 +154,21 @@ pub const Client = struct {
 
         var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
-        try body.appendSlice("{\"events\":[");
+
+        // One batch id per flush attempt for server-side integrity correlation.
+        var batch_id: [16]u8 = undefined;
+        try std.Io.randomSecure(iox.current(), &batch_id);
+        batch_id[6] = (batch_id[6] & 0x0f) | 0x40;
+        batch_id[8] = (batch_id[8] & 0x3f) | 0x80;
+        var batch_uuid: [36]u8 = undefined;
+        formatUuid(batch_id, &batch_uuid);
+        try body.appendSlice("{\"batch_id\":\"");
+        try body.appendSlice(&batch_uuid);
+        try body.appendSlice("\",\"events\":[");
+
         var sent_count: usize = 0;
         for (buf.items()[0..@min(buf.len(), 500)]) |ev| {
-            const estimated_len = 96 + ev.event_type.len + ev.payload.len;
+            const estimated_len = 128 + ev.event_type.len + ev.payload.len;
             if (sent_count > 0 and body.items.len + estimated_len > 900 * 1024) break;
             if (sent_count > 0) try body.append(',');
             var uuid: [36]u8 = undefined;
@@ -157,8 +181,8 @@ pub const Client = struct {
             try std.json.Stringify.value(ev.event_type, .{}, &type_json.writer);
             try body.appendSlice(type_json.written());
             try body.print(
-                \\,"occurred_at":{d},"payload":{s}}}
-            , .{ ev.occurred_at, ev.payload });
+                \\,"occurred_at":{d},"sequence":{d},"payload":{s}}}
+            , .{ ev.occurred_at, ev.sequence, ev.payload });
             sent_count += 1;
         }
         try body.appendSlice("]}");

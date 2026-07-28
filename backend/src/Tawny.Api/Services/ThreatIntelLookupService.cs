@@ -34,7 +34,8 @@ public sealed class ThreatIntelLookupService(TawnyDbContext db)
 
         var rules = await db.AlertRules
             .AsNoTracking()
-            .Where(r => r.IsEnabled
+            .Where(r => r.TenantId == tenantId
+                && r.IsEnabled
                 && r.Format == AlertRuleFormat.Ioc
                 && r.MatchValue != null
                 && normalised.Contains(r.MatchValue.ToLower()))

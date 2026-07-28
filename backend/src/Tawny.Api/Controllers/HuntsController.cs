@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
@@ -22,6 +23,7 @@ public class HuntsController(
     HuntExecutor executor) : ControllerBase
 {
     [HttpPost("run")]
+    [EnableRateLimiting("hunts")]
     public async Task<ActionResult<RunHuntResponse>> Run(
         [FromBody] RunHuntRequest req,
         CancellationToken ct)
@@ -174,6 +176,7 @@ public class HuntsController(
     }
 
     [HttpPost("{id:guid}/run")]
+    [EnableRateLimiting("hunts")]
     public async Task<ActionResult<RunHuntResponse>> RunSaved(Guid id, CancellationToken ct)
     {
         var tenantId = User.GetTenantId();

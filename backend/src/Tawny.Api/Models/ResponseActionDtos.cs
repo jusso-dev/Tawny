@@ -5,15 +5,20 @@ namespace Tawny.Api.Models;
 
 public record CreateResponseActionRequest(
     ResponseActionType ActionType,
-    JsonElement Payload);
+    JsonElement Payload,
+    string? IdempotencyKey = null);
 
 public record ResponseActionCommand(
     Guid Id,
     ResponseActionType ActionType,
-    JsonElement Payload);
+    JsonElement Payload,
+    string ExecutionToken,
+    DateTimeOffset ExpiresAt,
+    string PayloadHash);
 
 public record ResponseActionResultRequest(
     ResponseActionStatus Status,
+    string ExecutionToken,
     string? Message,
     JsonElement? Result);
 
@@ -26,5 +31,6 @@ public record ResponseActionResponse(
     DateTimeOffset RequestedAt,
     DateTimeOffset? DispatchedAt,
     DateTimeOffset? CompletedAt,
+    DateTimeOffset? ExpiresAt,
     JsonElement Payload,
     JsonElement? Result);

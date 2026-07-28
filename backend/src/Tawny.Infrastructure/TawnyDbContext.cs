@@ -58,6 +58,9 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(a => a.AgentVersion).HasMaxLength(32).IsRequired();
             e.Property(a => a.PublicIp).HasMaxLength(64);
             e.Property(a => a.TagsJson).HasColumnName("Tags").HasDefaultValue("[]");
+            e.Property(a => a.CredentialVersion).HasDefaultValue(1);
+            e.Property(a => a.LastTelemetrySequence).HasDefaultValue(0L);
+            e.Property(a => a.DevicePublicKey).HasMaxLength(128);
             e.HasOne(a => a.Tenant)
                 .WithMany(t => t.Agents)
                 .HasForeignKey(a => a.TenantId)
@@ -98,6 +101,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasKey(t => t.Id);
             e.Property(t => t.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
             e.Property(t => t.Payload).HasColumnType("nvarchar(max)").IsRequired();
+            e.Property(t => t.PayloadDigest).HasMaxLength(64);
             e.HasOne(t => t.Tenant)
                 .WithMany(t => t.TelemetryEvents)
                 .HasForeignKey(t => t.TenantId)
@@ -112,11 +116,14 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasIndex(t => new { t.TenantId, t.AgentId, t.ClientEventId })
                 .IsUnique()
                 .HasFilter("[ClientEventId] IS NOT NULL");
+            e.HasIndex(t => new { t.TenantId, t.AgentId, t.BatchId });
+            e.HasIndex(t => new { t.TenantId, t.AgentId, t.SequenceNumber });
         });
 
         b.Entity<AlertRule>(e =>
         {
             e.HasKey(r => r.Id);
+            e.Property(r => r.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
             e.Property(r => r.Name).HasMaxLength(160).IsRequired();
             e.Property(r => r.ExternalId).HasMaxLength(128);
             e.Property(r => r.Description).HasColumnType("nvarchar(max)");
@@ -125,13 +132,18 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(r => r.SourceDefinition).HasColumnType("nvarchar(max)");
             e.Property(r => r.CompiledExpressionJson).HasColumnName("CompiledExpression").HasColumnType("nvarchar(max)");
             e.Property(r => r.MitreTechniquesJson).HasColumnName("MitreTechniques").HasColumnType("nvarchar(max)");
-            e.HasIndex(r => new { r.IsEnabled, r.EventType });
-            e.HasIndex(r => new { r.Format, r.ExternalId });
+            e.HasOne(r => r.Tenant)
+                .WithMany()
+                .HasForeignKey(r => r.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(r => new { r.TenantId, r.IsEnabled, r.EventType });
+            e.HasIndex(r => new { r.TenantId, r.Format, r.ExternalId });
         });
 
         b.Entity<Alert>(e =>
         {
             e.HasKey(a => a.Id);
+            e.Property(a => a.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
             e.Property(a => a.Title).HasMaxLength(255).IsRequired();
             e.Property(a => a.Description).HasColumnType("nvarchar(max)");
             e.Property(a => a.EnrichmentJson).HasColumnName("Enrichment").HasColumnType("nvarchar(max)");
@@ -140,6 +152,10 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(a => a.KelpieNotificationError).HasMaxLength(1024);
             e.Property(a => a.KelpieCaseId).HasMaxLength(128);
             e.Property(a => a.KelpieCaseNumber).HasMaxLength(64);
+            e.HasOne(a => a.Tenant)
+                .WithMany()
+                .HasForeignKey(a => a.TenantId)
+                .OnDelete(DeleteBehavior.Restrict);
             e.HasOne(a => a.AlertRule)
                 .WithMany(r => r.Alerts)
                 .HasForeignKey(a => a.AlertRuleId)
@@ -152,20 +168,25 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
                 .WithMany()
                 .HasForeignKey(a => a.TelemetryEventId)
                 .OnDelete(DeleteBehavior.Cascade);
-            e.HasIndex(a => new { a.Status, a.CreatedAt });
-            e.HasIndex(a => new { a.AgentId, a.CreatedAt });
+            e.HasIndex(a => new { a.TenantId, a.Status, a.CreatedAt });
+            e.HasIndex(a => new { a.TenantId, a.AgentId, a.CreatedAt });
         });
 
         b.Entity<ResponseAction>(e =>
         {
             e.HasKey(a => a.Id);
+            e.Property(a => a.TenantId).HasDefaultValue(TenantDefaults.DefaultTenantId);
             e.Property(a => a.PayloadJson).HasColumnName("Payload").HasColumnType("nvarchar(max)").IsRequired();
             e.Property(a => a.ResultJson).HasColumnName("Result").HasColumnType("nvarchar(max)");
+            e.Property(a => a.PayloadHash).HasMaxLength(64);
+            e.Property(a => a.ExecutionTokenHash).HasMaxLength(64);
+            e.Property(a => a.IdempotencyKey).HasMaxLength(128);
             e.HasOne(a => a.Agent)
                 .WithMany()
                 .HasForeignKey(a => a.AgentId)
                 .OnDelete(DeleteBehavior.Cascade);
             e.HasIndex(a => new { a.AgentId, a.Status, a.RequestedAt });
+            e.HasIndex(a => new { a.TenantId, a.AgentId, a.IdempotencyKey });
         });
 
         b.Entity<AgentRelease>(e =>

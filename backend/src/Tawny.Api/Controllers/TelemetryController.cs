@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
 using Tawny.Api.Services;
@@ -22,7 +23,8 @@ public class TelemetryController(
     AlertRuleEvaluator alertRules,
     ITelemetrySink telemetrySink,
     IAlertSink alertSink,
-    AgentEventBroker eventBroker) : ControllerBase
+    AgentEventBroker eventBroker,
+    IOptions<TelemetryIntegrityOptions> integrityOptions) : ControllerBase
 {
     private const int MaxRequestBytes = 1024 * 1024;
     private const int DefaultLimit = 50;
@@ -52,10 +54,71 @@ public class TelemetryController(
             return NotFound();
         }
 
+        if (agent.RevokedAt is not null || agent.Status == AgentStatus.Revoked)
+        {
+            return Unauthorized();
+        }
+
         var validation = await validator.ValidateAsync(req, ct);
         if (!validation.IsValid)
         {
             return ValidationProblem(new ValidationProblemDetails(validation.ToDictionary()));
+        }
+
+        var options = integrityOptions.Value;
+        var receivedAt = DateTimeOffset.UtcNow;
+        var batchId = req.BatchId is null || req.BatchId == Guid.Empty
+            ? Guid.NewGuid()
+            : req.BatchId.Value;
+
+        var sequenceAssessment = TelemetryIntegrity.AssessSequence(
+            agent,
+            req.Events.Select(e => e.Sequence).ToList());
+        if (sequenceAssessment.Rollback)
+        {
+            audit.Add((Guid?)null, tenantId, "telemetry.sequence_rollback", agentId.ToString(), new
+            {
+                previous_max = sequenceAssessment.PreviousMax,
+                batch_min = sequenceAssessment.MinSequence,
+                batch_id = batchId,
+            });
+        }
+        else if (sequenceAssessment.Gap)
+        {
+            audit.Add((Guid?)null, tenantId, "telemetry.sequence_gap", agentId.ToString(), new
+            {
+                previous_max = sequenceAssessment.PreviousMax,
+                batch_min = sequenceAssessment.MinSequence,
+                batch_id = batchId,
+            });
+        }
+
+        if (TelemetryIntegrity.IsVolumeSpike(agent, req.Events.Count, options))
+        {
+            audit.Add((Guid?)null, tenantId, "telemetry.volume_spike", agentId.ToString(), new
+            {
+                previous_count = agent.LastIngestEventCount,
+                batch_count = req.Events.Count,
+                batch_id = batchId,
+            });
+        }
+
+        // Hostname / source network change tracking.
+        var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        if (!string.IsNullOrEmpty(remoteIp)
+            && !string.IsNullOrEmpty(agent.PublicIp)
+            && !string.Equals(remoteIp, agent.PublicIp, StringComparison.Ordinal))
+        {
+            audit.Add((Guid?)null, tenantId, "telemetry.source_network_change", agentId.ToString(), new
+            {
+                previous_ip = agent.PublicIp,
+                current_ip = remoteIp,
+            });
+            agent.PublicIp = remoteIp;
+        }
+        else if (string.IsNullOrEmpty(agent.PublicIp) && !string.IsNullOrEmpty(remoteIp))
+        {
+            agent.PublicIp = remoteIp;
         }
 
         var clientEventIds = req.Events
@@ -73,30 +136,84 @@ public class TelemetryController(
                 .Select(e => e.ClientEventId!.Value)
                 .ToHashSetAsync(ct);
 
-        var receivedAt = DateTimeOffset.UtcNow;
-        var events = req.Events
-            .Where(ev => ev.ClientEventId is null || seenClientEventIds.Add(ev.ClientEventId.Value))
-            .Select(ev => new TelemetryEvent
+        var events = new List<TelemetryEvent>();
+        long? maxSkewAbs = null;
+        foreach (var ev in req.Events)
         {
-            ClientEventId = ev.ClientEventId,
-            TenantId = tenantId,
-            AgentId = agentId,
-            EventType = ev.Type,
-            OccurredAt = DateTimeOffset.FromUnixTimeSeconds(ev.OccurredAt),
-            ReceivedAt = receivedAt,
-            Payload = ev.Payload.GetRawText(),
-        }).ToList();
+            if (ev.ClientEventId is not null && !seenClientEventIds.Add(ev.ClientEventId.Value))
+            {
+                continue; // replay of known client_event_id
+            }
+
+            if (!TelemetryIntegrity.TryMapOccurredAt(
+                    ev.OccurredAt, receivedAt, options, out var occurredAt, out var rejectReason))
+            {
+                audit.Add((Guid?)null, tenantId, "telemetry.timestamp_rejected", agentId.ToString(), new
+                {
+                    reason = rejectReason,
+                    occurred_at = ev.OccurredAt,
+                    batch_id = batchId,
+                });
+                return Problem(statusCode: 400, title: rejectReason);
+            }
+
+            var skew = (int)Math.Round((occurredAt - receivedAt).TotalSeconds);
+            maxSkewAbs = maxSkewAbs is null ? Math.Abs(skew) : Math.Max(maxSkewAbs.Value, Math.Abs(skew));
+
+            // Sequence rollback: still store but do not advance watermark; confidence stays agent_reported.
+            if (ev.Sequence is not null
+                && agent.LastTelemetrySequence > 0
+                && ev.Sequence.Value < agent.LastTelemetrySequence)
+            {
+                // already audited at batch level
+            }
+
+            var payload = ev.Payload.GetRawText();
+            events.Add(new TelemetryEvent
+            {
+                ClientEventId = ev.ClientEventId,
+                BatchId = batchId,
+                SequenceNumber = ev.Sequence,
+                TenantId = tenantId,
+                AgentId = agentId,
+                EventType = ev.Type,
+                OccurredAt = occurredAt,
+                ReceivedAt = receivedAt,
+                Confidence = EvidenceConfidence.AgentReported,
+                PayloadDigest = TelemetryIntegrity.PayloadDigest(payload),
+                Payload = payload,
+            });
+        }
 
         if (events.Count == 0)
         {
             return Accepted();
         }
 
+        if (maxSkewAbs is not null)
+        {
+            agent.LastClockSkewSeconds = (int)(events
+                .Select(e => (e.OccurredAt - receivedAt).TotalSeconds)
+                .OrderByDescending(Math.Abs)
+                .First());
+        }
+
+        if (!sequenceAssessment.Rollback && sequenceAssessment.NewMax is not null)
+        {
+            agent.LastTelemetrySequence = sequenceAssessment.NewMax.Value;
+        }
+
+        agent.LastTelemetryBatchId = batchId;
+        agent.LastIngestEventCount = events.Count;
+
         db.TelemetryEvents.AddRange(events);
         audit.Add((Guid?)null, tenantId, "telemetry.ingest", agentId.ToString(), new
         {
             event_count = req.Events.Count,
+            accepted_count = events.Count,
             received_at = receivedAt,
+            batch_id = batchId,
+            confidence = EvidenceConfidence.AgentReported.ToString(),
         });
         try
         {
@@ -104,8 +221,6 @@ public class TelemetryController(
         }
         catch (DbUpdateException) when (events.All(e => e.ClientEventId is not null))
         {
-            // Two retry requests can both pass the initial existence check. Treat a
-            // unique-key race as a successful replay only after verifying every ID.
             var attemptedIds = events.Select(e => e.ClientEventId!.Value).ToHashSet();
             db.ChangeTracker.Clear();
             var persistedIds = await db.TelemetryEvents
@@ -123,6 +238,7 @@ public class TelemetryController(
 
             throw;
         }
+
         eventBroker.Publish(agent, events);
         await telemetrySink.PublishAsync(agent, events, ct);
 
@@ -136,8 +252,7 @@ public class TelemetryController(
                 received_at = receivedAt,
             });
         }
-        // Always save: even if alerts.Count == 0, the evaluator may have
-        // touched suppression counters (SuppressedCount, LastSuppressedAt).
+
         await db.SaveChangesAsync(ct);
         if (alerts.Count > 0)
         {
@@ -154,6 +269,7 @@ public class TelemetryController(
 
     [HttpGet("{id:guid}/events")]
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+    [EnableRateLimiting("web-read")]
     public async Task<ActionResult<IReadOnlyList<TelemetryEventResponse>>> List(
         Guid id,
         [FromQuery] string? type,
@@ -201,10 +317,13 @@ public class TelemetryController(
         return Ok(rows.Select(e => new TelemetryEventResponse(
             e.Id,
             e.ClientEventId,
+            e.BatchId,
+            e.SequenceNumber,
             e.AgentId,
             e.EventType,
             e.OccurredAt,
             e.ReceivedAt,
+            e.Confidence,
             JsonSerializer.Deserialize<JsonElement>(e.Payload))).ToList());
     }
 

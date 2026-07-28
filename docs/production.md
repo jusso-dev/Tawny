@@ -1,5 +1,21 @@
 # Production deployment notes
 
+## Secure configuration (required)
+
+Production (and any process with `Tawny:Security:EnforceSecureDefaults=true`) **fails startup** when insecure:
+
+| Setting | Requirement |
+| --- | --- |
+| `Tawny:WebUserHmacSecret` / `TAWNY_WEB_HMAC_SECRET` | ≥ 32 random bytes (`openssl rand -hex 32`) |
+| `Tawny:AgentJwt:SigningKeyPem` | Stable RSA private key PEM (path or inline) |
+| `ConnectionStrings:Default` | Present |
+| `Tawny:Security:PublicApiUrl` | `https://…` public agent/API URL |
+| `Tawny:Security:PublicWebUrl` | `https://…` dashboard URL |
+
+Escape hatch (dangerous): `Tawny:Security:AllowInsecurePublicHttp=true` permits non-HTTPS public URLs. Prefer fixing TLS instead.
+
+Generate secrets offline; never commit them. Rotate HMAC secret and agent signing key after compromise; revoke all agents after signing-key rotation if needed.
+
 ## TLS termination
 
 The development compose stack exposes the API and web containers over HTTP. Production deployments should place a reverse proxy in front of both services and terminate TLS there.
@@ -18,16 +34,62 @@ api.tawny.example.com {
 }
 ```
 
-Set `BETTER_AUTH_URL=https://tawny.example.com`, `TAWNY_API_URL=http://tawny-api:5080` for server-side web-to-API calls, and `NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL=https://api.tawny.example.com` so enrollment install commands point agents at the TLS endpoint.
+Set `BETTER_AUTH_URL=https://tawny.example.com`, `TAWNY_API_URL=http://tawny-api:5080` for server-side web-to-API calls (cluster-internal HTTP is fine), and `NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL=https://api.tawny.example.com` so enrollment install commands point agents at the TLS endpoint.
 
-## Agent JWT storage
+### Agent HTTPS defaults
 
-Agent JWTs are bearer credentials. The MVP config file supports plaintext for local development, but production installers should store the token with the operating system credential facility and leave only non-secret settings in `config.toml`:
+The Zig agent:
 
-- Windows: protect the JWT with DPAPI scoped to LocalMachine or the service identity.
-- macOS: store the JWT in Keychain as a generic password for the Tawny agent service account.
+- accepts `https://` backends always;
+- accepts `http://localhost`, `http://127.0.0.1`, and `http://[::1]` for local development;
+- **rejects** other `http://` backends unless `allow_insecure_http = true` in `config.toml`.
 
-If a host is rebuilt or the service account changes, re-enroll the agent or restore the OS credential item with the same protection scope.
+Never send enrollment tokens over plaintext WAN links.
+
+## Agent JWT storage and revocation
+
+Agent JWTs are short-lived (default 60 minutes, rotate within 15). Heartbeats issue rotated JWTs. Each agent has a `CredentialVersion`; admin revoke increments it so old tokens fail.
+
+### Device-bound public keys
+
+At enrollment the agent generates an Ed25519 keypair, stores the seed in `{state_path}.devicekey` (`0600` when possible), and registers the base64 public key as `device_public_key`. Batch signing / proof-of-possession is not yet enforced; the key is registered for that follow-on.
+
+Revoke immediately:
+
+```http
+POST /api/agents/{id}/revoke
+```
+
+(Admin WebUser or API token.)
+
+Production installers should store the token with the OS credential facility:
+
+- Windows: DPAPI scoped to LocalMachine or the service identity.
+- macOS: Keychain generic password for the Tawny service account.
+- Linux: root-owned `0600` state file, or kernel keyring / TPM when available.
+
+If a host is rebuilt, re-enroll (new credential version).
+
+## Response actions
+
+Dispatched actions include a single-use `execution_token`, payload hash, and expiry. Results without a valid unused token are rejected. Cancel pending/dispatched actions with:
+
+```http
+POST /api/agents/{agentId}/actions/{id}/cancel
+```
+
+## OpenAPI and Hangfire
+
+- OpenAPI is **not** mapped in Production unless `Tawny:Security:EnableOpenApi=true`.
+- Hangfire dashboard stays behind WebUser Admin authorization; do not expose `/hangfire` publicly.
+
+## Incident recovery (short)
+
+1. Rotate `TAWNY_WEB_HMAC_SECRET` and redeploy web + API together.
+2. Rotate agent JWT signing key only with a planned re-enroll window.
+3. Revoke compromised agents; re-issue enrollment tokens.
+4. Preserve audit log and database backups offline encrypted.
+5. Check Hangfire recurring jobs after restore.
 
 ## Linux and Amazon EC2 network collection
 
@@ -52,6 +114,31 @@ sudo resolvectl log-level debug
 `/etc/hosts` entries are emitted once at startup and again only after file content changes. Hosts without a supported resolver log still contribute static host mappings, resolver settings, EC2 hostnames, and domains found in process command lines; packet-level DNS visibility remains a future eBPF capability.
 
 ## Rate limiting and audit logs
+
+Agent policies (partitioned by IP or tenant+agent):
+
+- `agent-enrollment`, `agent-heartbeat`, `agent-events`
+
+Dashboard / admin policies (partitioned by **tenant + user or API token**, not IP alone):
+
+- `web-read` — authenticated reads  
+- `web-mutate` / `web-admin-mutate` — mutations  
+- `response-actions` — kill/isolate dispatch  
+- `rule-imports` — Sigma/YARA/IoC imports  
+- `hunts` — hunt execution  
+- `search` — search/pivot style endpoints  
+
+`429` responses include `{ "error": "rate_limited", "policy": "..." }`.
+
+### Telemetry integrity
+
+Agents may send optional `batch_id` and per-event `sequence`. Server:
+
+- stamps authoritative `received_at`;
+- rejects timestamps too far future/past (`Tawny:TelemetryIntegrity`);
+- de-dupes `client_event_id`;
+- audits sequence gap/rollback and volume spikes;
+- labels confidence `agent_reported` (server never upgrades agent data to higher confidence without correlation).
 
 `POST /api/agents/events` is rate limited with a per-agent token bucket. The API returns `429` and a JSON error body when an agent exceeds the ingest budget.
 

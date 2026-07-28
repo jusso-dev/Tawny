@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
@@ -14,6 +15,7 @@ namespace Tawny.Api.Controllers;
 [ApiController]
 [Route("api/alert-rules")]
 [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+[EnableRateLimiting("web-read")]
 public class AlertRulesController(
     TawnyDbContext db,
     AuditLogger audit,
@@ -24,8 +26,10 @@ public class AlertRulesController(
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<AlertRuleResponse>>> List(CancellationToken ct)
     {
+        var tenantId = User.GetTenantId();
         var rows = await db.AlertRules
             .AsNoTracking()
+            .Where(r => r.TenantId == tenantId)
             .OrderBy(r => r.Name)
             .ToListAsync(ct);
         return Ok(rows.Select(ToResponse).ToList());
@@ -45,6 +49,7 @@ public class AlertRulesController(
         var rule = new AlertRule
         {
             Id = Guid.NewGuid(),
+            TenantId = User.GetTenantId(),
             Name = req.Name.Trim(),
             Format = AlertRuleFormat.TawnyPredicate,
             EventType = req.EventType,
@@ -87,6 +92,7 @@ public class AlertRulesController(
             return Problem(statusCode: 400, title: ex.Message);
         }
 
+        rule.TenantId = User.GetTenantId();
         db.AlertRules.Add(rule);
         audit.Add(User, "alert_rule.import_sigma", rule.Id.ToString(), new
         {
@@ -122,6 +128,8 @@ public class AlertRulesController(
             return Problem(statusCode: 400, title: ex.Message);
         }
 
+        var tenantId = User.GetTenantId();
+        foreach (var r in imported.Rules) r.TenantId = tenantId;
         db.AlertRules.AddRange(imported.Rules);
         audit.Add(User, "alert_rule.import_iocs", null, new
         {
@@ -158,6 +166,8 @@ public class AlertRulesController(
             return Problem(statusCode: 400, title: ex.Message);
         }
 
+        var exposureTenantId = User.GetTenantId();
+        foreach (var r in imported.Rules) r.TenantId = exposureTenantId;
         db.AlertRules.AddRange(imported.Rules);
         audit.Add(User, "alert_rule.import_exposures", null, new
         {
@@ -183,7 +193,8 @@ public class AlertRulesController(
             return validation;
         }
 
-        var rule = await db.AlertRules.FirstOrDefaultAsync(r => r.Id == id, ct);
+        var tenantId = User.GetTenantId();
+        var rule = await db.AlertRules.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null)
         {
             return NotFound();
@@ -221,19 +232,19 @@ public class AlertRulesController(
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id, ct))
+        var tenantId = User.GetTenantId();
+        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id && a.TenantId == tenantId, ct))
         {
             return Problem(statusCode: 409, title: "Alert rule has alerts and cannot be deleted. Disable it instead.");
         }
 
-        var deleted = await db.AlertRules
-            .Where(r => r.Id == id)
-            .ExecuteDeleteAsync(ct);
-        if (deleted == 0)
+        var rule = await db.AlertRules.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (rule is null)
         {
             return NotFound();
         }
 
+        db.AlertRules.Remove(rule);
         audit.Add(User, "alert_rule.delete", id.ToString());
         await db.SaveChangesAsync(ct);
         return NoContent();

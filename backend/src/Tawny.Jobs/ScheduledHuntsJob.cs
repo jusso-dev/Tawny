@@ -59,6 +59,7 @@ public class ScheduledHuntsJob(
                     {
                         db.Alerts.Add(new Alert
                         {
+                            TenantId = hunt.TenantId,
                             AlertRuleId = ruleId,
                             AgentId = match.AgentId,
                             TelemetryEventId = match.EventId,
@@ -103,6 +104,7 @@ public class ScheduledHuntsJob(
         var rule = new AlertRule
         {
             Id = Guid.NewGuid(),
+            TenantId = hunt.TenantId,
             Name = $"Hunt: {hunt.Name}",
             Format = AlertRuleFormat.TawnyPredicate,
             ExternalId = externalId,

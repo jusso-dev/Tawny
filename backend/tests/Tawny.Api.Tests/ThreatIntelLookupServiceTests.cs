@@ -26,11 +26,12 @@ public class ThreatIntelLookupServiceTests
             Feed(feedId, tenantId, "Tenant feed", now),
             Feed(otherFeedId, otherTenantId, "Other feed", now));
         db.AlertRules.AddRange(
-            Rule(feedId, "ipv4", "203.0.113.20", now),
-            Rule(otherFeedId, "ipv4", "203.0.113.20", now),
+            Rule(tenantId, feedId, "ipv4", "203.0.113.20", now),
+            Rule(otherTenantId, otherFeedId, "ipv4", "203.0.113.20", now),
             new AlertRule
             {
                 Id = Guid.NewGuid(),
+                TenantId = tenantId,
                 Name = "Manual global rule",
                 Format = AlertRuleFormat.Ioc,
                 ExternalId = "ioc:ipv4:203.0.113.20",
@@ -69,9 +70,10 @@ public class ThreatIntelLookupServiceTests
         UpdatedAt = now,
     };
 
-    private static AlertRule Rule(Guid feedId, string kind, string value, DateTimeOffset now) => new()
+    private static AlertRule Rule(Guid tenantId, Guid feedId, string kind, string value, DateTimeOffset now) => new()
     {
         Id = Guid.NewGuid(),
+        TenantId = tenantId,
         Name = $"Feed rule {value}",
         Format = AlertRuleFormat.Ioc,
         ExternalId = $"ti-feed:{feedId}:{kind}:{value}",

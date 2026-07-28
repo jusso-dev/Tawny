@@ -21,6 +21,41 @@ fn getHostname(buf: []u8) ![]const u8 {
     return try std.posix.gethostname(fixed);
 }
 
+fn base64Encode(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    const Encoder = std.base64.standard.Encoder;
+    const len = Encoder.calcSize(bytes.len);
+    const out = try alloc.alloc(u8, len);
+    _ = Encoder.encode(out, bytes);
+    return out;
+}
+
+/// Generate Ed25519 keypair, persist seed next to state, return base64 public key.
+fn ensureDeviceKey(alloc: std.mem.Allocator, cfg: *const Config) ![]u8 {
+    const seed_path = try std.fmt.allocPrint(alloc, "{s}.devicekey", .{cfg.state_path});
+    defer alloc.free(seed_path);
+
+    var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
+    const io = iox.current();
+    const existing = std.Io.Dir.cwd().openFile(io, seed_path, .{}) catch null;
+    if (existing) |file| {
+        defer file.close(io);
+        const n = try file.readPositionalAll(io, &seed, 0);
+        if (n != seed.len) return error.CorruptDeviceKey;
+    } else {
+        try std.Io.randomSecure(io, &seed);
+        var file = try std.Io.Dir.cwd().createFile(io, seed_path, .{
+            .truncate = true,
+            .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+        });
+        defer file.close(io);
+        try file.writePositionalAll(io, &seed, 0);
+        try file.sync(io);
+    }
+
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+    return try base64Encode(alloc, &kp.public_key.bytes);
+}
+
 /// POST /api/agents/enroll, populate cfg.agent_id and cfg.agent_jwt.
 pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !void {
     const token = cfg.enrollment_token orelse return error.NoEnrollmentToken;
@@ -40,13 +75,28 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         else => "unknown",
     };
 
+    const device_pub = ensureDeviceKey(alloc, cfg) catch |err| blk: {
+        // Enrollment still works without a device key on constrained platforms.
+        std.log.warn("device key unavailable ({s}); enrolling without device_public_key", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (device_pub) |p| alloc.free(p);
+
     var body_buf = std.array_list.Managed(u8).init(alloc);
     defer body_buf.deinit();
-    try body_buf.print(
-        \\{{"enrollment_token":"{s}","hostname":"{s}","os":"{s}","os_version":"unknown","arch":"{s}","agent_version":"{s}"}}
-    ,
-        .{ token, hostname, os_str, arch_str, agent_version },
-    );
+    if (device_pub) |pk| {
+        try body_buf.print(
+            \\{{"enrollment_token":"{s}","hostname":"{s}","os":"{s}","os_version":"unknown","arch":"{s}","agent_version":"{s}","device_public_key":"{s}"}}
+        ,
+            .{ token, hostname, os_str, arch_str, agent_version, pk },
+        );
+    } else {
+        try body_buf.print(
+            \\{{"enrollment_token":"{s}","hostname":"{s}","os":"{s}","os_version":"unknown","arch":"{s}","agent_version":"{s}"}}
+        ,
+            .{ token, hostname, os_str, arch_str, agent_version },
+        );
+    }
 
     const url = try std.fmt.allocPrint(alloc, "{s}/api/agents/enroll", .{cfg.backend_url});
     defer alloc.free(url);

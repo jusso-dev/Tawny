@@ -1,3 +1,6 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
@@ -47,11 +50,13 @@ public class AgentsController(
         {
             return Problem(statusCode: 401, title: "Unknown enrollment token.");
         }
+
         if (token.UsedAt is not null)
         {
             return Problem(statusCode: 409, title: "Enrollment token already used.",
                 detail: $"Token consumed at {token.UsedAt:o}.");
         }
+
         if (token.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             return Problem(statusCode: 410, title: "Enrollment token expired.");
@@ -69,6 +74,10 @@ public class AgentsController(
             EnrolledAt = DateTimeOffset.UtcNow,
             LastHeartbeatAt = DateTimeOffset.UtcNow,
             Status = AgentStatus.Online,
+            CredentialVersion = 1,
+            DevicePublicKey = string.IsNullOrWhiteSpace(req.DevicePublicKey)
+                ? null
+                : req.DevicePublicKey.Trim(),
             PublicIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
         };
 
@@ -81,6 +90,8 @@ public class AgentsController(
             agent.Hostname,
             token_id = token.Id,
             remote_ip = agent.PublicIp,
+            credential_version = agent.CredentialVersion,
+            has_device_public_key = agent.DevicePublicKey is not null,
         });
         try
         {
@@ -93,7 +104,14 @@ public class AgentsController(
                 title: "Enrollment token already used.");
         }
 
-        var (jwtToken, exp) = jwt.Issue(agent.Id, agent.TenantId);
+        var (jwtToken, exp, jti) = jwt.Issue(agent.Id, agent.TenantId, agent.CredentialVersion);
+        audit.Add((Guid?)null, agent.TenantId, "agent.credential_issue", agent.Id.ToString(), new
+        {
+            jti,
+            expires_at = exp,
+            credential_version = agent.CredentialVersion,
+        });
+        await db.SaveChangesAsync(ct);
         log.LogInformation("Agent {AgentId} enrolled (hostname={Hostname})", agent.Id, agent.Hostname);
 
         return Ok(new EnrollResponse(agent.Id, jwtToken, exp, new EnrollConfig(60)));
@@ -124,6 +142,28 @@ public class AgentsController(
             return NotFound();
         }
 
+        if (agent.RevokedAt is not null || agent.Status == AgentStatus.Revoked)
+        {
+            audit.Add((Guid?)null, tenantId, "agent.auth_failed", agent.Id.ToString(), new
+            {
+                reason = "revoked",
+            });
+            await db.SaveChangesAsync(ct);
+            return Unauthorized();
+        }
+
+        if (!TryGetCredentialVersion(out var tokenCv) || tokenCv != agent.CredentialVersion)
+        {
+            audit.Add((Guid?)null, tenantId, "agent.auth_failed", agent.Id.ToString(), new
+            {
+                reason = "credential_version_mismatch",
+                token_cv = tokenCv,
+                agent_cv = agent.CredentialVersion,
+            });
+            await db.SaveChangesAsync(ct);
+            return Unauthorized();
+        }
+
         var previousStatus = agent.Status;
         agent.LastHeartbeatAt = DateTimeOffset.UtcNow;
         agent.Status = AgentStatus.Online;
@@ -141,15 +181,56 @@ public class AgentsController(
             .FirstOrDefaultAsync(ct);
 
         var now = DateTimeOffset.UtcNow;
+        // Expire stale pending/dispatched actions.
+        var stale = await db.ResponseActions
+            .Where(a => a.AgentId == agent.Id
+                && a.ExpiresAt != null
+                && a.ExpiresAt <= now
+                && (a.Status == ResponseActionStatus.Pending
+                    || a.Status == ResponseActionStatus.Dispatched
+                    || a.Status == ResponseActionStatus.Running))
+            .ToListAsync(ct);
+        foreach (var expired in stale)
+        {
+            expired.Status = ResponseActionStatus.Expired;
+            expired.CompletedAt = now;
+            expired.ExecutionTokenHash = null;
+            audit.Add((Guid?)null, tenantId, "response_action.expired", expired.Id.ToString(), new
+            {
+                expired.AgentId,
+            });
+        }
+
+        if (stale.Count > 0)
+        {
+            await db.SaveChangesAsync(ct);
+        }
+
         var pendingActions = await db.ResponseActions
             .Where(a => a.AgentId == agent.Id && a.Status == ResponseActionStatus.Pending)
             .OrderBy(a => a.RequestedAt)
             .Take(10)
             .ToListAsync(ct);
+
+        var commands = new List<ResponseActionCommand>(pendingActions.Count);
         foreach (var action in pendingActions)
         {
+            var executionToken = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
             action.Status = ResponseActionStatus.Dispatched;
             action.DispatchedAt = now;
+            action.ExecutionTokenHash = TokenHashing.Hash(executionToken);
+            action.ExpiresAt ??= now.Add(ResponseActionsController.DefaultActionTtl);
+            action.PayloadHash ??= Convert.ToHexStringLower(
+                SHA256.HashData(Encoding.UTF8.GetBytes(action.PayloadJson)));
+            action.TenantId = agent.TenantId;
+
+            commands.Add(new ResponseActionCommand(
+                action.Id,
+                action.ActionType,
+                JsonSerializer.Deserialize<JsonElement>(action.PayloadJson),
+                executionToken,
+                action.ExpiresAt!.Value,
+                action.PayloadHash!));
         }
 
         if (pendingActions.Count > 0)
@@ -161,16 +242,63 @@ public class AgentsController(
             await db.SaveChangesAsync(ct);
         }
 
+        string? rotatedJwt = null;
+        DateTimeOffset? jwtExpiresAt = null;
+        var expClaim = User.FindFirst(JwtRegisteredClaimNames.Exp)?.Value
+            ?? User.FindFirst("exp")?.Value;
+        DateTimeOffset? currentExp = null;
+        if (long.TryParse(expClaim, out var expUnix))
+        {
+            currentExp = DateTimeOffset.FromUnixTimeSeconds(expUnix);
+        }
+
+        if (jwt.ShouldRotate(currentExp))
+        {
+            var (token, exp, jti) = jwt.Issue(agent.Id, agent.TenantId, agent.CredentialVersion);
+            rotatedJwt = token;
+            jwtExpiresAt = exp;
+            audit.Add((Guid?)null, tenantId, "agent.credential_rotate", agent.Id.ToString(), new
+            {
+                jti,
+                expires_at = exp,
+                credential_version = agent.CredentialVersion,
+            });
+            await db.SaveChangesAsync(ct);
+        }
+
         return Ok(new HeartbeatResponse(
             LatestAgentVersion: latest?.Version,
             DownloadUrl: latest?.DownloadUrl,
             Sha256: latest?.Sha256,
-            RotatedJwt: null,
-            JwtExpiresAt: null,
-            Actions: pendingActions.Select(a => new ResponseActionCommand(
-                a.Id,
-                a.ActionType,
-                JsonSerializer.Deserialize<JsonElement>(a.PayloadJson))).ToList()));
+            RotatedJwt: rotatedJwt,
+            JwtExpiresAt: jwtExpiresAt,
+            Actions: commands));
+    }
+
+    [HttpPost("{id:guid}/revoke")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
+    public async Task<ActionResult<AgentSummary>> Revoke(Guid id, CancellationToken ct)
+    {
+        var tenantId = User.GetTenantId();
+        var agent = await db.Agents.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
+        if (agent is null)
+        {
+            return NotFound();
+        }
+
+        agent.Status = AgentStatus.Revoked;
+        agent.RevokedAt = DateTimeOffset.UtcNow;
+        agent.CredentialVersion += 1;
+        audit.Add(User, "agent.revoke", agent.Id.ToString(), new
+        {
+            credential_version = agent.CredentialVersion,
+        });
+        await db.SaveChangesAsync(ct);
+
+        return Ok(new AgentSummary(
+            agent.Id, agent.Hostname, agent.OperatingSystem, agent.OsVersion,
+            agent.AgentVersion, agent.Architecture, agent.Status,
+            agent.LastHeartbeatAt, agent.EnrolledAt));
     }
 
     [HttpGet]
@@ -204,6 +332,12 @@ public class AgentsController(
     {
         var claim = User.FindFirst("agent_id")?.Value;
         return Guid.TryParse(claim, out id);
+    }
+
+    private bool TryGetCredentialVersion(out int version)
+    {
+        var claim = User.FindFirst(AgentJwtService.CredentialVersionClaim)?.Value;
+        return int.TryParse(claim, out version);
     }
 
     private static AgentPlatform ParseOs(string os) => os.ToLowerInvariant() switch
