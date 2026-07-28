@@ -93,15 +93,6 @@ namespace Tawny.Infrastructure.Migrations
                 nullable: false,
                 defaultValue: new Guid("00000000-0000-0000-0000-000000000001"));
 
-            migrationBuilder.Sql("""
-                UPDATE a SET a.TenantId = ag.TenantId
-                FROM Alerts a
-                INNER JOIN Agents ag ON ag.Id = a.AgentId;
-                UPDATE ra SET ra.TenantId = ag.TenantId
-                FROM ResponseActions ra
-                INNER JOIN Agents ag ON ag.Id = ra.AgentId;
-                """);
-
             migrationBuilder.AddColumn<Guid>(
                 name: "TenantId",
                 table: "Alerts",
@@ -115,6 +106,15 @@ namespace Tawny.Infrastructure.Migrations
                 type: "uniqueidentifier",
                 nullable: false,
                 defaultValue: new Guid("00000000-0000-0000-0000-000000000001"));
+
+            migrationBuilder.Sql("""
+                UPDATE a SET a.TenantId = ag.TenantId
+                FROM Alerts a
+                INNER JOIN Agents ag ON ag.Id = a.AgentId;
+                UPDATE ra SET ra.TenantId = ag.TenantId
+                FROM ResponseActions ra
+                INNER JOIN Agents ag ON ag.Id = ra.AgentId;
+                """);
 
             migrationBuilder.AddColumn<int>(
                 name: "CredentialVersion",
