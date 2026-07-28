@@ -294,11 +294,28 @@ if (!builder.Configuration.GetValue<bool>("Tawny:DisableHangfire"))
 
 var app = builder.Build();
 
-if (app.Configuration.GetValue<bool>("Tawny:ApplyMigrationsOnStartup"))
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
-    await db.Database.MigrateAsync();
+    if (app.Configuration.GetValue<bool>("Tawny:ApplyMigrationsOnStartup"))
+    {
+        await db.Database.MigrateAsync();
+    }
+
+    // Seed Kelpie-parity public TI feeds for every tenant so IoC rules exist
+    // without manual install. Safe when Hangfire is disabled (tests / local).
+    try
+    {
+        var seeded = await StarterThreatIntelFeeds.EnsureSeededAsync(db);
+        if (seeded > 0)
+        {
+            app.Logger.LogInformation("Seeded {Count} starter threat-intel feed(s).", seeded);
+        }
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogWarning(ex, "Starter threat-intel feed seed skipped (database may not be ready).");
+    }
 }
 
 app.UseSerilogRequestLogging(opts =>
