@@ -88,7 +88,9 @@ fn readLinuxProcessImagePath(alloc: std.mem.Allocator, pid: i32) ![]u8 {
     var path_buf: [64]u8 = undefined;
     const link_path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/exe", .{pid});
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = std.posix.readlink(link_path, &target_buf) catch return error.ProcessIdentityMismatch;
+    // Zig 0.16: use Io.Dir.readLinkAbsolute (std.posix.readlink is not available).
+    const n = std.Io.Dir.readLinkAbsolute(iox.current(), link_path, &target_buf) catch
+        return error.ProcessIdentityMismatch;
     return try alloc.dupe(u8, target_buf[0..n]);
 }
 
@@ -108,7 +110,7 @@ fn readLinuxProcessStartUnix(pid: i32) !i64 {
 
 fn parseLinuxStatStarttime(stat: []const u8) ?i64 {
     const rparen = std.mem.lastIndexOfScalar(u8, stat, ')') orelse return null;
-    const rest = std.mem.trimLeft(u8, stat[rparen + 1 ..], " ");
+    const rest = std.mem.trimStart(u8, stat[rparen + 1 ..], " ");
     var it = std.mem.tokenizeScalar(u8, rest, ' ');
     var i: usize = 0;
     while (it.next()) |tok| : (i += 1) {
