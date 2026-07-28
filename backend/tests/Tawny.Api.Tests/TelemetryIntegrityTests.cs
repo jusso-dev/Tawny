@@ -121,6 +121,47 @@ public class TelemetryIntegrityTests(TawnyWebApplicationFactory factory)
     }
 
     [Fact]
+    public async Task Enroll_AcceptsDevicePublicKey()
+    {
+        await factory.ResetDatabaseAsync();
+        var enrollmentToken = TokenHashing.NewToken();
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+            db.EnrollmentTokens.Add(new EnrollmentToken
+            {
+                Id = Guid.NewGuid(),
+                TenantId = TenantDefaults.DefaultTenantId,
+                TokenHash = TokenHashing.Hash(enrollmentToken),
+                CreatedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                CreatedByUserId = Guid.Empty,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var pub = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        var client = factory.CreateClient();
+        var enroll = await client.PostAsJsonAsync("/api/agents/enroll", new
+        {
+            enrollment_token = enrollmentToken,
+            hostname = "device-key-host",
+            os = "linux",
+            os_version = "6.1",
+            arch = "x64",
+            agent_version = "0.2.0",
+            device_public_key = pub,
+        });
+        enroll.EnsureSuccessStatusCode();
+        var body = await enroll.Content.ReadFromJsonAsync<EnrollBody>();
+
+        using var verify = factory.Services.CreateScope();
+        var agent = await verify.ServiceProvider.GetRequiredService<TawnyDbContext>()
+            .Agents.SingleAsync(a => a.Id == body!.AgentId);
+        agent.DevicePublicKey.Should().Be(pub);
+    }
+
+    [Fact]
     public void IntegrityHelpers_DetectGapAndSpike()
     {
         var agent = new Agent

@@ -9,7 +9,9 @@ public record EnrollRequest(
     string Os,
     string OsVersion,
     string Arch,
-    string AgentVersion);
+    string AgentVersion,
+    /// <summary>Optional base64 Ed25519 public key (32 raw bytes) for device-bound identity.</summary>
+    string? DevicePublicKey = null);
 
 public record EnrollResponse(
     Guid AgentId,
@@ -71,6 +73,24 @@ public class EnrollRequestValidator : AbstractValidator<EnrollRequest>
         RuleFor(x => x.AgentVersion)
             .NotEmpty()
             .MaximumLength(32);
+        RuleFor(x => x.DevicePublicKey)
+            .Must(BeValidDevicePublicKey)
+            .When(x => !string.IsNullOrWhiteSpace(x.DevicePublicKey))
+            .WithMessage("device_public_key must be base64-encoded 32-byte Ed25519 public key.");
+    }
+
+    private static bool BeValidDevicePublicKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        try
+        {
+            var bytes = Convert.FromBase64String(value.Trim());
+            return bytes.Length == 32;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }
 

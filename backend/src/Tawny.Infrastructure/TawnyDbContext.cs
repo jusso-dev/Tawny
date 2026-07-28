@@ -60,6 +60,7 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(a => a.TagsJson).HasColumnName("Tags").HasDefaultValue("[]");
             e.Property(a => a.CredentialVersion).HasDefaultValue(1);
             e.Property(a => a.LastTelemetrySequence).HasDefaultValue(0L);
+            e.Property(a => a.DevicePublicKey).HasMaxLength(128);
             e.HasOne(a => a.Tenant)
                 .WithMany(t => t.Agents)
                 .HasForeignKey(a => a.TenantId)

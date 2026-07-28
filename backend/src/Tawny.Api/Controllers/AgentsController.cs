@@ -75,6 +75,9 @@ public class AgentsController(
             LastHeartbeatAt = DateTimeOffset.UtcNow,
             Status = AgentStatus.Online,
             CredentialVersion = 1,
+            DevicePublicKey = string.IsNullOrWhiteSpace(req.DevicePublicKey)
+                ? null
+                : req.DevicePublicKey.Trim(),
             PublicIp = HttpContext.Connection.RemoteIpAddress?.ToString(),
         };
 
@@ -88,6 +91,7 @@ public class AgentsController(
             token_id = token.Id,
             remote_ip = agent.PublicIp,
             credential_version = agent.CredentialVersion,
+            has_device_public_key = agent.DevicePublicKey is not null,
         });
         try
         {

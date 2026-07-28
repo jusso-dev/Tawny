@@ -10,6 +10,8 @@ const max_record_bytes: usize = 768 * 1024;
 
 pub const Event = struct {
     client_event_id: [16]u8 = @splat(0),
+    /// Monotonic per-agent sequence assigned at push/load time for server integrity checks.
+    sequence: u64 = 0,
     event_type: []const u8,
     occurred_at: i64,
     /// Caller-owned event type and JSON payload. Buffer takes ownership via dupe.
@@ -26,6 +28,7 @@ pub const Buffer = struct {
     pending_count: usize = 0,
     acknowledged_offset: u64 = spool_header_len,
     next_load_offset: u64 = spool_header_len,
+    next_sequence: u64 = 1,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -91,8 +94,13 @@ pub const Buffer = struct {
 
         self.pending_count += 1;
         if (self.list.items.len < self.capacity) {
-            try self.appendOwned(id, ev.occurred_at, ev.event_type, ev.payload, offset + record.len);
+            const seq = self.next_sequence;
+            self.next_sequence += 1;
+            try self.appendOwned(id, seq, ev.occurred_at, ev.event_type, ev.payload, offset + record.len);
             self.next_load_offset = offset + record.len;
+        } else {
+            // Still advance sequence so disk-loaded events later get unique ids after restart path.
+            self.next_sequence += 1;
         }
     }
 
@@ -175,14 +183,19 @@ pub const Buffer = struct {
             if (!try std.json.validate(self.allocator, record.payload)) continue;
             self.pending_count += 1;
             if (self.list.items.len < self.capacity) {
+                const seq = self.next_sequence;
+                self.next_sequence += 1;
                 try self.appendOwned(
                     record.id,
+                    seq,
                     record.occurred_at,
                     record.event_type,
                     record.payload,
                     record.end,
                 );
                 self.next_load_offset = record.end;
+            } else {
+                self.next_sequence += 1;
             }
         }
     }
@@ -200,8 +213,11 @@ pub const Buffer = struct {
         while (self.list.items.len < self.capacity) {
             const record = nextRecord(raw, &cursor) orelse break;
             if (!try std.json.validate(self.allocator, record.payload)) continue;
+            const seq = self.next_sequence;
+            self.next_sequence += 1;
             try self.appendOwned(
                 record.id,
+                seq,
                 record.occurred_at,
                 record.event_type,
                 record.payload,
@@ -214,6 +230,7 @@ pub const Buffer = struct {
     fn appendOwned(
         self: *Buffer,
         id: [16]u8,
+        sequence: u64,
         occurred_at: i64,
         event_type: []const u8,
         payload: []const u8,
@@ -225,6 +242,7 @@ pub const Buffer = struct {
         errdefer self.allocator.free(owned_payload);
         try self.list.append(.{
             .client_event_id = id,
+            .sequence = sequence,
             .event_type = owned_event_type,
             .occurred_at = occurred_at,
             .payload = owned_payload,
@@ -325,7 +343,9 @@ pub const Buffer = struct {
             try std.Io.randomSecure(iox.current(), &id);
             id[6] = (id[6] & 0x0f) | 0x40;
             id[8] = (id[8] & 0x3f) | 0x80;
-            try self.appendOwned(id, occurred_at, event_type, payload, 0);
+            const seq = self.next_sequence;
+            self.next_sequence += 1;
+            try self.appendOwned(id, seq, occurred_at, event_type, payload, 0);
         }
 
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.spool_path});

@@ -50,6 +50,10 @@ Never send enrollment tokens over plaintext WAN links.
 
 Agent JWTs are short-lived (default 60 minutes, rotate within 15). Heartbeats issue rotated JWTs. Each agent has a `CredentialVersion`; admin revoke increments it so old tokens fail.
 
+### Device-bound public keys
+
+At enrollment the agent generates an Ed25519 keypair, stores the seed in `{state_path}.devicekey` (`0600` when possible), and registers the base64 public key as `device_public_key`. Batch signing / proof-of-possession is not yet enforced; the key is registered for that follow-on.
+
 Revoke immediately:
 
 ```http

@@ -32,6 +32,12 @@ public class Agent
 
     public int LastIngestEventCount { get; set; }
 
+    /// <summary>
+    /// Base64-encoded Ed25519 public key registered at enrollment (device-bound credentials).
+    /// Private key stays on the endpoint; used for future batch signing / PoP.
+    /// </summary>
+    public string? DevicePublicKey { get; set; }
+
     public Tenant? Tenant { get; set; }
     public List<TelemetryEvent> Events { get; set; } = [];
 }

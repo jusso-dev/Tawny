@@ -36,6 +36,13 @@ public partial class TelemetryIntegrityAndTenantRules : Migration
             nullable: false,
             defaultValue: 0);
 
+        migrationBuilder.AddColumn<string>(
+            name: "DevicePublicKey",
+            table: "Agents",
+            type: "nvarchar(128)",
+            maxLength: 128,
+            nullable: true);
+
         migrationBuilder.AddColumn<Guid>(
             name: "BatchId",
             table: "TelemetryEvents",
@@ -115,6 +122,7 @@ public partial class TelemetryIntegrityAndTenantRules : Migration
         migrationBuilder.DropColumn(name: "LastTelemetryBatchId", table: "Agents");
         migrationBuilder.DropColumn(name: "LastClockSkewSeconds", table: "Agents");
         migrationBuilder.DropColumn(name: "LastIngestEventCount", table: "Agents");
+        migrationBuilder.DropColumn(name: "DevicePublicKey", table: "Agents");
         migrationBuilder.DropColumn(name: "BatchId", table: "TelemetryEvents");
         migrationBuilder.DropColumn(name: "SequenceNumber", table: "TelemetryEvents");
         migrationBuilder.DropColumn(name: "Confidence", table: "TelemetryEvents");
