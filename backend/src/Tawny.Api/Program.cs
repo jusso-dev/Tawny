@@ -34,12 +34,36 @@ builder.Services.Configure<KelpieSinkOptions>(builder.Configuration.GetSection("
 builder.Services.Configure<UniFiKelpieOptions>(builder.Configuration.GetSection("Tawny:Kelpie"));
 builder.Services.Configure<TawnySocSinkOptions>(builder.Configuration.GetSection("Tawny:TawnySoc"));
 builder.Services.Configure<ReputationOptions>(builder.Configuration.GetSection("Tawny:Reputation"));
+builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection("Tawny:Security"));
 builder.Services.Configure<WebUserAuthOptions>(TawnyAuthSchemes.WebUser, opt =>
 {
     opt.HmacSecret = builder.Configuration["Tawny:WebUserHmacSecret"] ?? "";
 });
 
+builder.Services.AddSingleton<IWebUserNonceStore, MemoryWebUserNonceStore>();
 builder.Services.AddSingleton<AgentJwtService>();
+
+// Fail closed on insecure production configuration before accepting traffic.
+try
+{
+    var securityOpts = builder.Configuration.GetSection("Tawny:Security").Get<SecurityOptions>() ?? new SecurityOptions();
+    var agentJwtOpts = builder.Configuration.GetSection("Tawny:AgentJwt").Get<AgentJwtOptions>() ?? new AgentJwtOptions();
+    if (builder.Environment.IsProduction())
+    {
+        agentJwtOpts.RequireConfiguredSigningKey = true;
+    }
+
+    SecurityOptionsValidator.Validate(
+        builder.Environment.EnvironmentName,
+        builder.Configuration["Tawny:WebUserHmacSecret"],
+        agentJwtOpts,
+        builder.Configuration.GetConnectionString("Default"),
+        securityOpts);
+}
+catch (InvalidOperationException ex)
+{
+    throw new InvalidOperationException($"Tawny security configuration is invalid: {ex.Message}", ex);
+}
 builder.Services.AddTawnyInfrastructure(builder.Configuration);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -117,16 +141,92 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
         });
     });
+
+    static string PrincipalKey(HttpContext httpContext)
+    {
+        var tenant = httpContext.User.FindFirst(TenantClaimExtensions.TenantIdClaim)?.Value ?? "default";
+        var user = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? httpContext.User.FindFirst("api_token_id")?.Value
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "anonymous";
+        return $"{tenant}:{user}";
+    }
+
+    options.AddPolicy("web-read", httpContext =>
+        RateLimitPartition.GetTokenBucketLimiter(PrincipalKey(httpContext), _ => new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 300,
+            TokensPerPeriod = 300,
+            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("web-mutate", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(PrincipalKey(httpContext), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("web-admin-mutate", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(PrincipalKey(httpContext), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("response-actions", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(PrincipalKey(httpContext), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("rule-imports", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(PrincipalKey(httpContext), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("hunts", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(PrincipalKey(httpContext), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+    options.AddPolicy("search", httpContext =>
+        RateLimitPartition.GetTokenBucketLimiter(PrincipalKey(httpContext), _ => new TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 60,
+            TokensPerPeriod = 60,
+            ReplenishmentPeriod = TimeSpan.FromMinutes(1),
+            AutoReplenishment = true,
+            QueueLimit = 0,
+        }));
+
     options.OnRejected = async (context, ct) =>
     {
         context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        var policy = context.HttpContext.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName
+            ?? "unknown";
         await context.HttpContext.Response.WriteAsJsonAsync(new
         {
-            error = "agent_request_rate_limited",
-            detail = "Too many agent requests.",
+            error = "rate_limited",
+            detail = "Too many requests.",
+            policy,
         }, cancellationToken: ct);
     };
 });
+
+builder.Services.Configure<TelemetryIntegrityOptions>(
+    builder.Configuration.GetSection("Tawny:TelemetryIntegrity"));
 
 builder.Services.AddControllers()
     .AddJsonOptions(o =>
@@ -203,7 +303,19 @@ app.UseSerilogRequestLogging();
 app.UseExceptionHandler();
 app.UseStatusCodePages();
 
-app.MapOpenApi();
+// Enable body re-read so WebUser HMAC can bind the request body digest.
+app.Use(async (context, next) =>
+{
+    context.Request.EnableBuffering();
+    await next();
+});
+
+if (!app.Environment.IsProduction()
+    || app.Configuration.GetValue("Tawny:Security:EnableOpenApi", false))
+{
+    app.MapOpenApi();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();

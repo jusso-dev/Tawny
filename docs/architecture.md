@@ -24,7 +24,7 @@ ASP.NET Core Web API split into four projects:
 Two auth schemes coexist:
 
 - `AgentJwt` — RS256 bearer tokens issued at enrollment, validated by a custom authentication handler. Rotated on heartbeat once they enter the last week of their lifetime.
-- `WebUser` — Better Auth runs in Next.js and sets a session cookie. Server-side calls from Next.js to the API include `X-User-Id`, `X-User-Role`, and `X-Signature` headers HMAC-signed with a shared secret. A `WebUserAuthHandler` validates the signature. This is deliberately simple for the MVP — production should use OIDC.
+- `WebUser` — Better Auth runs in Next.js and sets a session cookie. Server-side calls from Next.js to the API use HMAC request signing **v2** (method, path, query, body digest, content-type, user, role, tenant, timestamp, single-use nonce). A `WebUserAuthHandler` validates the signature in constant time. Longer-term preference remains service JWT or mTLS.
 
 ### Next.js 16 dashboard
 

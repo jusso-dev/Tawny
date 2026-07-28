@@ -193,7 +193,8 @@ public sealed partial class UniFiThreatIntelJob(
         var normalised = indicators.Select(value => value.ToLowerInvariant()).ToArray();
         var rules = await db.AlertRules
             .AsNoTracking()
-            .Where(rule => rule.IsEnabled
+            .Where(rule => rule.TenantId == tenantId
+                && rule.IsEnabled
                 && rule.Format == AlertRuleFormat.Ioc
                 && rule.MatchValue != null
                 && normalised.Contains(rule.MatchValue.ToLower()))

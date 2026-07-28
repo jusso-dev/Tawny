@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Models;
@@ -12,6 +13,7 @@ namespace Tawny.Api.Controllers;
 [ApiController]
 [Route("api/alerts")]
 [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser)]
+[EnableRateLimiting("web-read")]
 public class AlertsController(TawnyDbContext db) : ControllerBase
 {
     [HttpGet]
@@ -20,8 +22,9 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
         [FromQuery] int limit = 50,
         CancellationToken ct = default)
     {
+        var tenantId = User.GetTenantId();
         var take = Math.Clamp(limit, 1, 200);
-        var query = db.Alerts.AsNoTracking();
+        var query = db.Alerts.AsNoTracking().Where(a => a.TenantId == tenantId);
         if (status is not null)
         {
             query = query.Where(a => a.Status == status.Value);

@@ -6,6 +6,7 @@ public enum AgentStatus
     Stale = 1,
     Offline = 2,
     Unknown = 3,
+    Revoked = 4,
 }
 
 public enum AgentPlatform
@@ -99,6 +100,8 @@ public enum ResponseActionStatus
     Succeeded = 2,
     Failed = 3,
     Cancelled = 4,
+    Running = 5,
+    Expired = 6,
 }
 
 public enum HuntRunStatus
@@ -112,6 +115,16 @@ public enum SuppressionScope
 {
     AllRules = 0,
     SpecificRule = 1,
+}
+
+/// <summary>
+/// Provenance label for evidence. Agent-supplied fields are never higher than agent_reported.
+/// </summary>
+public enum EvidenceConfidence
+{
+    AgentReported = 0,
+    ServerObserved = 1,
+    ExternallyCorrelated = 2,
 }
 
 public enum ThreatIntelFeedKind

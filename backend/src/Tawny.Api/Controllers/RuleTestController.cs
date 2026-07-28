@@ -41,7 +41,8 @@ public class RuleTestController(TawnyDbContext db, RuleTestHarness harness) : Co
         {
             return Problem(statusCode: 400, title: "events array is required and must contain at least one event.");
         }
-        var rule = await db.AlertRules.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
+        var tenantId = User.GetTenantId();
+        var rule = await db.AlertRules.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null) return NotFound();
 
         var inputs = req.Events

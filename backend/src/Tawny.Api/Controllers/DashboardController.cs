@@ -66,7 +66,7 @@ public class DashboardController(TawnyDbContext db) : ControllerBase
         var sevenDaysAgo = now.AddDays(-7);
         var taggedRules = await db.AlertRules
             .AsNoTracking()
-            .Where(r => r.MitreTechniquesJson != null)
+            .Where(r => r.TenantId == tenantId && r.MitreTechniquesJson != null)
             .Select(r => new { r.Id, r.MitreTechniquesJson })
             .ToListAsync(ct);
         var techniqueByRule = new Dictionary<Guid, List<string>>();

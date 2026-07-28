@@ -3,6 +3,7 @@ namespace Tawny.Domain.Entities;
 public class AlertRule
 {
     public Guid Id { get; set; }
+    public Guid TenantId { get; set; } = Tawny.Domain.TenantDefaults.DefaultTenantId;
     public required string Name { get; set; }
     public AlertRuleFormat Format { get; set; } = AlertRuleFormat.TawnyPredicate;
     public string? ExternalId { get; set; }
@@ -19,5 +20,6 @@ public class AlertRule
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
+    public Tenant? Tenant { get; set; }
     public List<Alert> Alerts { get; set; } = [];
 }

@@ -3,6 +3,7 @@ namespace Tawny.Domain.Entities;
 public class Alert
 {
     public long Id { get; set; }
+    public Guid TenantId { get; set; } = Tawny.Domain.TenantDefaults.DefaultTenantId;
     public Guid AlertRuleId { get; set; }
     public Guid AgentId { get; set; }
     public long TelemetryEventId { get; set; }
@@ -24,6 +25,7 @@ public class Alert
     public string? EnrichmentJson { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
+    public Tenant? Tenant { get; set; }
     public AlertRule? AlertRule { get; set; }
     public Agent? Agent { get; set; }
     public TelemetryEvent? TelemetryEvent { get; set; }

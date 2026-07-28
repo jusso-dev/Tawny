@@ -225,15 +225,25 @@ create_agent_token() {
 
   hmac_secret="$(read_env_value TAWNY_WEB_HMAC_SECRET)"
   timestamp="$(date +%s)"
-  canonical="$(printf 'POST\n/api/enrollment-tokens\n%s\n00000000-0000-0000-0000-000000000000\nAdmin' "$timestamp")"
+  nonce="$(openssl rand -hex 16)"
+  body='{"lifetime_hours":24}'
+  body_hash="$(printf '%s' "$body" | openssl dgst -sha256 | awk '{print $2}')"
+  tenant_id="00000000-0000-0000-0000-000000000001"
+  user_id="00000000-0000-0000-0000-000000000000"
+  role="Admin"
+  content_type="application/json"
+  canonical="$(printf 'v2\nPOST\n/api/enrollment-tokens\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$body_hash" "$content_type" "$user_id" "$role" "$tenant_id" "$timestamp" "$nonce")"
   signature="$(printf '%s' "$canonical" | openssl dgst -sha256 -hmac "$hmac_secret" | awk '{print $2}')"
   response="$(curl -fsS \
     -H 'Content-Type: application/json' \
-    -H 'X-User-Id: 00000000-0000-0000-0000-000000000000' \
-    -H 'X-User-Role: Admin' \
+    -H "X-User-Id: $user_id" \
+    -H "X-User-Role: $role" \
+    -H "X-Tenant-Id: $tenant_id" \
     -H "X-Timestamp: $timestamp" \
+    -H "X-Nonce: $nonce" \
     -H "X-Signature: $signature" \
-    --data '{"lifetime_hours":24}' \
+    --data "$body" \
     "http://localhost:${api_port}/api/enrollment-tokens")"
   token="$(printf '%s' "$response" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   if [[ -z "$token" ]]; then

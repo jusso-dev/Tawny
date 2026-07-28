@@ -18,6 +18,7 @@ pub const HeartbeatResult = struct {
             alloc.free(action.id);
             alloc.free(action.action_type);
             alloc.free(action.payload);
+            alloc.free(action.execution_token);
         }
         if (self.actions.len > 0) alloc.free(self.actions);
     }
@@ -27,6 +28,7 @@ pub const ResponseAction = struct {
     id: []u8,
     action_type: []u8,
     payload: []u8,
+    execution_token: []u8,
 };
 
 pub const Client = struct {
@@ -74,6 +76,7 @@ pub const Client = struct {
             id: []const u8,
             action_type: []const u8,
             payload: std.json.Value,
+            execution_token: []const u8,
         };
         const Parsed = struct {
             rotated_jwt: ?[]const u8 = null,
@@ -95,6 +98,7 @@ pub const Client = struct {
                     self.allocator.free(action.id);
                     self.allocator.free(action.action_type);
                     self.allocator.free(action.payload);
+                    self.allocator.free(action.execution_token);
                 }
                 actions.deinit();
             }
@@ -107,6 +111,7 @@ pub const Client = struct {
                     .id = try self.allocator.dupe(u8, action.id),
                     .action_type = try self.allocator.dupe(u8, action.action_type),
                     .payload = try payload.toOwnedSlice(),
+                    .execution_token = try self.allocator.dupe(u8, action.execution_token),
                 });
             }
             result.actions = try actions.toOwnedSlice();
@@ -117,6 +122,7 @@ pub const Client = struct {
     pub fn reportActionResult(
         self: *Client,
         action_id: []const u8,
+        execution_token: []const u8,
         status: []const u8,
         message: []const u8,
     ) !void {
@@ -125,7 +131,14 @@ pub const Client = struct {
 
         var body = std.array_list.Managed(u8).init(self.allocator);
         defer body.deinit();
-        try body.print("{{\"status\":\"{s}\",\"message\":", .{status});
+        try body.print("{{\"status\":\"{s}\",\"execution_token\":", .{status});
+        {
+            var token_writer: std.Io.Writer.Allocating = .init(self.allocator);
+            defer token_writer.deinit();
+            try std.json.Stringify.value(execution_token, .{}, &token_writer.writer);
+            try body.appendSlice(token_writer.written());
+        }
+        try body.appendSlice(",\"message\":");
         var body_writer: std.Io.Writer.Allocating = .init(self.allocator);
         defer body_writer.deinit();
         try std.json.Stringify.value(message, .{}, &body_writer.writer);

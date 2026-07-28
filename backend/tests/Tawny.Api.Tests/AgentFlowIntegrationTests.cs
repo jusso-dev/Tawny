@@ -75,10 +75,9 @@ public class AgentFlowIntegrationTests(TawnyWebApplicationFactory factory)
         });
         events.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
-        using var readReq = new HttpRequestMessage(
-            HttpMethod.Get,
-            $"/api/agents/{enrollBody.AgentId}/events?type=process_snapshot");
-        readReq.AddWebUserSignature($"/api/agents/{enrollBody.AgentId}/events");
+        var eventsPath = $"/api/agents/{enrollBody.AgentId}/events?type=process_snapshot";
+        using var readReq = new HttpRequestMessage(HttpMethod.Get, eventsPath);
+        readReq.AddWebUserSignature(eventsPath);
         var read = await client.SendAsync(readReq);
         read.EnsureSuccessStatusCode();
         var stored = await read.Content.ReadFromJsonAsync<TelemetryEventBody[]>();
@@ -713,14 +712,26 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         heartbeatBody!.Actions.Should().ContainSingle();
         heartbeatBody.Actions[0].ActionType.Should().Be("kill_process");
         heartbeatBody.Actions[0].Payload.GetProperty("pid").GetInt32().Should().Be(4242);
+        heartbeatBody.Actions[0].ExecutionToken.Should().NotBeNullOrWhiteSpace();
 
         var result = await client.PostAsJsonAsync($"/api/agents/actions/{heartbeatBody.Actions[0].Id}/result", new
         {
             status = "succeeded",
+            execution_token = heartbeatBody.Actions[0].ExecutionToken,
             message = "process terminated",
             result = new { exit_code = 0 },
         });
         result.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        // Replay of the same execution token must fail.
+        var replay = await client.PostAsJsonAsync($"/api/agents/actions/{heartbeatBody.Actions[0].Id}/result", new
+        {
+            status = "succeeded",
+            execution_token = heartbeatBody.Actions[0].ExecutionToken,
+            message = "replay",
+            result = new { exit_code = 0 },
+        });
+        replay.StatusCode.Should().BeOneOf(HttpStatusCode.Conflict, HttpStatusCode.Unauthorized);
 
         using var verifyScope = factory.Services.CreateScope();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<TawnyDbContext>();
@@ -728,6 +739,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         action.Status.Should().Be(ResponseActionStatus.Succeeded);
         action.DispatchedAt.Should().NotBeNull();
         action.CompletedAt.Should().NotBeNull();
+        action.ReceivedAt.Should().NotBeNull();
+        action.ExecutionTokenHash.Should().BeNull();
         action.ResultJson.Should().Contain("process terminated");
     }
 
@@ -787,7 +800,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     private sealed record ResponseActionCommandBody(
         [property: JsonPropertyName("id")] Guid Id,
         [property: JsonPropertyName("action_type")] string ActionType,
-        [property: JsonPropertyName("payload")] System.Text.Json.JsonElement Payload);
+        [property: JsonPropertyName("payload")] System.Text.Json.JsonElement Payload,
+        [property: JsonPropertyName("execution_token")] string ExecutionToken);
 
     private sealed record TelemetryEventBody(
         [property: JsonPropertyName("id")] long Id,

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Tawny.Api.Auth;
 using Tawny.Api.Services;
@@ -35,11 +36,13 @@ public record YaraRuleResponse(
 public class YaraRulesController(TawnyDbContext db, AuditLogger audit) : ControllerBase
 {
     [HttpGet]
+    [EnableRateLimiting("web-read")]
     public async Task<ActionResult<IReadOnlyList<YaraRuleResponse>>> List(CancellationToken ct)
     {
+        var tenantId = User.GetTenantId();
         var rows = await db.AlertRules
             .AsNoTracking()
-            .Where(r => r.Format == AlertRuleFormat.Yara)
+            .Where(r => r.TenantId == tenantId && r.Format == AlertRuleFormat.Yara)
             .OrderBy(r => r.Name)
             .Select(r => new YaraRuleResponse(
                 r.Id, r.Name, r.Description, r.Severity, r.EventType,
@@ -50,6 +53,7 @@ public class YaraRulesController(TawnyDbContext db, AuditLogger audit) : Control
 
     [HttpPost]
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
+    [EnableRateLimiting("rule-imports")]
     public async Task<ActionResult<YaraRuleResponse>> Create(
         [FromBody] CreateYaraRuleRequest req,
         CancellationToken ct)
@@ -68,6 +72,7 @@ public class YaraRulesController(TawnyDbContext db, AuditLogger audit) : Control
         var rule = new AlertRule
         {
             Id = Guid.NewGuid(),
+            TenantId = User.GetTenantId(),
             Name = req.Name.Trim(),
             Format = AlertRuleFormat.Yara,
             Description = string.IsNullOrWhiteSpace(req.Description) ? null : req.Description.Trim(),
@@ -91,14 +96,15 @@ public class YaraRulesController(TawnyDbContext db, AuditLogger audit) : Control
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
-        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id, ct))
+        var tenantId = User.GetTenantId();
+        if (await db.Alerts.AnyAsync(a => a.AlertRuleId == id && a.TenantId == tenantId, ct))
         {
             return Problem(statusCode: 409, title: "Rule has alerts; disable it instead.");
         }
-        var deleted = await db.AlertRules
-            .Where(r => r.Id == id && r.Format == AlertRuleFormat.Yara)
-            .ExecuteDeleteAsync(ct);
-        if (deleted == 0) return NotFound();
+        var rule = await db.AlertRules
+            .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId && r.Format == AlertRuleFormat.Yara, ct);
+        if (rule is null) return NotFound();
+        db.AlertRules.Remove(rule);
         audit.Add(User, "yara_rule.delete", id.ToString());
         await db.SaveChangesAsync(ct);
         return NoContent();
