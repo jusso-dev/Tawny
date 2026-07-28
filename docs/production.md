@@ -290,6 +290,19 @@ TAWNY_SLACK_TIMEOUT_SECONDS=5
 
 Only new alerts generated after Slack is enabled are posted. Tawny records Slack delivery state on the alert row so the dashboard can show whether the webhook send was `sent`, `failed`, `pending`, or `not_configured`.
 
+## Threat intelligence (default feeds)
+
+Tawny seeds Kelpie-parity public starter feeds for every tenant on API startup
+and before each Hangfire TI poll (idempotent by URL). Feodo Tracker and
+OpenPhish are **enabled** by default; PhishTank, Emerging Threats, and
+blocklist.de ship disabled. Imported indicators become IoC alert rules and
+raise Tawny alerts on matching agent telemetry without enabling any alert sink.
+
+Operators can disable feeds, change intervals, or add OTX/MISP/TAXII/CSV feeds
+from the **Threat Intel** dashboard. No environment variable is required for
+the default seed. See the README “Threat intelligence feeds” section for the
+full source table.
+
 ## Kelpie case sink
 
 Kelpie delivery is disabled by default. Configure a Kelpie API token with

@@ -125,7 +125,8 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 - Short-lived, single-use enrollment tokens and generated install commands for Windows services, macOS launchd jobs, and Linux systemd services.
 - Multi-tenant data model and request scoping across agents, telemetry, alerts, enrollment tokens, audit logs, and response actions.
 - Alert rule evaluation on ingest with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
-- IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domain strings seen in process command lines.
+- IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domains in DNS query telemetry (`qname`).
+- Default public threat-intel feeds (Kelpie-parity starters) seeded per tenant on API startup; matching IoCs raise Tawny alerts without Kelpie, UniFi, or other sinks.
 - Alert review workflow with severity, status, matched telemetry payloads, Slack delivery state, Kelpie case delivery, and generated Wazuh-compatible syslog events.
 - Repo-scoped Codex personal-agent skill for Tawny TI lookups, configurable local UniFi event hunts, Kelpie case creation, deduplication, and safe cron command generation.
 - Response action queue with heartbeat dispatch and agent result reporting. `kill_process` is implemented; host isolation is modeled but waits for OS firewall handlers.
@@ -280,6 +281,7 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - [x] Alert rules engine with Tawny predicates
 - [x] Sigma rule imports and starter catalog
 - [x] Threat-intel IoC imports from STIX, OpenIOC, CSV, and raw text
+- [x] Default Kelpie-parity public TI feed seed (Feodo + OpenPhish enabled)
 - [x] Wazuh alert forwarding
 - [x] Slack alert forwarding with delivery state
 - [x] Microsoft Sentinel OAuth/DCR alert and telemetry forwarding
@@ -303,16 +305,29 @@ MD5 values are reported as skipped because the agents do not currently emit MD5 
 
 ## Threat intelligence feeds
 
-Administrators can add scheduled feeds from **Threat Intel**. Tawny includes
-opt-in presets for the public abuse.ch Feodo Tracker botnet C2 blocklist, CINS
-Army hostile-IP list, and OpenPhish community phishing feed. Each preset uses a
-source-appropriate polling interval and severity; OpenPhish URLs are normalized
-to domains for network matching.
+On API startup (and before each feed poll job), Tawny seeds **Kelpie-parity
+starter sources** for every tenant if they are missing. No manual install is
+required for the defaults:
 
-Authenticated OTX, MISP, TAXII, and private CSV/text feeds can be added with
-**New feed**. Imported indicators become normal IoC alert rules. Tawny keeps at
-most 5,000 unique indicators from each run so unusually large public feeds
-cannot grow the rule set without bound.
+| Feed | Default | What it matches |
+| --- | --- | --- |
+| Feodo Tracker Botnet C2 IPs | **Enabled** | Remote IPv4 on network telemetry |
+| OpenPhish Community Phishing URLs | **Enabled** | Domains (from phishing URLs) on DNS `qname` |
+| PhishTank Online Valid Phishing URLs | Off (opt-in) | Domains from verified phishing URLs |
+| Emerging Threats Compromised IPs | Off (opt-in) | Compromised-host IPs |
+| Blocklist.de Recent Attackers | Off (opt-in) | Recent attacker IPs (noisy) |
+
+Hangfire pulls enabled feeds on a schedule (about every 10 minutes, or sooner
+when a feed’s own interval is due). Each indicator becomes an **enabled IoC
+alert rule**. When agent telemetry matches, Tawny creates a normal **alert**
+in the Alerts UI. That path does **not** depend on Kelpie, UniFi, Slack, or
+other sinks — those only forward alerts after creation.
+
+The **Threat Intel** page still lists the same sources as installable presets
+and lets admins add OTX, MISP, TAXII, or private CSV/text feeds with **New
+feed**. OpenPhish-style URLs are normalized to domains. Tawny keeps at most
+5,000 unique indicators per feed run so large public lists cannot grow the
+rule set without bound.
 
 ## Wazuh sink
 

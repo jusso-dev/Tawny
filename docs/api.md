@@ -145,7 +145,9 @@ Auth: web user. Counts for the home page (total agents, online vs offline, recen
 ### POST `/api/threat-intel/lookup`
 
 Auth: web user or API token. Looks up as many as 500 IP, domain, or hash values
-against enabled, feed-backed IoC rules for the caller's tenant.
+against enabled, feed-backed IoC rules for the caller's tenant. Starter public
+feeds (Feodo, OpenPhish, and opt-in companions) are seeded automatically per
+tenant; this endpoint only returns hits once those feeds have imported rules.
 
 ```json
 {
