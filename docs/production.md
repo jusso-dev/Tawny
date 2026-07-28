@@ -50,9 +50,13 @@ Never send enrollment tokens over plaintext WAN links.
 
 Agent JWTs are short-lived (default 60 minutes, rotate within 15). Heartbeats issue rotated JWTs. Each agent has a `CredentialVersion`; admin revoke increments it so old tokens fail.
 
-### Device-bound public keys
+### Device-bound public keys and signed batches
 
-At enrollment the agent generates an Ed25519 keypair, stores the seed in `{state_path}.devicekey` (`0600` when possible), and registers the base64 public key as `device_public_key`. Batch signing / proof-of-possession is not yet enforced; the key is registered for that follow-on.
+At enrollment the agent generates an Ed25519 keypair, stores the seed in `{state_path}.devicekey` (`0600` when possible), and registers the base64 public key as `device_public_key`.
+
+Each telemetry flush includes optional `signature` (base64 Ed25519) over a deterministic canonical form (`tawny-batch-v1` + agent id + batch id + per-event digests). When `Tawny:TelemetryIntegrity:RequireSignatureWhenDeviceKeyPresent` is true (default), agents that registered a device key **must** present a valid signature. Agents enrolled without a device key remain accepted for compatibility.
+
+OS keystores (Keychain / DPAPI / TPM) are preferred long-term; the seed file is the secure fallback.
 
 Revoke immediately:
 

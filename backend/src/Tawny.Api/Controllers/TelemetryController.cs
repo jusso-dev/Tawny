@@ -71,6 +71,36 @@ public class TelemetryController(
             ? Guid.NewGuid()
             : req.BatchId.Value;
 
+        if (!string.IsNullOrWhiteSpace(agent.DevicePublicKey)
+            && options.RequireSignatureWhenDeviceKeyPresent)
+        {
+            var canonical = DeviceBatchSignature.BuildCanonical(agentId, batchId, req.Events);
+            if (!DeviceBatchSignature.TryVerify(agent.DevicePublicKey, req.Signature, canonical))
+            {
+                audit.Add((Guid?)null, tenantId, "telemetry.signature_rejected", agentId.ToString(), new
+                {
+                    batch_id = batchId,
+                    reason = "invalid_or_missing_signature",
+                });
+                await db.SaveChangesAsync(ct);
+                return Problem(statusCode: 401, title: "Invalid or missing device batch signature.");
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(req.Signature) && !string.IsNullOrWhiteSpace(agent.DevicePublicKey))
+        {
+            var canonical = DeviceBatchSignature.BuildCanonical(agentId, batchId, req.Events);
+            if (!DeviceBatchSignature.TryVerify(agent.DevicePublicKey, req.Signature, canonical))
+            {
+                audit.Add((Guid?)null, tenantId, "telemetry.signature_rejected", agentId.ToString(), new
+                {
+                    batch_id = batchId,
+                    reason = "invalid_signature",
+                });
+                await db.SaveChangesAsync(ct);
+                return Problem(statusCode: 401, title: "Invalid device batch signature.");
+            }
+        }
+
         var sequenceAssessment = TelemetryIntegrity.AssessSequence(
             agent,
             req.Events.Select(e => e.Sequence).ToList());

@@ -21,7 +21,9 @@ using Tawny.Jobs.Cloud;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+builder.Host.UseSerilog((ctx, cfg) => cfg
+    .ReadFrom.Configuration(ctx.Configuration)
+    .Enrich.With<Tawny.Api.Logging.SecretRedactingEnricher>());
 
 builder.Services.Configure<AgentJwtOptions>(builder.Configuration.GetSection("Tawny:AgentJwt"));
 builder.Services.Configure<EnrollmentOptions>(builder.Configuration.GetSection("Tawny:Enrollment"));
@@ -299,9 +301,38 @@ if (app.Configuration.GetValue<bool>("Tawny:ApplyMigrationsOnStartup"))
     await db.Database.MigrateAsync();
 }
 
-app.UseSerilogRequestLogging();
+app.UseSerilogRequestLogging(opts =>
+{
+    opts.EnrichDiagnosticContext = (diag, http) =>
+    {
+        // Never log full Authorization or HMAC headers.
+        diag.Set("RequestHost", http.Request.Host.Value ?? "");
+        diag.Set("RequestPath", http.Request.Path.Value ?? "");
+    };
+    opts.GetLevel = (http, elapsed, ex) =>
+        ex is not null || http.Response.StatusCode >= 500
+            ? Serilog.Events.LogEventLevel.Error
+            : Serilog.Events.LogEventLevel.Information;
+});
 app.UseExceptionHandler();
 app.UseStatusCodePages();
+if (app.Environment.IsProduction())
+{
+    // Hide stack traces / internal detail from clients in production.
+    app.Use(async (ctx, next) =>
+    {
+        await next();
+        if (ctx.Response.StatusCode >= 500 && !ctx.Response.HasStarted)
+        {
+            ctx.Response.ContentType = "application/problem+json";
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                title = "An unexpected error occurred.",
+                status = ctx.Response.StatusCode,
+            });
+        }
+    });
+}
 
 // Enable body re-read so WebUser HMAC can bind the request body digest.
 app.Use(async (context, next) =>

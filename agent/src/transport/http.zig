@@ -35,6 +35,8 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     base_url: []const u8,
     jwt: []const u8,
+    agent_id: []const u8 = "",
+    device_key_path: []const u8 = "",
     request_timeout_seconds: u32,
     max_backoff_seconds: u64,
     backoff_seconds: u64 = 0,
@@ -47,6 +49,18 @@ pub const Client = struct {
         request_timeout_seconds: u32,
         max_backoff_seconds: u32,
     ) !Client {
+        return initFull(alloc, base_url, jwt, "", "", request_timeout_seconds, max_backoff_seconds);
+    }
+
+    pub fn initFull(
+        alloc: std.mem.Allocator,
+        base_url: []const u8,
+        jwt: []const u8,
+        agent_id: []const u8,
+        device_key_path: []const u8,
+        request_timeout_seconds: u32,
+        max_backoff_seconds: u32,
+    ) !Client {
         if (request_timeout_seconds == 0 or max_backoff_seconds == 0) {
             return error.InvalidTransportConfig;
         }
@@ -54,6 +68,8 @@ pub const Client = struct {
             .allocator = alloc,
             .base_url = base_url,
             .jwt = jwt,
+            .agent_id = agent_id,
+            .device_key_path = device_key_path,
             .request_timeout_seconds = request_timeout_seconds,
             .max_backoff_seconds = max_backoff_seconds,
         };
@@ -162,6 +178,16 @@ pub const Client = struct {
         batch_id[8] = (batch_id[8] & 0x3f) | 0x80;
         var batch_uuid: [36]u8 = undefined;
         formatUuid(batch_id, &batch_uuid);
+
+        // Build canonical string for Ed25519 device signature while emitting events.
+        var canonical = std.array_list.Managed(u8).init(self.allocator);
+        defer canonical.deinit();
+        try canonical.appendSlice("tawny-batch-v1\n");
+        try canonical.appendSlice(self.agent_id);
+        try canonical.append('\n');
+        try canonical.appendSlice(&batch_uuid);
+        try canonical.append('\n');
+
         try body.appendSlice("{\"batch_id\":\"");
         try body.appendSlice(&batch_uuid);
         try body.appendSlice("\",\"events\":[");
@@ -183,9 +209,29 @@ pub const Client = struct {
             try body.print(
                 \\,"occurred_at":{d},"sequence":{d},"payload":{s}}}
             , .{ ev.occurred_at, ev.sequence, ev.payload });
+
+            // Canonical line: client_event_id|sequence|type|occurred_at|sha256(payload)
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(ev.payload, &digest, .{});
+            try canonical.appendSlice(&uuid);
+            try canonical.append('|');
+            const meta = try std.fmt.allocPrint(self.allocator, "{d}|{s}|{d}|", .{ ev.sequence, ev.event_type, ev.occurred_at });
+            defer self.allocator.free(meta);
+            try canonical.appendSlice(meta);
+            try appendHexLower(&canonical, &digest);
+            try canonical.append('\n');
+
             sent_count += 1;
         }
-        try body.appendSlice("]}");
+        try body.appendSlice("]");
+
+        if (trySignBatch(self.allocator, self.device_key_path, canonical.items)) |sig_b64| {
+            defer self.allocator.free(sig_b64);
+            try body.appendSlice(",\"signature\":\"");
+            try body.appendSlice(sig_b64);
+            try body.appendSlice("\"");
+        }
+        try body.appendSlice("}");
 
         const response = try self.post("/api/agents/events", body.items);
         defer self.allocator.free(response);
@@ -193,6 +239,31 @@ pub const Client = struct {
             self.noteFailure();
             return err;
         };
+    }
+
+    fn appendHexLower(list: *std.array_list.Managed(u8), bytes: []const u8) !void {
+        const hex = "0123456789abcdef";
+        for (bytes) |b| {
+            try list.append(hex[b >> 4]);
+            try list.append(hex[b & 0xf]);
+        }
+    }
+
+    fn trySignBatch(alloc: std.mem.Allocator, device_key_path: []const u8, canonical: []const u8) ?[]u8 {
+        if (device_key_path.len == 0) return null;
+        const io = iox.current();
+        const file = std.Io.Dir.cwd().openFile(io, device_key_path, .{}) catch return null;
+        defer file.close(io);
+        var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
+        const n = file.readPositionalAll(io, &seed, 0) catch return null;
+        if (n != seed.len) return null;
+        const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return null;
+        const sig = kp.sign(canonical, null) catch return null;
+        const Encoder = std.base64.standard.Encoder;
+        const out_len = Encoder.calcSize(sig.toBytes().len);
+        const out = alloc.alloc(u8, out_len) catch return null;
+        _ = Encoder.encode(out, &sig.toBytes());
+        return out;
     }
 
     fn post(self: *Client, path: []const u8, body: []const u8) ![]u8 {

@@ -46,6 +46,9 @@
     <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
 
+    <!-- Device-bound Ed25519 signatures -->
+    <PackageVersion Include="NSec.Cryptography" Version="24.4.0" />
+
     <!-- OpenAPI -->
     <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
 

@@ -6,7 +6,9 @@ namespace Tawny.Api.Models;
 
 public record IngestEventsRequest(
     IReadOnlyList<TelemetryEventIngest> Events,
-    Guid? BatchId = null);
+    Guid? BatchId = null,
+    /// <summary>Base64 Ed25519 signature over DeviceBatchSignature canonical form.</summary>
+    string? Signature = null);
 
 public record TelemetryEventIngest(
     Guid? ClientEventId,

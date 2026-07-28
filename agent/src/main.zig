@@ -39,10 +39,14 @@ pub fn main(init: std.process.Init) !void {
         try config_mod.save(&cfg);
     }
 
-    var http = try transport.Client.init(
+    const device_key_path = try std.fmt.allocPrint(alloc, "{s}.devicekey", .{cfg.state_path});
+    defer alloc.free(device_key_path);
+    var http = try transport.Client.initFull(
         alloc,
         cfg.backend_url,
         cfg.agent_jwt.?,
+        cfg.agent_id orelse "",
+        device_key_path,
         cfg.http_timeout_seconds,
         cfg.max_retry_backoff_seconds,
     );
