@@ -4,6 +4,7 @@ WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
 COPY prisma ./prisma
+COPY patches ./patches
 RUN pnpm install --frozen-lockfile || pnpm install
 
 FROM node:22-alpine AS build
