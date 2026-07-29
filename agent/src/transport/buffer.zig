@@ -29,6 +29,9 @@ pub const Buffer = struct {
     acknowledged_offset: u64 = spool_header_len,
     next_load_offset: u64 = spool_header_len,
     next_sequence: u64 = 1,
+    /// Logical end of spool file. Tracked in memory because Windows denies
+    /// `File.stat` on handles opened for write (AccessDenied in Io.Threaded).
+    spool_size: u64 = spool_header_len,
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -84,20 +87,22 @@ pub const Buffer = struct {
         try self.ensureSpool();
         try self.compactIfUseful(record.len);
 
+        const offset = self.spool_size;
+        if (offset + record.len > self.max_spool_bytes) return error.SpoolFull;
+
         const io = iox.current();
         var file = try std.Io.Dir.cwd().createFile(io, self.spool_path, .{ .truncate = false });
         defer file.close(io);
-        const offset = (try file.stat(io)).size;
-        if (offset + record.len > self.max_spool_bytes) return error.SpoolFull;
         try file.writePositionalAll(io, record, offset);
         try file.sync(io);
+        self.spool_size = offset + record.len;
 
         self.pending_count += 1;
         if (self.list.items.len < self.capacity) {
             const seq = self.next_sequence;
             self.next_sequence += 1;
-            try self.appendOwned(id, seq, ev.occurred_at, ev.event_type, ev.payload, offset + record.len);
-            self.next_load_offset = offset + record.len;
+            try self.appendOwned(id, seq, ev.occurred_at, ev.event_type, ev.payload, self.spool_size);
+            self.next_load_offset = self.spool_size;
         } else {
             // Still advance sequence so disk-loaded events later get unique ids after restart path.
             self.next_sequence += 1;
@@ -150,6 +155,7 @@ pub const Buffer = struct {
         self.pending_count = 0;
         self.acknowledged_offset = spool_header_len;
         self.next_load_offset = spool_header_len;
+        self.spool_size = spool_header_len;
 
         const io = iox.current();
         const file = std.Io.Dir.cwd().openFile(io, self.spool_path, .{}) catch |err| switch (err) {
@@ -161,10 +167,12 @@ pub const Buffer = struct {
         };
         defer file.close(io);
 
+        // Read-only open: File.stat is reliable on Windows here (write handles are not).
         const stat = try file.stat(io);
         if (stat.size > self.max_spool_bytes) return error.SpoolTooLarge;
         const raw = try iox.readToEndAlloc(file, self.allocator, @intCast(self.max_spool_bytes));
         defer self.allocator.free(raw);
+        self.spool_size = raw.len;
 
         if (raw.len < spool_header_len or !std.mem.eql(u8, raw[0..spool_magic.len], spool_magic)) {
             try self.convertLegacy(raw);
@@ -272,6 +280,7 @@ pub const Buffer = struct {
         const header = makeHeader(spool_header_len);
         try file.writePositionalAll(io, &header, 0);
         try file.sync(io);
+        self.spool_size = spool_header_len;
         try syncParentDirectory(self.spool_path);
     }
 
@@ -288,11 +297,7 @@ pub const Buffer = struct {
 
     fn compactIfUseful(self: *Buffer, incoming_len: usize) !void {
         const io = iox.current();
-        const size = size: {
-            const file = try std.Io.Dir.cwd().openFile(io, self.spool_path, .{});
-            defer file.close(io);
-            break :size (try file.stat(io)).size;
-        };
+        const size = self.spool_size;
         const reclaimable = self.acknowledged_offset - spool_header_len;
         if (reclaimable == 0) return;
         if (size + incoming_len <= self.max_spool_bytes and reclaimable < self.max_spool_bytes / 4) return;
@@ -305,6 +310,8 @@ pub const Buffer = struct {
         defer self.allocator.free(raw);
         if (self.acknowledged_offset > raw.len) return error.CorruptSpoolHeader;
 
+        const kept = raw[@intCast(self.acknowledged_offset)..];
+        const new_size = spool_header_len + kept.len;
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.spool_path});
         defer self.allocator.free(tmp_path);
         {
@@ -315,7 +322,7 @@ pub const Buffer = struct {
             defer tmp.close(io);
             const header = makeHeader(spool_header_len);
             try tmp.writePositionalAll(io, &header, 0);
-            try tmp.writePositionalAll(io, raw[@intCast(self.acknowledged_offset)..], spool_header_len);
+            try tmp.writePositionalAll(io, kept, spool_header_len);
             try tmp.sync(io);
         }
         try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), self.spool_path, io);
@@ -324,6 +331,7 @@ pub const Buffer = struct {
         for (self.list.items) |*event| event.spool_end -= reclaimable;
         self.next_load_offset -= reclaimable;
         self.acknowledged_offset = spool_header_len;
+        self.spool_size = new_size;
     }
 
     fn convertLegacy(self: *Buffer, raw: []const u8) !void {
@@ -374,6 +382,7 @@ pub const Buffer = struct {
                 offset += record.len;
             }
             try tmp.sync(io);
+            self.spool_size = offset;
         }
         try std.Io.Dir.cwd().rename(tmp_path, std.Io.Dir.cwd(), self.spool_path, io);
         try syncParentDirectory(self.spool_path);
@@ -540,11 +549,14 @@ test "buffer recovers valid records around corruption" {
 
     const io = iox.current();
     {
+        // Append garbage at end without File.stat on a write handle (Windows
+        // returns AccessDenied). Size is known from the buffer after push.
+        const offset = b.spool_size;
         var file = try std.Io.Dir.cwd().createFile(io, spill_path, .{ .truncate = false });
         defer file.close(io);
-        const offset = (try file.stat(io)).size;
         try file.writePositionalAll(io, "bad-record", offset);
         try file.sync(io);
+        b.spool_size = offset + "bad-record".len;
     }
     try b.push(.{ .event_type = "second", .occurred_at = 2, .payload = "{}" });
 

@@ -16,9 +16,4 @@ public class Tenant
     public List<SuppressionRule> SuppressionRules { get; set; } = [];
     public List<ApiToken> ApiTokens { get; set; } = [];
     public List<ThreatIntelFeed> ThreatIntelFeeds { get; set; } = [];
-    public List<Case> Cases { get; set; } = [];
-    public List<UniFiIntegration> UniFiIntegrations { get; set; } = [];
-    public List<UniFiEventMatch> UniFiEventMatches { get; set; } = [];
-    public List<CloudConnection> CloudConnections { get; set; } = [];
-    public List<CloudHunt> CloudHunts { get; set; } = [];
 }

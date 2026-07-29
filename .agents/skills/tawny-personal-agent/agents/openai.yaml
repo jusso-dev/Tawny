@@ -1,4 +1,0 @@
-interface:
-  display_name: "Tawny Personal Agent"
-  short_description: "Run safe Tawny, UniFi, and Kelpie workflows"
-  default_prompt: "Use $tawny-personal-agent to check network events against threat intel and create Kelpie cases."

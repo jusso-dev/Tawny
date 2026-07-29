@@ -12,8 +12,6 @@ import {
   KeyRound,
   LayoutDashboard,
   Menu,
-  Network,
-  PlugZap,
   Radar,
   ShieldCheck,
   ShieldOff,
@@ -31,11 +29,9 @@ export type AppSection =
   | "detections"
   | "hunt"
   | "suppressions"
-  | "investigation"
   | "threat-intel"
   | "audit"
   | "tokens"
-  | "integrations"
   | "enrollment";
 
 type NavItem = {
@@ -58,7 +54,6 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     label: "Analysis",
     items: [
       { href: "/hunt" as Route, label: "Hunt", key: "hunt", icon: TerminalSquare },
-      { href: "/investigation" as Route, label: "Investigate", key: "investigation", icon: Network },
     ],
   },
   {
@@ -74,7 +69,6 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { href: "/audit" as Route, label: "Audit", key: "audit", icon: FileClock },
       { href: "/api-tokens" as Route, label: "Tokens", key: "tokens", icon: Compass },
-      { href: "/integrations" as Route, label: "Integrations", key: "integrations", icon: PlugZap },
       { href: "/enrollment", label: "Enrollment", key: "enrollment", icon: KeyRound },
     ],
   },

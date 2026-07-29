@@ -126,9 +126,8 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 - Multi-tenant data model and request scoping across agents, telemetry, alerts, enrollment tokens, audit logs, and response actions.
 - Alert rule evaluation on ingest with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
 - IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domains in DNS query telemetry (`qname`).
-- Default public threat-intel feeds (Kelpie-parity starters) seeded per tenant on API startup; matching IoCs raise Tawny alerts without Kelpie, UniFi, or other sinks.
-- Alert review workflow with severity, status, matched telemetry payloads, Slack delivery state, Kelpie case delivery, and generated Wazuh-compatible syslog events.
-- Repo-scoped Codex personal-agent skill for Tawny TI lookups, configurable local UniFi event hunts, Kelpie case creation, deduplication, and safe cron command generation.
+- Default public threat-intel feeds seeded per tenant on API startup; matching IoCs raise Tawny alerts.
+- Alert review workflow with severity, status, matched telemetry payloads, Slack/Sentinel delivery state, and generated Wazuh-compatible syslog events.
 - Response action queue with heartbeat dispatch and agent result reporting. `kill_process` is implemented; host isolation is modeled but waits for OS firewall handlers.
 - Hangfire jobs for stale/offline agent status, retention cleanup, telemetry backups, and GitHub release synchronization.
 - Better Auth dashboard login with email/password and optional GitHub OAuth, plus HMAC-signed server-to-API calls.
@@ -281,7 +280,7 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - [x] Alert rules engine with Tawny predicates
 - [x] Sigma rule imports and starter catalog
 - [x] Threat-intel IoC imports from STIX, OpenIOC, CSV, and raw text
-- [x] Default Kelpie-parity public TI feed seed (Feodo + OpenPhish enabled)
+- [x] Default public TI feed seed (Feodo + OpenPhish enabled)
 - [x] Wazuh alert forwarding
 - [x] Slack alert forwarding with delivery state
 - [x] Microsoft Sentinel OAuth/DCR alert and telemetry forwarding
@@ -305,8 +304,8 @@ MD5 values are reported as skipped because the agents do not currently emit MD5 
 
 ## Threat intelligence feeds
 
-On API startup (and before each feed poll job), Tawny seeds **Kelpie-parity
-starter sources** for every tenant if they are missing. No manual install is
+On API startup (and before each feed poll job), Tawny seeds **starter TI
+sources** for every tenant if they are missing. No manual install is
 required for the defaults:
 
 | Feed | Default | What it matches |
@@ -320,7 +319,7 @@ required for the defaults:
 Hangfire pulls enabled feeds on a schedule (about every 10 minutes, or sooner
 when a feed’s own interval is due). Each indicator becomes an **enabled IoC
 alert rule**. When agent telemetry matches, Tawny creates a normal **alert**
-in the Alerts UI. That path does **not** depend on Kelpie, UniFi, Slack, or
+in the Alerts UI. That path does **not** depend on Slack, Sentinel, or
 other sinks — those only forward alerts after creation.
 
 The **Threat Intel** page still lists the same sources as installable presets
@@ -387,57 +386,6 @@ TAWNY_SOC_API_TOKEN=replace-me
 ```
 
 Requests use JSON and an optional bearer token. Raw telemetry is off by default because it is sensitive and high-volume. Use HTTPS outside a trusted local development network.
-
-## Kelpie case sink
-
-Tawny owns endpoint telemetry, detections, and alerts. It does not provide an
-internal case-management workspace; optional cases live in Kelpie.
-
-Tawny can create a detailed [Kelpie](https://github.com/jusso-dev/Kelpie) case
-for every new alert. Each case includes rule, endpoint, telemetry, enrichment,
-and a stable `tawny-alert-<id>` tag. Delivery state and Kelpie case number appear
-on the alert.
-
-```bash
-TAWNY_KELPIE_ENABLED=true
-TAWNY_KELPIE_BASE_URL=http://kelpie:3000
-TAWNY_KELPIE_API_TOKEN=...
-TAWNY_KELPIE_INCLUDE_TELEMETRY_PAYLOAD=true
-```
-
-Kelpie token needs `cases:write`. See
-[Personal AI agent](docs/personal-agent.md) for Codex/local-agent TI lookup,
-UniFi matching, case creation, and cron setup.
-
-## UniFi integration
-
-Administrators can configure the local UniFi connector from **Integrations >
-UniFi Network**. Tawny encrypts the API key before storing it, tests the local
-Network API, polls a configured JSON event endpoint on schedule, matches IPs and
-domains against imported threat intelligence, and creates deduplicated Kelpie
-cases.
-
-Create the API key and find the supported read endpoint in **UniFi Network >
-Settings > Control Plane > Integrations**. Use the controller's private IP in
-Tawny; public destinations are rejected. UniFi OS and Network versions are
-separate: **Save and test** reports the installed Network application version
-and verifies the configured event endpoint and records path.
-See [Personal AI agent](docs/personal-agent.md#ui-managed-unifi-connector) for
-field-by-field setup and transport limitations.
-
-## Cloud hunting and monitoring
-
-Administrators can configure least-privilege AWS and Azure connections from
-**Integrations > Cloud hunting**. Tawny queries CloudTrail, GuardDuty, Azure
-Activity Logs, and Microsoft Entra audit/sign-in logs on demand or on a
-per-hunt schedule, then stores bounded,
-deduplicated findings with actor, resource, severity, and raw evidence. It does
-not ingest every provider log or attempt CSPM posture management.
-
-AWS uses AssumeRole plus external ID; Azure prefers managed/workload identity
-and supports an encrypted client-secret fallback. Setup policies, query JSON,
-watermark behavior, and operational limits are documented in
-[Cloud hunting and monitoring](docs/cloud-hunting.md).
 
 ## Security notes
 
