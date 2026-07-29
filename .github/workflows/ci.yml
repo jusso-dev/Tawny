@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -65,20 +66,124 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
 
+  # Native build + unit tests on real Windows / macOS / Linux runners.
+  # Proves platform collectors and the binary actually run, not just cross-compile.
   agent:
-    name: agent (${{ matrix.target.name }})
+    name: agent (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    env:
+      ZIG_VERSION: "0.16.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            zig_triple: x86_64-linux
+            archive_ext: tar.xz
+            sha256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+            binary_ext: ""
+          - name: windows-x64
+            os: windows-latest
+            zig_triple: x86_64-windows
+            archive_ext: zip
+            sha256: 68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e
+            binary_ext: ".exe"
+          - name: macos-arm64
+            os: macos-latest
+            zig_triple: aarch64-macos
+            archive_ext: tar.xz
+            sha256: b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+            binary_ext: ""
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Zig
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          zig_version="${ZIG_VERSION}"
+          triple="${{ matrix.zig_triple }}"
+          ext="${{ matrix.archive_ext }}"
+          sha256="${{ matrix.sha256 }}"
+          archive="$RUNNER_TEMP/zig-${triple}.${ext}"
+          zig_dir="$RUNNER_TEMP/zig-${zig_version}"
+          url="https://ziglang.org/download/${zig_version}/zig-${triple}-${zig_version}.${ext}"
+
+          # Keep flags portable: Windows ships curl.exe, not GNU curl.
+          curl -fsSL --retry 3 "$url" -o "$archive"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${sha256}  ${archive}" | sha256sum -c -
+          else
+            echo "${sha256}  ${archive}" | shasum -a 256 -c -
+          fi
+
+          mkdir -p "$zig_dir"
+          if [[ "$ext" == "zip" ]]; then
+            # Windows zip layout: zig-<triple>-<version>/zig.exe
+            # Python is on every GitHub-hosted runner and avoids bash/unzip path issues.
+            python -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" \
+              "$archive" "$RUNNER_TEMP"
+            mv "$RUNNER_TEMP/zig-${triple}-${zig_version}"/* "$zig_dir/"
+          else
+            tar -xJf "$archive" -C "$zig_dir" --strip-components=1
+          fi
+
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
+      - name: build
+        run: zig build -Doptimize=ReleaseSafe
+      - name: test
+        run: zig build test
+      - name: smoke-run binary
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          bin="zig-out/bin/tawny-agent${{ matrix.binary_ext }}"
+          test -f "$bin"
+          # Binary always prints the start banner, then exits without enrollment
+          # token (default config has no agent_id). Capture output and assert.
+          set +e
+          out="$("$bin" 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -F "tawny-agent 0.1.0 starting"
+          test "$status" -ne 0
+      - name: test installer upgrade and recovery paths
+        if: matrix.name == 'linux-x64'
+        run: bash install/test-install.sh
+      - name: package CI artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "zig-out/bin/tawny-agent${{ matrix.binary_ext }}" \
+            "dist/tawny-agent-${{ matrix.name }}${{ matrix.binary_ext }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tawny-agent-${{ matrix.name }}
+          path: agent/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Cross-compile remaining release targets (no native runner for these).
+  agent-cross:
+    name: agent-cross (${{ matrix.target.name }})
     runs-on: ubuntu-latest
     env:
-      ZIG_VERSION: 0.16.0
+      ZIG_VERSION: "0.16.0"
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
     strategy:
       fail-fast: false
       matrix:
         target:
-          - { name: windows-x64, zig: x86_64-windows-gnu, ext: ".exe" }
-          - { name: linux-x64, zig: x86_64-linux-gnu, ext: "" }
           - { name: linux-arm64, zig: aarch64-linux-gnu, ext: "" }
-          - { name: macos-arm64, zig: aarch64-macos, ext: "" }
           - { name: macos-x64, zig: x86_64-macos, ext: "" }
+          # windows-x64 / linux-x64 / macos-arm64 covered by native agent job
     defaults:
       run:
         working-directory: agent
@@ -88,19 +193,16 @@ jobs:
         run: |
           set -euo pipefail
           zig_dir="$RUNNER_TEMP/zig-$ZIG_VERSION"
-          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+            "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz" \
+            -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
           mkdir -p "$zig_dir"
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$zig_dir" --strip-components=1
           echo "$zig_dir" >> "$GITHUB_PATH"
           "$zig_dir/zig" version
       - name: build
         run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
-      - name: test
-        if: matrix.target.name == 'linux-x64'
-        run: zig build test -Dtarget=x86_64-linux-musl
-      - name: test installer upgrade and recovery paths
-        if: matrix.target.name == 'linux-x64'
-        run: bash install/test-install.sh
       - name: package CI artifact
         run: |
           set -euo pipefail
@@ -109,7 +211,7 @@ jobs:
             "dist/tawny-agent-${{ matrix.target.name }}${{ matrix.target.ext }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: tawny-agent-${{ matrix.target.name }}
+          name: tawny-agent-cross-${{ matrix.target.name }}
           path: agent/dist/
           if-no-files-found: error
           retention-days: 7

@@ -133,7 +133,7 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 - Hangfire jobs for stale/offline agent status, retention cleanup, telemetry backups, and GitHub release synchronization.
 - Better Auth dashboard login with email/password and optional GitHub OAuth, plus HMAC-signed server-to-API calls.
 - Docker bootstrap scripts for repeatable local development, optional real Linux agent container, SQL migrations, generated secrets, and seeded admin user.
-- CI, security audit, and release workflows for building and publishing agent artefacts with SHA-256 sidecars.
+- CI builds and unit-tests the Zig agent natively on Windows, macOS, and Linux (plus cross-compiles remaining release targets), with on-demand `workflow_dispatch`; security audit and release workflows publish agent artefacts with SHA-256 sidecars.
 
 ## Repo layout
 
