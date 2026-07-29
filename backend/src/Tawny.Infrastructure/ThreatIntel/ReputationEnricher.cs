@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,19 @@ public class ReputationOptions
     public string? VirusTotalApiKey { get; set; }
     public string? AbuseIpDbApiKey { get; set; }
     public string? GreyNoiseApiKey { get; set; }
+
+    /// <summary>Origin of a Brolga instance, for example <c>http://brolga:8787</c>.</summary>
+    /// <remarks>
+    /// Origin only: the <c>/api/v1</c> prefix is added when the request is built, so a base URL
+    /// carrying a path would produce a doubled one.
+    /// </remarks>
+    public string? BrolgaBaseUrl { get; set; }
+
+    /// <summary>
+    /// Bearer token for Brolga. Required whenever <see cref="BrolgaBaseUrl"/> is set, because
+    /// Brolga refuses to serve a reachable address without one.
+    /// </summary>
+    public string? BrolgaApiToken { get; set; }
     public int CacheTtlHours { get; set; } = 24;
     public int TimeoutSeconds { get; set; } = 10;
     public bool EnrichAlertsAutomatically { get; set; } = true;
@@ -111,6 +125,7 @@ public class ReputationEnricher(
             ReputationProvider.VirusTotal => await ProbeVirusTotalAsync(kind, value, timeoutCts.Token),
             ReputationProvider.AbuseIpDb => await ProbeAbuseIpDbAsync(kind, value, timeoutCts.Token),
             ReputationProvider.GreyNoise => await ProbeGreyNoiseAsync(kind, value, timeoutCts.Token),
+            ReputationProvider.Brolga => await ProbeBrolgaAsync(kind, value, timeoutCts.Token),
             _ => null,
         };
     }
@@ -249,5 +264,113 @@ public class ReputationEnricher(
         {
             yield return ReputationProvider.GreyNoise;
         }
+        // Brolga answers about every indicator kind Tawny extracts, and it is the operator's own
+        // intelligence rather than a third party's, so it is asked whenever it is configured.
+        if (!string.IsNullOrWhiteSpace(_opts.BrolgaBaseUrl)
+            && !string.IsNullOrWhiteSpace(_opts.BrolgaApiToken)
+            && BrolgaSubjectKind(kind) is not null)
+        {
+            yield return ReputationProvider.Brolga;
+        }
+    }
+
+    /// <summary>
+    /// Tawny's indicator kind as Brolga spells it.
+    /// </summary>
+    /// <remarks>
+    /// Returns <c>null</c> for a kind Brolga does not accept, so the provider is not offered at
+    /// all rather than asked and refused. Brolga normalises the value itself — case, whitespace,
+    /// IPv6 abbreviation — so only the kind needs translating.
+    /// </remarks>
+    private static string? BrolgaSubjectKind(string kind) => kind switch
+    {
+        "sha256" => "sha256",
+        "sha1" => "sha1",
+        "md5" => "md5",
+        "ipv4" => "ipv4",
+        "ipv6" => "ipv6",
+        "domain" => "domain",
+        "url" => "url",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Asks Brolga what is known about the indicator.
+    /// </summary>
+    /// <remarks>
+    /// Brolga's <c>unknown</c> maps to <see cref="ReputationVerdict.Unknown"/> and never to
+    /// <see cref="ReputationVerdict.Clean"/>. It means Brolga has not heard of the indicator, and
+    /// reading that as "clean" would suppress an alert that nothing has actually cleared.
+    /// </remarks>
+    private async Task<ReputationLookup?> ProbeBrolgaAsync(string kind, string value, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_opts.BrolgaBaseUrl)) return null;
+        if (string.IsNullOrWhiteSpace(_opts.BrolgaApiToken)) return null;
+
+        var subjectKind = BrolgaSubjectKind(kind);
+        if (subjectKind is null) return null;
+
+        if (!Uri.TryCreate(_opts.BrolgaBaseUrl.TrimEnd('/') + "/api/v1/context", UriKind.Absolute, out var endpoint)
+            || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+        {
+            log.LogWarning("Brolga base URL is not a usable absolute http(s) URL; skipping lookup");
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opts.BrolgaApiToken.Trim());
+        request.Content = JsonContent.Create(
+            new
+            {
+                subject = new { kind = subjectKind, value },
+                purpose = "incident_triage",
+            },
+            options: JsonOptions);
+
+        using var response = await http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new ReputationLookup(
+                ReputationProvider.Brolga,
+                ReputationVerdict.Error,
+                null,
+                new { http_status = (int)response.StatusCode });
+        }
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        var disposition = root.TryGetProperty("disposition", out var d) ? d.GetString() : null;
+        var verdict = disposition switch
+        {
+            "malicious" => ReputationVerdict.Malicious,
+            "suspicious" => ReputationVerdict.Suspicious,
+            "benign" => ReputationVerdict.Clean,
+            "allow_listed" => ReputationVerdict.AllowListed,
+            // Covers "unknown" and any disposition a later Brolga adds. An unrecognised
+            // disposition must not be guessed at: treating it as clean would suppress an alert.
+            _ => ReputationVerdict.Unknown,
+        };
+
+        // Carried through so an analyst can see where the verdict came from. A verdict with
+        // nothing to cite is one nobody can act on with confidence.
+        var evidence = root.TryGetProperty("evidence", out var e) ? e.GetRawText() : "[]";
+        var gaps = root.TryGetProperty("gaps", out var g) ? g.GetRawText() : "[]";
+        var entities = root.TryGetProperty("entities", out var n) ? n.GetRawText() : "[]";
+
+        return new ReputationLookup(
+            ReputationProvider.Brolga,
+            verdict,
+            null,
+            new
+            {
+                disposition,
+                observable_id = root.TryGetProperty("observable_id", out var o) ? o.GetString() : null,
+                schema_version = root.TryGetProperty("schema_version", out var s) ? s.GetString() : null,
+                entities = JsonDocument.Parse(entities).RootElement.Clone(),
+                evidence = JsonDocument.Parse(evidence).RootElement.Clone(),
+                gaps = JsonDocument.Parse(gaps).RootElement.Clone(),
+            });
     }
 }
