@@ -151,6 +151,7 @@ public enum ReputationProvider
     VirusTotal = 0,
     AbuseIpDb = 1,
     GreyNoise = 2,
+    Brolga = 3,
 }
 
 public enum ReputationVerdict
@@ -160,6 +161,16 @@ public enum ReputationVerdict
     Suspicious = 2,
     Malicious = 3,
     Error = 4,
+
+    /// <summary>
+    /// Deliberately excluded from detection, for example known-good infrastructure.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Clean"/>: clean is a finding about the indicator, allow-listed is
+    /// a decision about how it is treated regardless of the finding. Collapsing them would let a
+    /// feed's opinion override an operator's decision.
+    /// </remarks>
+    AllowListed = 5,
 }
 
 public enum CloudProvider
