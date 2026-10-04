@@ -188,17 +188,26 @@ public class AlertRulesController(
     [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<ActionResult<AlertRuleResponse>> Update(Guid id, UpdateAlertRuleRequest req, CancellationToken ct)
     {
-        var validation = ValidateRule(req.Name, req.Operator, req.PayloadPath, req.MatchValue);
-        if (validation is not null)
-        {
-            return validation;
-        }
-
         var tenantId = User.GetTenantId();
         var rule = await db.AlertRules.FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (rule is null)
         {
             return NotFound();
+        }
+
+        // Predicate validation applies to native rules only; imported rules keep their stored
+        // logic (which may legitimately have no single path/value, e.g. multi-selection Sigma).
+        if (rule.Format == AlertRuleFormat.TawnyPredicate)
+        {
+            var validation = ValidateRule(req.Name, req.Operator, req.PayloadPath, req.MatchValue);
+            if (validation is not null)
+            {
+                return validation;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(req.Name))
+        {
+            return Problem(statusCode: 400, title: "name is required.");
         }
 
         if (rule.Format != AlertRuleFormat.TawnyPredicate)

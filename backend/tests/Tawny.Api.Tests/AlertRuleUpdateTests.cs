@@ -56,6 +56,53 @@ level: high
     }
 
     [Fact]
+    public async Task MultiSelectionSigmaRule_CanBeDisabled()
+    {
+        await factory.ResetDatabaseAsync();
+        var client = factory.CreateClient();
+        const string yaml = """
+title: Multi selection
+id: 9c6f0f07-5a44-4c41-83cc-2e0e0f6ef9f2
+logsource:
+  product: windows
+  category: process_creation
+detection:
+  a:
+    processes.name|contains: powershell
+  b:
+    processes.command_line|contains: -enc
+  condition: a and b
+level: high
+""";
+        using var importReq = new HttpRequestMessage(HttpMethod.Post, "/api/alert-rules/sigma")
+        {
+            Content = JsonContent.Create(new { rule_yaml = yaml }),
+        };
+        importReq.AddWebUserSignature("/api/alert-rules/sigma");
+        (await client.SendAsync(importReq)).EnsureSuccessStatusCode();
+
+        Tawny.Domain.Entities.AlertRule rule;
+        using (var scope = factory.Services.CreateScope())
+        {
+            rule = await scope.ServiceProvider.GetRequiredService<TawnyDbContext>()
+                .AlertRules.AsNoTracking().SingleAsync();
+        }
+        rule.MatchValue.Should().BeNull("multi-selection rules are stored as a compiled expression");
+
+        var res = await PutAsync(client, rule.Id, new
+        {
+            name = rule.Name,
+            event_type = rule.EventType,
+            severity = "High",
+            @operator = rule.Operator,
+            payload_path = rule.PayloadPath,
+            match_value = rule.MatchValue,
+            is_enabled = false,
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task ChangingImportedRuleMatchLogic_IsRejected()
     {
         var client = factory.CreateClient();
