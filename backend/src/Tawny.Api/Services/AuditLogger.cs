@@ -21,9 +21,6 @@ public class AuditLogger(TawnyDbContext db)
         Add(userId, user.GetTenantId(), action, target, metadata);
     }
 
-    public void Add(Guid? userId, string action, string? target = null, object? metadata = null)
-        => Add(userId, TenantDefaults.DefaultTenantId, action, target, metadata);
-
     public void Add(Guid? userId, Guid tenantId, string action, string? target = null, object? metadata = null)
     {
         db.AuditLog.Add(new AuditLog

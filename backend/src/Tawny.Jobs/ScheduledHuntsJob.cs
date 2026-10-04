@@ -97,7 +97,7 @@ public class ScheduledHuntsJob(
     private async Task<Guid> EnsureHuntRuleAsync(SavedHunt hunt, CancellationToken ct)
     {
         var externalId = $"saved-hunt:{hunt.Id}";
-        var existing = await db.AlertRules.FirstOrDefaultAsync(r => r.ExternalId == externalId, ct);
+        var existing = await db.AlertRules.FirstOrDefaultAsync(r => r.TenantId == hunt.TenantId && r.ExternalId == externalId, ct);
         if (existing is not null) return existing.Id;
 
         var now = DateTimeOffset.UtcNow;

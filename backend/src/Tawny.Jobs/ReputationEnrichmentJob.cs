@@ -59,7 +59,7 @@ public class ReputationEnrichmentJob(
 
             try
             {
-                var tenantId = alert.Agent?.TenantId ?? Tawny.Domain.TenantDefaults.DefaultTenantId;
+                var tenantId = alert.TenantId;
                 var lookups = await enricher.LookupAsync(tenantId, kind, value, ct);
                 alert.EnrichmentJson = JsonSerializer.Serialize(new
                 {
