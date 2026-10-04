@@ -549,8 +549,9 @@ test "malformed network values are skipped" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "valid.example") != null);
 }
 
-test "macOS connection rows carry the owning pid" {
-    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
+test "connection rows for an in-test TCP socket (macOS: with owning pid)" {
+    const is_mac = builtin.target.os.tag == .macos;
+    if (!is_mac and builtin.target.os.tag != .linux) return error.SkipZigTest;
     const c = std.c;
     const alloc = std.testing.allocator;
 
@@ -574,7 +575,7 @@ test "macOS connection rows carry the owning pid" {
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
-    try std.testing.expectEqualStrings("libproc", root.get("source").?.string);
+    try std.testing.expectEqualStrings(if (is_mac) "libproc" else "procfs", root.get("source").?.string);
     try std.testing.expect(root.get("dns_servers").? == .array);
 
     const me: i64 = c.getpid();
@@ -582,8 +583,10 @@ test "macOS connection rows carry the owning pid" {
     var saw_listener = false;
     for (root.get("connections").?.array.items) |row| {
         const o = row.object;
-        if (o.get("pid").?.integer != me) continue;
-        try std.testing.expect(o.get("process_name").?.string.len > 0);
+        if (is_mac) {
+            if (o.get("pid").?.integer != me) continue;
+            try std.testing.expect(o.get("process_name").?.string.len > 0);
+        }
         if (o.get("remote_port").?.integer == port) {
             try std.testing.expectEqualStrings("tcp", o.get("protocol").?.string);
             try std.testing.expectEqualStrings("127.0.0.1", o.get("remote_address").?.string);

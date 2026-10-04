@@ -322,6 +322,7 @@ test "main module loads" {
     _ = mcp_collector;
     _ = response_actions;
     _ = lifecycle;
+    _ = iox;
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     if (builtin.target.os.tag == .macos) {

@@ -100,6 +100,9 @@ test "process collect runs" {
     };
     defer alloc.free(out);
     try std.testing.expect(std.mem.startsWith(u8, out, "{\"processes\":["));
+    // Every row needs a name; procfs files report size 0, so a reader that
+    // trusts stat().size returns empty names.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"name\":\"\"") == null);
     if (builtin.target.os.tag == .macos) {
         try std.testing.expect(std.mem.indexOf(u8, out, "\"start_time_unix\":") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "\"parent_name\":") != null);

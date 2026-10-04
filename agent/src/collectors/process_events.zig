@@ -433,8 +433,8 @@ test "launch payload shape is shared across platforms" {
     try std.testing.expectEqual(@as(i64, 1730000000), obj.get("start_time_unix").?.integer);
 }
 
-test "macOS launch diff sees a spawned /bin/sleep with full argv" {
-    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
+test "launch diff sees a spawned /bin/sleep with full argv and start time" {
+    if (builtin.target.os.tag != .macos and builtin.target.os.tag != .linux) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     iox.initialize(std.testing.io);
 
@@ -466,10 +466,13 @@ test "macOS launch diff sees a spawned /bin/sleep with full argv" {
         found = true;
         try std.testing.expectEqualStrings("sleep", obj.get("name").?.string);
         try std.testing.expectEqualStrings("/bin/sleep 5", obj.get("command_line").?.string);
-        try std.testing.expectEqualStrings("/bin/sleep", obj.get("image_path").?.string);
+        // macOS: /bin/sleep; Debian-style usrmerge resolves /proc/<pid>/exe to /usr/bin/sleep.
+        try std.testing.expect(std.mem.endsWith(u8, obj.get("image_path").?.string, "/bin/sleep"));
         try std.testing.expectEqual(@as(i64, @intCast(std.c.getpid())), obj.get("ppid").?.integer);
         try std.testing.expect(obj.get("image_sha256").? == .string);
-        try std.testing.expect(obj.get("start_time_unix").?.integer > 1_600_000_000);
+        // Spawned a moment ago: start time must be close to the wall clock.
+        const started = obj.get("start_time_unix").?.integer;
+        try std.testing.expect(@abs(started - iox.timestamp()) <= 60);
     }
     try std.testing.expect(found);
 
