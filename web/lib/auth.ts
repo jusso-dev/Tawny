@@ -13,19 +13,24 @@ export const auth = betterAuth({
       role: {
         type: "string",
         required: true,
-        defaultValue: "Admin",
+        // Least privilege: admins are created by the bootstrap script or promoted explicitly.
+        defaultValue: "Viewer",
         input: false,
       },
     },
   },
   emailAndPassword: {
     enabled: true,
+    // No self-service registration. Accounts are provisioned by an admin.
+    disableSignUp: true,
   },
   socialProviders: process.env.GITHUB_CLIENT_ID
     ? {
         github: {
           clientId: process.env.GITHUB_CLIENT_ID,
           clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+          // GitHub may only sign in users that already exist.
+          disableSignUp: true,
         },
       }
     : undefined,

@@ -13,7 +13,7 @@ model user {
   email         String    @unique @db.NVarChar(320)
   emailVerified Boolean   @default(false)
   image         String?   @db.NVarChar(1024)
-  role          String    @default("Admin") @db.NVarChar(32)
+  role          String    @default("Viewer") @db.NVarChar(32)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   sessions      session[]
