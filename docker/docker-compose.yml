@@ -50,8 +50,6 @@ services:
       Tawny__Slack__Username: "${TAWNY_SLACK_USERNAME:-Tawny}"
       Tawny__Slack__IconEmoji: "${TAWNY_SLACK_ICON_EMOJI:-:rotating_light:}"
       Tawny__Slack__TimeoutSeconds: "${TAWNY_SLACK_TIMEOUT_SECONDS:-5}"
-      Tawny__Reputation__BrolgaBaseUrl: "${TAWNY_BROLGA_BASE_URL:-}"
-      Tawny__Reputation__BrolgaApiToken: "${TAWNY_BROLGA_API_TOKEN:-}"
       Tawny__Reputation__CacheTtlHours: "${TAWNY_REPUTATION_CACHE_TTL_HOURS:-24}"
       Tawny__TawnySoc__Enabled: "${TAWNY_SOC_ENABLED:-false}"
       Tawny__TawnySoc__AlertsEnabled: "${TAWNY_SOC_ALERTS_ENABLED:-true}"
