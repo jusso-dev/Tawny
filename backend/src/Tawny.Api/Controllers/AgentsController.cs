@@ -279,10 +279,7 @@ public class AgentsController(
         });
         await db.SaveChangesAsync(ct);
 
-        return Ok(new AgentSummary(
-            agent.Id, agent.Hostname, agent.OperatingSystem, agent.OsVersion,
-            agent.AgentVersion, agent.Architecture, agent.Status,
-            agent.LastHeartbeatAt, agent.EnrolledAt));
+        return Ok(ToSummary(agent));
     }
 
     [HttpGet]
@@ -292,12 +289,9 @@ public class AgentsController(
         var agents = await db.Agents
             .Where(a => a.TenantId == User.GetTenantId())
             .OrderByDescending(a => a.LastHeartbeatAt)
-            .Select(a => new AgentSummary(
-                a.Id, a.Hostname, a.OperatingSystem, a.OsVersion,
-                a.AgentVersion, a.Architecture, a.Status,
-                a.LastHeartbeatAt, a.EnrolledAt))
+            .AsNoTracking()
             .ToListAsync(ct);
-        return Ok(agents);
+        return Ok(agents.Select(ToSummary).ToList());
     }
 
     [HttpGet("{id:guid}")]
@@ -306,16 +300,25 @@ public class AgentsController(
     {
         var a = await db.Agents.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == User.GetTenantId(), ct);
         if (a is null) return NotFound();
-        return Ok(new AgentSummary(
-            a.Id, a.Hostname, a.OperatingSystem, a.OsVersion,
-            a.AgentVersion, a.Architecture, a.Status,
-            a.LastHeartbeatAt, a.EnrolledAt));
+        return Ok(ToSummary(a));
     }
 
     private bool TryGetAgentId(out Guid id)
     {
         var claim = User.FindFirst("agent_id")?.Value;
         return Guid.TryParse(claim, out id);
+    }
+
+    private static AgentSummary ToSummary(Agent a) => new(
+        a.Id, a.Hostname, a.OperatingSystem, a.OsVersion,
+        a.AgentVersion, a.Architecture, a.Status,
+        a.LastHeartbeatAt, a.EnrolledAt, a.PublicIp, ParseTags(a.TagsJson));
+
+    private static IReadOnlyList<string> ParseTags(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     private static AgentPlatform ParseOs(string os) => os.ToLowerInvariant() switch

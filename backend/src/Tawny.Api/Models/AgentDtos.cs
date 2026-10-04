@@ -43,7 +43,9 @@ public record AgentSummary(
     AgentArchitecture Architecture,
     AgentStatus Status,
     DateTimeOffset? LastHeartbeatAt,
-    DateTimeOffset EnrolledAt);
+    DateTimeOffset EnrolledAt,
+    string? PublicIp,
+    IReadOnlyList<string> Tags);
 
 public class EnrollRequestValidator : AbstractValidator<EnrollRequest>
 {

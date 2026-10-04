@@ -110,11 +110,13 @@ Current agent event types:
 
 ### GET `/api/agents`
 
-Auth: web user. Returns the agent list with status badges.
+Auth: web user or `twny_` API token. Returns the agent list (id, hostname,
+operating_system, os_version, agent_version, architecture, status,
+last_heartbeat_at, enrolled_at, public_ip, tags).
 
 ### GET `/api/agents/{id}`
 
-Auth: web user. Single agent with system info.
+Auth: web user or `twny_` API token. Single agent, same shape.
 
 ### GET `/api/agents/{id}/events?type=process_snapshot&limit=50&before=...`
 
@@ -199,6 +201,19 @@ Admin web user or Admin `twny_` API token. Body:
 agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
 `expired`. Host isolation and release are not yet implemented by the agent and
 currently complete as `failed`.
+
+### GET `/api/agents/{id}/actions` and `/api/agents/{id}/actions/{actionId}`
+
+Web user or any `twny_` API token (Viewer can read action history and status).
+
+### GET `/api/alerts/{id}`
+
+Single alert, same shape as the list. Web user or `twny_` API token.
+
+### GET `/api/alert-rules`, POST `/api/alert-rules/sigma`
+
+Listing accepts any `twny_` token; Sigma import needs an Admin web user or
+Admin `twny_` token (used by BlakSoc detection deployment).
 
 ## Errors
 

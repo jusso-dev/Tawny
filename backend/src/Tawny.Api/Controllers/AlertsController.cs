@@ -50,8 +50,20 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
             ? query.OrderBy(a => a.Id)
             : query.OrderByDescending(a => a.CreatedAt).ThenByDescending(a => a.Id);
 
-        var rows = await ordered
-            .Take(take)
+        return Ok(await LoadAsync(ordered.Take(take), ct));
+    }
+
+    [HttpGet("{id:long}")]
+    public async Task<ActionResult<AlertResponse>> Get(long id, CancellationToken ct)
+    {
+        var tenantId = User.GetTenantId();
+        var rows = await LoadAsync(db.Alerts.AsNoTracking().Where(a => a.TenantId == tenantId && a.Id == id), ct);
+        return rows.Count == 0 ? NotFound() : Ok(rows[0]);
+    }
+
+    private static async Task<List<AlertResponse>> LoadAsync(IQueryable<Tawny.Domain.Entities.Alert> source, CancellationToken ct)
+    {
+        var rows = await source
             .Select(a => new
             {
                 a.Id,
@@ -86,7 +98,7 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
             })
             .ToListAsync(ct);
 
-        return Ok(rows.Select(a => new AlertResponse(
+        return rows.Select(a => new AlertResponse(
             a.Id,
             a.AlertRuleId,
             a.RuleName,
@@ -115,7 +127,7 @@ public class AlertsController(TawnyDbContext db) : ControllerBase
             a.CreatedAt,
             ParseTechniques(a.RuleMitre),
             a.AgentOs,
-            a.AgentOsVersion)).ToList());
+            a.AgentOsVersion)).ToList();
     }
 
     private static IReadOnlyList<string> ParseTechniques(string? json)

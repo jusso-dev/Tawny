@@ -24,6 +24,7 @@ public class AlertRulesController(
     ExposureRuleImporter exposures) : ControllerBase
 {
     [HttpGet]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken)]
     public async Task<ActionResult<IReadOnlyList<AlertRuleResponse>>> List(CancellationToken ct)
     {
         var tenantId = User.GetTenantId();
@@ -77,7 +78,7 @@ public class AlertRulesController(
     }
 
     [HttpPost("sigma")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<ActionResult<AlertRuleResponse>> ImportSigma(
         ImportSigmaRuleRequest req,
         CancellationToken ct)

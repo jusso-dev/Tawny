@@ -115,11 +115,6 @@ public class ResponseActionsController(TawnyDbContext db, AuditLogger audit) : C
         Guid agentId,
         CancellationToken ct)
     {
-        if (User.HasClaim(claim => claim.Type == "api_token_id") && !User.IsInRole("Admin"))
-        {
-            return Forbid();
-        }
-
         var tenantId = User.GetTenantId();
         if (!await db.Agents.AnyAsync(a => a.Id == agentId && a.TenantId == tenantId, ct))
         {
@@ -134,6 +129,16 @@ public class ResponseActionsController(TawnyDbContext db, AuditLogger audit) : C
             .ToListAsync(ct);
 
         return Ok(rows.Select(ToResponse).ToList());
+    }
+
+    [HttpGet("agents/{agentId:guid}/actions/{id:guid}")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken)]
+    public async Task<ActionResult<ResponseActionResponse>> Get(Guid agentId, Guid id, CancellationToken ct)
+    {
+        var tenantId = User.GetTenantId();
+        var action = await db.ResponseActions.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == id && a.AgentId == agentId && a.TenantId == tenantId, ct);
+        return action is null ? NotFound() : Ok(ToResponse(action));
     }
 
     [HttpPost("agents/{agentId:guid}/actions/{id:guid}/cancel")]
