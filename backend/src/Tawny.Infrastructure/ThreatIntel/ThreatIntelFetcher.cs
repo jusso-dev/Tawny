@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 
+using Tawny.Infrastructure.Security;
+
 namespace Tawny.Infrastructure.ThreatIntel;
 
 public record FetchedIndicator(string Kind, string Value, string? Description);
@@ -31,7 +33,10 @@ public class ThreatIntelFetchException(string message, Exception? inner = null) 
 /// Pulls indicators from supported TI feed shapes. Returns raw FetchedIndicator
 /// records — the caller decides which to turn into AlertRules.
 /// </summary>
-public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log)
+public class ThreatIntelFetcher(
+    HttpClient http,
+    IIntegrationSecretProtector secrets,
+    ILogger<ThreatIntelFetcher> log)
 {
     private static readonly Regex Sha256Re = new(@"^[a-fA-F0-9]{64}$", RegexOptions.Compiled);
     private static readonly Regex Sha1Re = new(@"^[a-fA-F0-9]{40}$", RegexOptions.Compiled);
@@ -43,9 +48,10 @@ public class ThreatIntelFetcher(HttpClient http, ILogger<ThreatIntelFetcher> log
         using var request = new HttpRequestMessage(HttpMethod.Get, feed.Url);
         if (!string.IsNullOrWhiteSpace(feed.AuthHeaderName) && !string.IsNullOrWhiteSpace(feed.AuthHeaderValueEncrypted))
         {
-            // We're using the column name "Encrypted" defensively but storing plaintext here;
-            // a real deployment would decrypt via DPAPI or the configured secret store.
-            request.Headers.TryAddWithoutValidation(feed.AuthHeaderName, feed.AuthHeaderValueEncrypted);
+            var value = secrets.IsProtected(feed.AuthHeaderValueEncrypted)
+                ? secrets.Unprotect(feed.AuthHeaderValueEncrypted)
+                : feed.AuthHeaderValueEncrypted; // legacy plaintext; ThreatIntelFeedsJob re-encrypts it
+            request.Headers.TryAddWithoutValidation(feed.AuthHeaderName, value);
         }
         if (!string.IsNullOrWhiteSpace(feed.Etag))
         {

@@ -130,6 +130,28 @@ public class WebUserAuthHandlerTests(TawnyWebApplicationFactory factory)
             .WithMessage("*WebUserHmacSecret*");
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("too-short")]
+    [InlineData("dev-only-integration-key-padding-to-32")]
+    public void WeakIntegrationKey_FailsStartupInProductionMode(string? key)
+    {
+        var act = () => SecurityOptionsValidator.Validate(
+            "Production",
+            new string('a', 64),
+            new AgentJwtOptions { RequireConfiguredSigningKey = true, SigningKeyPem = "dummy" },
+            "Server=.;Database=tawny;Trusted_Connection=True",
+            new SecurityOptions
+            {
+                PublicApiUrl = "https://api.example",
+                PublicWebUrl = "https://web.example",
+            },
+            key);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*IntegrationEncryptionKey*");
+    }
+
     [Fact]
     public void EmptySecret_FailsStartup()
     {

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
+using Tawny.Infrastructure.Security;
 using Tawny.Infrastructure.Hunting;
 using Tawny.Infrastructure.ThreatIntel;
 
@@ -18,6 +19,7 @@ public class ThreatIntelFeedsJob(
     TawnyDbContext db,
     TimeProvider timeProvider,
     ThreatIntelFetcher fetcher,
+    IIntegrationSecretProtector secrets,
     ILogger<ThreatIntelFeedsJob> log)
 {
     public async Task ExecuteAsync(CancellationToken ct = default)
@@ -43,6 +45,11 @@ public class ThreatIntelFeedsJob(
     private async Task RunOneAsync(ThreatIntelFeed feed, DateTimeOffset now, CancellationToken ct)
     {
         feed.LastRunAt = now;
+        if (!string.IsNullOrEmpty(feed.AuthHeaderValueEncrypted) && !secrets.IsProtected(feed.AuthHeaderValueEncrypted))
+        {
+            // Feeds created before secrets were encrypted stored the header in plaintext.
+            feed.AuthHeaderValueEncrypted = secrets.Protect(feed.AuthHeaderValueEncrypted);
+        }
         try
         {
             var result = await fetcher.FetchAsync(feed, ct);

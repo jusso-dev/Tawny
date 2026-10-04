@@ -8,6 +8,7 @@ public interface IIntegrationSecretProtector
 {
     string Protect(string plaintext);
     string Unprotect(string protectedValue);
+    bool IsProtected(string value);
 }
 
 public sealed class IntegrationSecretProtector : IIntegrationSecretProtector
@@ -48,6 +49,8 @@ public sealed class IntegrationSecretProtector : IIntegrationSecretProtector
         ciphertext.CopyTo(payload, NonceSize + TagSize);
         return Prefix + Convert.ToBase64String(payload);
     }
+
+    public bool IsProtected(string value) => value.StartsWith(Prefix, StringComparison.Ordinal);
 
     public string Unprotect(string protectedValue)
     {

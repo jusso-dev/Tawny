@@ -64,6 +64,8 @@ public class StarterThreatIntelFeedsTests
             Name = "Test phishing domains",
             Kind = ThreatIntelFeedKind.GenericCsv,
             Url = "https://feed.example/domains.txt",
+            AuthHeaderName = "X-Api-Key",
+            AuthHeaderValueEncrypted = "legacy-plaintext",
             DefaultSeverity = AlertSeverity.High,
             IntervalMinutes = 60,
             IsEnabled = true,
@@ -76,14 +78,20 @@ public class StarterThreatIntelFeedsTests
         var http = new HttpClient(new StaticResponseHandler("https://evil.example/phish\n203.0.113.9\n"));
         var fetcher = new ThreatIntelFetcher(
             http,
+            TestSecrets.Protector,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ThreatIntelFetcher>.Instance);
         var job = new ThreatIntelFeedsJob(
             db,
             TimeProvider.System,
             fetcher,
+            TestSecrets.Protector,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<ThreatIntelFeedsJob>.Instance);
 
         await job.ExecuteAsync();
+
+        var stored = await db.ThreatIntelFeeds.SingleAsync(f => f.Id == feedId);
+        TestSecrets.Protector.IsProtected(stored.AuthHeaderValueEncrypted!).Should().BeTrue();
+        TestSecrets.Protector.Unprotect(stored.AuthHeaderValueEncrypted!).Should().Be("legacy-plaintext");
 
         var rules = await db.AlertRules
             .Where(r => r.TenantId == TenantDefaults.DefaultTenantId && r.Format == AlertRuleFormat.Ioc)

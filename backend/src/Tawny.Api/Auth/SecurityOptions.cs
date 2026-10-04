@@ -23,7 +23,8 @@ public sealed class SecurityOptionsValidator
         string? webUserHmacSecret,
         AgentJwtOptions agentJwt,
         string? connectionString,
-        SecurityOptions security)
+        SecurityOptions security,
+        string? integrationEncryptionKey = null)
     {
         var enforce = security.EnforceSecureDefaults
             || string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase);
@@ -50,6 +51,14 @@ public sealed class SecurityOptionsValidator
         {
             throw new InvalidOperationException(
                 "ConnectionStrings:Default is required in production.");
+        }
+
+        if (enforce && (string.IsNullOrWhiteSpace(integrationEncryptionKey)
+            || integrationEncryptionKey.Length < 32
+            || integrationEncryptionKey.StartsWith("dev-only", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "Tawny:IntegrationEncryptionKey must be a random value of at least 32 characters in production (e.g. openssl rand -hex 32).");
         }
 
         if (enforce && !security.AllowInsecurePublicHttp)

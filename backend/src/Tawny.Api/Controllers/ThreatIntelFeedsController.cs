@@ -7,6 +7,7 @@ using Tawny.Api.Services;
 using Tawny.Domain;
 using Tawny.Domain.Entities;
 using Tawny.Infrastructure;
+using Tawny.Infrastructure.Security;
 using Tawny.Infrastructure.ThreatIntel;
 using Tawny.Jobs;
 
@@ -18,6 +19,7 @@ namespace Tawny.Api.Controllers;
 public class ThreatIntelFeedsController(
     TawnyDbContext db,
     AuditLogger audit,
+    IIntegrationSecretProtector secrets,
     ThreatIntelFeedsJob job) : ControllerBase
 {
     [HttpGet]
@@ -67,7 +69,7 @@ public class ThreatIntelFeedsController(
             Kind = req.Kind,
             Url = req.Url.Trim(),
             AuthHeaderName = NullIfEmpty(req.AuthHeaderName),
-            AuthHeaderValueEncrypted = NullIfEmpty(req.AuthHeaderValue),
+            AuthHeaderValueEncrypted = NullIfEmpty(req.AuthHeaderValue) is { } v ? secrets.Protect(v) : null,
             DefaultSeverity = req.DefaultSeverity ?? AlertSeverity.High,
             IntervalMinutes = interval,
             IsEnabled = req.IsEnabled ?? true,
@@ -110,7 +112,7 @@ public class ThreatIntelFeedsController(
         feed.AuthHeaderName = NullIfEmpty(req.AuthHeaderName);
         if (!string.IsNullOrWhiteSpace(req.AuthHeaderValue))
         {
-            feed.AuthHeaderValueEncrypted = req.AuthHeaderValue;
+            feed.AuthHeaderValueEncrypted = secrets.Protect(req.AuthHeaderValue);
         }
         feed.DefaultSeverity = req.DefaultSeverity;
         feed.IntervalMinutes = req.IntervalMinutes;

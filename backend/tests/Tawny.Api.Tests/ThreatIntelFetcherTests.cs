@@ -21,7 +21,7 @@ public class ThreatIntelFetcherTests
             not-an-indicator
             """;
         var http = new HttpClient(new StaticResponseHandler(body));
-        var fetcher = new ThreatIntelFetcher(http, NullLogger<ThreatIntelFetcher>.Instance);
+        var fetcher = new ThreatIntelFetcher(http, TestSecrets.Protector, NullLogger<ThreatIntelFetcher>.Instance);
         var feed = new ThreatIntelFeed
         {
             Name = "Public indicators",
@@ -39,14 +39,41 @@ public class ThreatIntelFetcherTests
         ]);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FetchAsync_SendsDecryptedAuthHeader(bool storedEncrypted)
+    {
+        var handler = new StaticResponseHandler("203.0.113.7\n");
+        var fetcher = new ThreatIntelFetcher(
+            new HttpClient(handler), TestSecrets.Protector, NullLogger<ThreatIntelFetcher>.Instance);
+        var feed = new ThreatIntelFeed
+        {
+            Name = "Private feed",
+            Kind = ThreatIntelFeedKind.GenericCsv,
+            Url = "https://feed.example/private.txt",
+            AuthHeaderName = "X-Api-Key",
+            AuthHeaderValueEncrypted = storedEncrypted ? TestSecrets.Protector.Protect("s3cret") : "s3cret",
+        };
+
+        await fetcher.FetchAsync(feed, CancellationToken.None);
+
+        handler.LastRequest!.Headers.GetValues("X-Api-Key").Should().ContainSingle().Which.Should().Be("s3cret");
+    }
+
     private sealed class StaticResponseHandler(string body) : HttpMessageHandler
     {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(body),
             });
+        }
     }
 }

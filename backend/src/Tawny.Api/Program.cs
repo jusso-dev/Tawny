@@ -57,7 +57,8 @@ try
         builder.Configuration["Tawny:WebUserHmacSecret"],
         agentJwtOpts,
         builder.Configuration.GetConnectionString("Default"),
-        securityOpts);
+        securityOpts,
+        builder.Configuration["Tawny:IntegrationEncryptionKey"]);
 }
 catch (InvalidOperationException ex)
 {
