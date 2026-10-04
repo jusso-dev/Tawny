@@ -216,14 +216,26 @@ fn agentSummaryJson(allocator: std.mem.Allocator, cols: []const ?[]u8) ![]u8 {
     defer allocator.free(enr);
     const pip = try util.nullOrJsonString(allocator, cols[9]);
     defer allocator.free(pip);
+    var tags_json: []u8 = undefined;
+    if (cols[10]) |raw| {
+        const items = try util.parsePgTextArray(allocator, raw);
+        defer {
+            for (items) |it| allocator.free(it);
+            allocator.free(items);
+        }
+        tags_json = try util.jsonArrayStrings(allocator, items);
+    } else {
+        tags_json = try allocator.dupe(u8, "[]");
+    }
+    defer allocator.free(tags_json);
     return std.fmt.allocPrint(allocator,
-        \\{{"id":{s},"hostname":{s},"operating_system":{s},"os_version":{s},"agent_version":{s},"architecture":{s},"status":{s},"last_heartbeat_at":{s},"enrolled_at":{s},"public_ip":{s},"tags":[]}}
-    , .{ id, host, os, osv, ver, arch, status, lhb, enr, pip });
+        \\{{"id":{s},"hostname":{s},"operating_system":{s},"os_version":{s},"agent_version":{s},"architecture":{s},"status":{s},"last_heartbeat_at":{s},"enrolled_at":{s},"public_ip":{s},"tags":{s}}}
+    , .{ id, host, os, osv, ver, arch, status, lhb, enr, pip, tags_json });
 }
 
 const agent_select =
     \\SELECT id::text, hostname, operating_system, os_version, agent_version, architecture, status,
-    \\       last_heartbeat_at::text, enrolled_at::text, public_ip
+    \\       last_heartbeat_at::text, enrolled_at::text, public_ip, tags::text
     \\FROM agents
 ;
 
@@ -742,6 +754,11 @@ pub fn createAction(
     }
     if (exists.len == 0) return util.problem(request, allocator, .not_found, "Agent not found.");
 
+    const idem_key: ?[]const u8 = if (parsed.value.idempotency_key) |k| (if (k.len > 0) k else null) else null;
+    if (idem_key) |k| {
+        if (try respondIdempotent(allocator, conn, request, web.tenant_id, agent_id, k)) return;
+    }
+
     var payload_buf: std.ArrayList(u8) = .empty;
     defer payload_buf.deinit(allocator);
     const payload_tmp = try std.json.Stringify.valueAlloc(allocator, parsed.value.payload, .{});
@@ -758,7 +775,7 @@ pub fn createAction(
     const requested = util.formatRfc3339(&t1, now);
     const expires = util.formatRfc3339(&t2, now + 15 * 60);
 
-    try conn.execNoRows(
+    conn.execNoRows(
         \\INSERT INTO response_actions (id, agent_id, tenant_id, action_type, status, requested_by_user_id,
         \\  requested_at, expires_at, payload_json, payload_hash, idempotency_key)
         \\VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'pending', $5::uuid, $6::timestamptz, $7::timestamptz, $8::jsonb, $9, $10)
@@ -772,8 +789,19 @@ pub fn createAction(
         .{ .text = expires },
         .{ .text = payload_buf.items },
         .{ .text = ph },
-        if (parsed.value.idempotency_key) |k| .{ .text = k } else .{ .null = {} },
-    });
+        if (idem_key) |k| .{ .text = k } else .{ .null = {} },
+    }) catch |err| {
+        if (idem_key) |k| {
+            if (err == error.QueryFailed) {
+                const msg = conn.takeError();
+                defer if (msg) |m| conn.allocator.free(m);
+                if (msg != null and idempotencyConflict(msg.?)) {
+                    if (try respondIdempotent(allocator, conn, request, web.tenant_id, agent_id, k)) return;
+                }
+            }
+        }
+        return err;
+    };
     try audit.add(allocator, io, conn, web.tenant_id, web.user_id, "response_action.create", id, null);
 
     const id_j = try util.escapeJson(allocator, id);
@@ -793,6 +821,47 @@ pub fn createAction(
     , .{ id_j, aid_j, at_j, req_j, exp_j, payload_buf.items, ph_j });
     defer allocator.free(json);
     try util.respondJson(request, .created, json);
+}
+
+fn idempotencyConflict(msg: []const u8) bool {
+    return std.mem.indexOf(u8, msg, "duplicate key") != null and std.mem.indexOf(u8, msg, "idempotency_key") != null;
+}
+
+/// A repeat POST with the same non-empty key returns the stored action, including a finished result.
+fn respondIdempotent(
+    allocator: std.mem.Allocator,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    tenant_id: []const u8,
+    agent_id: []const u8,
+    key: []const u8,
+) !bool {
+    const rows = try conn.exec(allocator,
+        \\SELECT id::text, agent_id::text, action_type, status, payload_json::text, result_json::text
+        \\FROM response_actions
+        \\WHERE tenant_id = $1::uuid AND agent_id = $2::uuid AND idempotency_key = $3
+        \\LIMIT 1
+    , &.{ .{ .text = tenant_id }, .{ .text = agent_id }, .{ .text = key } });
+    defer {
+        for (rows) |row| row.deinit(allocator);
+        allocator.free(rows);
+    }
+    if (rows.len == 0) return false;
+    const c = rows[0].cols;
+    const id_j = try util.escapeJson(allocator, c[0] orelse "");
+    defer allocator.free(id_j);
+    const aid_j = try util.escapeJson(allocator, c[1] orelse "");
+    defer allocator.free(aid_j);
+    const at_j = try util.escapeJson(allocator, c[2] orelse "");
+    defer allocator.free(at_j);
+    const st_j = try util.escapeJson(allocator, c[3] orelse "");
+    defer allocator.free(st_j);
+    const json = try std.fmt.allocPrint(allocator,
+        \\{{"id":{s},"agent_id":{s},"action_type":{s},"status":{s},"payload":{s},"result":{s}}}
+    , .{ id_j, aid_j, at_j, st_j, c[4] orelse "null", c[5] orelse "null" });
+    defer allocator.free(json);
+    try util.respondJson(request, .ok, json);
+    return true;
 }
 
 pub fn actionResult(
@@ -1026,4 +1095,123 @@ pub fn streamAgentEvents(
 
 test "enroll token prefix" {
     try std.testing.expect(std.mem.startsWith(u8, "wte_abc", "wte_"));
+}
+
+test "idempotency conflict message names the key" {
+    try std.testing.expect(idempotencyConflict("duplicate key value violates unique constraint \"response_actions_tenant_id_agent_id_idempotency_key_key\""));
+    try std.testing.expect(!idempotencyConflict("duplicate key value violates unique constraint \"agents_pkey\""));
+    try std.testing.expect(!idempotencyConflict("syntax error at idempotency_key"));
+}
+
+test "idempotency key replay returns the stored action" {
+    const url = std.testing.environ.getPosix("TAWNY_DATABASE_URL") orelse return;
+    if (url.len == 0) return;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const migrate = @import("../db/migrate.zig");
+    const conn = try pg.Conn.connect(allocator, io, url);
+    defer {
+        conn.close();
+        allocator.destroy(conn);
+    }
+    try migrate.apply(allocator, conn);
+    try conn.execSimple("BEGIN");
+    errdefer conn.execSimple("ROLLBACK") catch {};
+
+    var agent_buf: [36]u8 = undefined;
+    const agent_id = util.newUuid(io, &agent_buf);
+    try conn.execNoRows(
+        \\INSERT INTO agents (
+        \\  id, tenant_id, hostname, operating_system, os_version, agent_version,
+        \\  architecture, enrolled_at, status, tags
+        \\) VALUES ($1::uuid, $2::uuid, 'idem-host', 'linux', 'test', '0', 'arm64', now(), 'online', '{clinic}')
+    , &.{ .{ .text = agent_id }, .{ .text = "00000000-0000-0000-0000-000000000001" } });
+
+    var id_buf: [36]u8 = undefined;
+    const action_id = util.newUuid(io, &id_buf);
+    const key = "replay-key";
+    try conn.execNoRows(
+        \\INSERT INTO response_actions (
+        \\  id, agent_id, tenant_id, action_type, status, requested_at, expires_at,
+        \\  payload_json, idempotency_key
+        \\) VALUES (
+        \\  $1::uuid, $2::uuid, $3::uuid, 'isolate_host', 'pending', now(), now(), '{}'::jsonb, $4
+        \\)
+    , &.{
+        .{ .text = action_id },
+        .{ .text = agent_id },
+        .{ .text = "00000000-0000-0000-0000-000000000001" },
+        .{ .text = key },
+    });
+
+    const pending = try conn.exec(allocator,
+        \\SELECT id::text, status, result_json::text FROM response_actions
+        \\WHERE tenant_id = $1::uuid AND agent_id = $2::uuid AND idempotency_key = $3
+    , &.{
+        .{ .text = "00000000-0000-0000-0000-000000000001" },
+        .{ .text = agent_id },
+        .{ .text = key },
+    });
+    defer {
+        for (pending) |row| row.deinit(allocator);
+        allocator.free(pending);
+    }
+    try std.testing.expectEqual(@as(usize, 1), pending.len);
+    try std.testing.expectEqualStrings(action_id, pending[0].cols[0].?);
+    try std.testing.expectEqualStrings("pending", pending[0].cols[1].?);
+    try std.testing.expect(pending[0].cols[2] == null);
+
+    try conn.execNoRows(
+        \\UPDATE response_actions SET status = 'failed', result_json = '{"message":"isolation not supported by this agent"}'::jsonb
+        \\WHERE id = $1::uuid
+    , &.{.{ .text = action_id }});
+    const failed = try conn.exec(allocator,
+        \\SELECT id::text, status, result_json::text FROM response_actions
+        \\WHERE tenant_id = $1::uuid AND agent_id = $2::uuid AND idempotency_key = $3
+    , &.{
+        .{ .text = "00000000-0000-0000-0000-000000000001" },
+        .{ .text = agent_id },
+        .{ .text = key },
+    });
+    defer {
+        for (failed) |row| row.deinit(allocator);
+        allocator.free(failed);
+    }
+    try std.testing.expectEqualStrings(action_id, failed[0].cols[0].?);
+    try std.testing.expectEqualStrings("failed", failed[0].cols[1].?);
+    try std.testing.expect(std.mem.indexOf(u8, failed[0].cols[2].?, "isolation not supported by this agent") != null);
+
+    var other_buf: [36]u8 = undefined;
+    const other = util.newUuid(io, &other_buf);
+    try conn.execSimple("SAVEPOINT dup_key");
+    const dup = conn.execNoRows(
+        \\INSERT INTO response_actions (
+        \\  id, agent_id, tenant_id, action_type, status, requested_at, expires_at,
+        \\  payload_json, idempotency_key
+        \\) VALUES (
+        \\  $1::uuid, $2::uuid, $3::uuid, 'isolate_host', 'pending', now(), now(), '{}'::jsonb, $4
+        \\)
+    , &.{
+        .{ .text = other },
+        .{ .text = agent_id },
+        .{ .text = "00000000-0000-0000-0000-000000000001" },
+        .{ .text = key },
+    });
+    try std.testing.expectError(error.QueryFailed, dup);
+    const msg = conn.takeError();
+    try std.testing.expect(msg != null);
+    defer conn.allocator.free(msg.?);
+    try std.testing.expect(idempotencyConflict(msg.?));
+    try conn.execSimple("ROLLBACK TO SAVEPOINT dup_key");
+
+    const listed = try conn.exec(allocator, agent_select ++ " WHERE id = $1::uuid", &.{.{ .text = agent_id }});
+    defer {
+        for (listed) |row| row.deinit(allocator);
+        allocator.free(listed);
+    }
+    const summary = try agentSummaryJson(allocator, listed[0].cols);
+    defer allocator.free(summary);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "\"tags\":[\"clinic\"]") != null);
+
+    try conn.execSimple("ROLLBACK");
 }
