@@ -231,3 +231,139 @@ jobs:
           path: agent/dist/
           if-no-files-found: error
           retention-days: 7
+
+  # No TypeScript project and no Playwright package. node --check is the lint,
+  # executing the SPA under a window global is the typecheck, and the hashed
+  # files named by index.html are the build. Playwright stays absent on purpose.
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: lint, execute, and check built assets
+        run: |
+          set -euo pipefail
+          js=$(grep -oE '/assets/app\.[a-z0-9]+\.js' server/ui/index.html | head -1)
+          test -n "$js"
+          node --check "server/ui${js}"
+          node ci/ui-fallback.mjs
+      - name: playwright or documented fallback
+        run: |
+          set -euo pipefail
+          if node -e "require('playwright')" >/dev/null 2>&1; then
+            echo "Playwright is installed. This repo has no Playwright specs."
+            echo "The route and window fallback remains the gate."
+          else
+            echo "Playwright package absent. Gate is ci/ui-fallback.mjs: routes exist in the SPA, the script runs with window set, and module/require are absent."
+          fi
+          node ci/ui-fallback.mjs
+
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Zig 0.17.0
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          zig_version=0.17.0
+          sha256=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+          archive="$RUNNER_TEMP/zig.tar.xz"
+          zig_dir="$RUNNER_TEMP/zig-$zig_version"
+          curl -fsSL --retry 3 \
+            "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz" \
+            -o "$archive"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$zig_dir"
+          tar -xJf "$archive" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
+      - name: fuzz corpus
+        run: zig test src/main.zig -lc --test-filter fuzz
+
+  agent-e2e:
+    name: agent-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: tawny
+          POSTGRES_PASSWORD: tawny
+          POSTGRES_DB: tawny
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tawny -d tawny"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TAWNY_DATABASE_URL: postgres://tawny:tawny@localhost:5432/tawny
+      TAWNY_BOOTSTRAP_ADMIN_EMAIL: admin@tawny.local
+      TAWNY_BOOTSTRAP_ADMIN_PASSWORD: contract-password
+      TAWNY_INTEGRATION_ENCRYPTION_KEY: test-integration-encryption-key
+      TAWNY_HTTP_HOST: 127.0.0.1
+      TAWNY_HTTP_PORT: "18080"
+      TAWNY_PUBLIC_URL: http://127.0.0.1:18080
+      TAWNY_ENRICH_ALERTS: "off"
+      TAWNY_BACKUP_LOCAL_PATH: "off"
+      TAWNY_CONTRACT_AUTH: session
+      TAWNY_BASE_URL: http://127.0.0.1:18080
+      TAWNY_CONTRACT_EMAIL: admin@tawny.local
+      TAWNY_CONTRACT_PASSWORD: contract-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Zig 0.17.0
+        run: |
+          set -euo pipefail
+          zig_version=0.17.0
+          sha256=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+          archive="$RUNNER_TEMP/zig.tar.xz"
+          zig_dir="$RUNNER_TEMP/zig-$zig_version"
+          curl -fsSL --retry 3 \
+            "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz" \
+            -o "$archive"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$zig_dir"
+          tar -xJf "$archive" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
+      - name: enroll, heartbeat, telemetry, isolate
+        run: |
+          set -euo pipefail
+          cd server
+          zig build -Doptimize=ReleaseSafe
+          ./zig-out/bin/tawny-server serve > "$RUNNER_TEMP/tawny-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/tawny-server.pid"
+          cleanup() {
+            if [[ -f "$RUNNER_TEMP/tawny-server.pid" ]]; then
+              kill "$(cat "$RUNNER_TEMP/tawny-server.pid")" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/health/ready >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          cd ../agent
+          zig build -Doptimize=ReleaseSafe
+          cd ..
+          TAWNY_AGENT_BIN="$PWD/agent/zig-out/bin/tawny-agent" python3 ci/agent_e2e.py
+          if [[ ! -s "$RUNNER_TEMP/tawny-server.log" ]]; then
+            echo "server log empty" >&2
+            exit 1
+          fi

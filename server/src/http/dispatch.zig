@@ -22,6 +22,7 @@ pub fn handle(
     io: std.Io,
     conn: *pg.Conn,
     request: *std.http.Server.Request,
+    phase: *std.atomic.Value(u8),
 ) !void {
     var target_buf: [4096]u8 = undefined;
     const target_raw = request.head.target;
@@ -42,7 +43,7 @@ pub fn handle(
         return;
     };
 
-    route(allocator, io, conn, request, method, target, parts[0..n], resolved) catch |err| {
+    route(allocator, io, conn, request, method, target, parts[0..n], resolved, phase) catch |err| {
         if (conn.takeError()) |msg| {
             std.debug.print("route {s} {s} failed: {s}: {s}\n", .{ @tagName(method), path, @errorName(err), msg });
             conn.allocator.free(msg);
@@ -62,6 +63,7 @@ fn route(
     target: []const u8,
     parts: []const []const u8,
     resolved: auth.Auth,
+    phase: *std.atomic.Value(u8),
 ) !void {
     if (parts.len >= 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "auth")) {
         if (parts.len == 3 and std.mem.eql(u8, parts[2], "login") and method == .POST) {
@@ -140,7 +142,7 @@ fn route(
         }
         if (parts.len == 5 and std.mem.eql(u8, parts[3], "events") and std.mem.eql(u8, parts[4], "stream") and method == .GET) {
             const web = try needWeb(request, resolved) orelse return;
-            return agents.streamAgentEvents(allocator, conn, request, web, parts[2]);
+            return agents.streamAgentEvents(allocator, io, conn, request, web, parts[2], phase);
         }
         if (parts.len == 4 and std.mem.eql(u8, parts[3], "actions") and method == .POST) {
             const web = try needAdmin(request, resolved) orelse return;

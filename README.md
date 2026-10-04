@@ -197,7 +197,7 @@ docker compose -p tawny --env-file .env --profile agent logs -f agent
 
 The container runs the same Zig agent binary used on hosts. Its first start consumes `TAWNY_AGENT_ENROLLMENT_TOKEN`, writes a persistent config into the `agent-state` volume, and then heartbeats and posts Linux process, network, system, session, and FIM telemetry through the normal agent APIs.
 
-Agent detail loads the latest telemetry. `GET /api/agents/{id}/events/stream` is one Server-Sent Events payload, then the connection closes.
+Agent detail holds `GET /api/agents/{id}/events/stream` open. Each `data:` frame is a JSON array of the latest telemetry. A `: keep-alive` comment arrives about every 15 seconds, and a new frame arrives when a newer event is stored.
 
 `tawny-server` applies the embedded SQL migrations on startup (`TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in compose). `tawny-server migrate` applies the same files without listening.
 
