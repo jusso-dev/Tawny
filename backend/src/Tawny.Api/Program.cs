@@ -299,7 +299,7 @@ var app = builder.Build();
         await db.Database.MigrateAsync();
     }
 
-    // Seed Kelpie-parity public TI feeds for every tenant so IoC rules exist
+    // Seed public TI feeds for every tenant so IoC rules exist
     // without manual install. Safe when Hangfire is disabled (tests / local).
     try
     {

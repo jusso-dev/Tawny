@@ -5,7 +5,7 @@ using Tawny.Domain.Entities;
 namespace Tawny.Infrastructure.ThreatIntel;
 
 /// <summary>
-/// Public starter TI sources kept in step with Kelpie's STARTER_TI_FEEDS.
+/// Public starter TI sources seeded for every tenant.
 /// Seeded for every tenant so IoC rules materialise without manual install.
 /// </summary>
 public static class StarterThreatIntelFeeds
@@ -18,7 +18,6 @@ public static class StarterThreatIntelFeeds
         int IntervalMinutes,
         bool IsEnabled);
 
-    // Kelpie src/lib/ti/starter-feeds.ts — same URLs and default enabled flags.
     public static readonly IReadOnlyList<Definition> All =
     [
         new(

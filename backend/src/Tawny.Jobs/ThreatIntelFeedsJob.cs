@@ -24,7 +24,7 @@ public class ThreatIntelFeedsJob(
 {
     public async Task ExecuteAsync(CancellationToken ct = default)
     {
-        // Ensure Kelpie-parity starter sources exist before polling.
+        // Ensure starter sources exist before polling.
         await StarterThreatIntelFeeds.EnsureSeededAsync(db, ct);
 
         var now = timeProvider.GetUtcNow();
@@ -100,7 +100,7 @@ public class ThreatIntelFeedsJob(
             if (existing.Contains(externalId)) continue;
 
             // Materialise as enabled IoC rules so live telemetry raises Tawny
-            // alerts on match, independent of Kelpie / UniFi / other sinks.
+            // alerts on match, independent of any sink.
             (TelemetryEventType EventType, string PayloadPath, AlertRuleOperator Op)? compiled = ind.Kind switch
             {
                 "sha256" => (TelemetryEventType.FileIntegrity, "new_sha256", AlertRuleOperator.Equals),

@@ -12,7 +12,7 @@ namespace Tawny.Api.Tests;
 public class StarterThreatIntelFeedsTests
 {
     [Fact]
-    public async Task EnsureSeededAsync_InsertsKelpieStarterFeedsForDefaultTenant()
+    public async Task EnsureSeededAsync_InsertsStarterFeedsForDefaultTenant()
     {
         await using var db = CreateDb();
         db.Tenants.Add(new Tenant

@@ -44,7 +44,7 @@ type FeedPreset = {
   intervalMinutes: number;
 };
 
-// Kept in step with Kelpie STARTER_TI_FEEDS and backend StarterThreatIntelFeeds.
+// Kept in step with backend StarterThreatIntelFeeds.
 // Active sources seed automatically on API startup; disabled ones stay opt-in.
 const FEED_PRESETS: FeedPreset[] = [
   {

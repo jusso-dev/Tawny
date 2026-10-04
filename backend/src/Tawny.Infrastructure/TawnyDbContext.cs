@@ -140,9 +140,6 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.Property(a => a.EnrichmentJson).HasColumnName("Enrichment").HasColumnType("nvarchar(max)");
             e.Property(a => a.SlackNotificationError).HasMaxLength(1024);
             e.Property(a => a.SentinelNotificationError).HasMaxLength(1024);
-            e.Property(a => a.KelpieNotificationError).HasMaxLength(1024);
-            e.Property(a => a.KelpieCaseId).HasMaxLength(128);
-            e.Property(a => a.KelpieCaseNumber).HasMaxLength(64);
             e.HasOne(a => a.Tenant)
                 .WithMany()
                 .HasForeignKey(a => a.TenantId)
