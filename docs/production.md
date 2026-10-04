@@ -55,11 +55,10 @@ Agent JWTs are short-lived (default 60 minutes, rotate within 15). Heartbeats is
 
 ### Device-bound public keys and signed batches
 
-At enrollment the agent generates an Ed25519 keypair, stores the seed in `{state_path}.devicekey` (`0600` when possible), and registers the base64 public key as `device_public_key`.
+At enrollment the agent generates an Ed25519 keypair and registers the base64 public key as `device_public_key`. The seed is stored in the OS keystore where one is implemented (macOS Keychain, see below); otherwise, or if the keystore write fails, in `{state_path}.devicekey` (`0600` when possible).
 
 Each telemetry flush includes optional `signature` (base64 Ed25519) over a deterministic canonical form (`tawny-batch-v1` + agent id + batch id + per-event digests). When `Tawny:TelemetryIntegrity:RequireSignatureWhenDeviceKeyPresent` is true (default), agents that registered a device key **must** present a valid signature. Agents enrolled without a device key remain accepted for compatibility.
 
-OS keystores (Keychain / DPAPI / TPM) are preferred long-term; the seed file is the secure fallback.
 
 Revoke immediately:
 
@@ -69,11 +68,33 @@ POST /api/agents/{id}/revoke
 
 (Admin WebUser or API token.)
 
-Production installers should store the token with the OS credential facility:
+### Where the agent keeps its secrets
 
-- Windows: DPAPI scoped to LocalMachine or the service identity.
-- macOS: Keychain generic password for the Tawny service account.
-- Linux: root-owned `0600` state file, or kernel keyring / TPM when available.
+`state.toml` holds only `agent_id` when a keystore is in use. The JWT and the device seed live in the keystore:
+
+| Platform | Secret store | Status |
+| --- | --- | --- |
+| macOS LaunchDaemon (root) | `/Library/Keychains/System.keychain`, generic password, service `dev.jusso.tawny-agent`, accounts `agent-jwt` and `device-seed` | implemented |
+| macOS `--user` LaunchAgent | the user's login keychain, same service/accounts | implemented |
+| Windows | `state.toml` / `.devicekey` under the SYSTEM + Administrators ACL on `%ProgramData%\Tawny` | DPAPI planned |
+| Linux | root/`tawny`-owned `0600` `state.toml` / `.devicekey` | keyring/TPM planned |
+
+On macOS:
+
+- **Migration.** On start, a JWT found in `state.toml` and a `.devicekey` file are copied into the keychain, read back and compared, and only then removed: `state.toml` is atomically rewritten without `agent_jwt`, and the seed file is overwritten with zeros and deleted (best effort; APFS may keep old blocks).
+- **Fallback.** If the keychain cannot be written (locked login keychain, missing System keychain, any Security.framework error), the agent logs a warning with the `OSStatus` and keeps or writes the plaintext file as before. A JWT present in `state.toml` always wins over the keychain copy, so a fallback write is never shadowed by an older keychain value. `TAWNY_KEYSTORE=file` forces the plaintext backend.
+- **No UI.** All keychain calls run with user interaction disabled; anything that would prompt fails with `errSecInteractionNotAllowed` / `errSecAuthFailed` instead.
+- **File-based keychain, not the data-protection keychain.** The data-protection keychain needs a `keychain-access-groups` entitlement and so a real code signature. The agent ships ad-hoc signed, so it uses the file-based System/login keychain. `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` is set but ignored by file-based keychains; items are never synchronizable.
+- **Who can read the items.** Since macOS 10.12 the keychain adds a partition list naming the creating binary. For an ad-hoc signed binary that is its `cdhash`, so only the exact agent build that wrote an item can read it without a prompt. The item ACL is opened to any application only so that newer builds and `security delete-generic-password` can replace or delete stale items; it does not grant reads. Once the agent ships with a Developer ID signature, the partition becomes the team ID and this can be tightened to the agent's designated requirement.
+- **Upgrades.** Because a new build cannot read the old build's items, `install.sh` stops the job and runs the *old* binary with `--export-credentials` before replacing it. That copies the JWT and seed back into `0600` files (verified) and deletes the keychain items; the new build moves them back into the keychain on first start. Rollback runs the same export with the new build before restoring the old one. If the binary is replaced any other way, the agent exits with `AgentJwtUnavailable` (`OSStatus -25293`); run the old binary with `--export-credentials`, or re-enroll the host.
+- **Removing items** (uninstall or forced re-enrollment):
+
+  ```bash
+  sudo security delete-generic-password -s dev.jusso.tawny-agent -a agent-jwt /Library/Keychains/System.keychain
+  sudo security delete-generic-password -s dev.jusso.tawny-agent -a device-seed /Library/Keychains/System.keychain
+  ```
+
+  Listing them (`security find-generic-password -s dev.jusso.tawny-agent ...` without `-w`) shows attributes only and never prompts.
 
 If a host is rebuilt, re-enroll (new credential version).
 

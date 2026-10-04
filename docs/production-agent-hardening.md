@@ -133,16 +133,49 @@ macOS because launchd offers no systemd-equivalent filesystem sandbox and
 unprivileged process visibility is incomplete. Deploy only after endpoint
 threat-model approval.
 
+LaunchDaemon settings and why:
+
+| Key | Value | Reason |
+| --- | --- | --- |
+| user | root (implicit) | Process and socket visibility across all users. |
+| `KeepAlive` | `true` | Restart after any exit, including a stray `SIGTERM`; `launchctl bootout` still stops it. |
+| `ThrottleInterval` | `10` | At most one restart every 10 s on a crash loop. |
+| `ProcessType` | `Standard` | `Background` adds CPU, I/O and timer throttling that delays collection. |
+| `LowPriorityIO` | unset (off) | Spool writes must not be starved; collection intervals already bound disk use. |
+| `Umask` | `63` (`077`) | Everything the agent creates is owner-only. |
+| `SessionCreate` | `false` | No security session needed; the System keychain is reachable without one. |
+| `ExitTimeOut` | `30` | Time to flush before `SIGKILL` on stop. |
+| `StandardOutPath` / `StandardErrorPath` | `/Library/Logs/Tawny/agent.log` | Pre-created `root:wheel 0600` in a `0700` directory. |
+
+File ownership: the plist is `root:wheel 0644`, `/usr/local/tawny` and the
+binary are `root:wheel 0755`, and the config/state directory
+`/Library/Application Support/Tawny` is `root:wheel 0700` with `config.toml`
+`0600`. The agent JWT and device seed are stored in the System keychain, not
+in `state.toml` (see `production.md`, "Where the agent keeps its secrets").
+
 ```bash
 sudo launchctl print system/dev.jusso.tawny-agent
-sudo tail -n 100 "/Library/Application Support/Tawny/agent.err"
+sudo tail -n 100 /Library/Logs/Tawny/agent.log
 sudo plutil -lint /Library/LaunchDaemons/dev.jusso.tawny-agent.plist
+sudo security find-generic-password -s dev.jusso.tawny-agent -a agent-jwt /Library/Keychains/System.keychain  # attributes only
+grep -c agent_jwt "/Library/Application Support/Tawny/state.toml"  # 0 once migrated
 ```
+
+`./install.sh --dry-run` prints the generated plist (validated with
+`plutil -lint`) without touching the host.
 
 For a developer workstation where a system daemon is not appropriate, `--user`
 installs a LaunchAgent under the current account with configuration in
-`~/.config/tawny` and mutable state in `~/.local/state/tawny`. Do not use this
-reduced-visibility mode for production SOC coverage.
+`~/.config/tawny`, mutable state in `~/.local/state/tawny`, logs in
+`~/Library/Logs/Tawny/agent.log`, and secrets in the login keychain. Do not use
+this reduced-visibility mode for production SOC coverage.
+
+macOS upgrades: keychain items are readable only by the exact ad-hoc signed
+build that created them, so the installer stops the job and runs the current
+binary with `--export-credentials` before swapping binaries (and the new one
+before a rollback). Replace the binary only through `install.sh`; otherwise
+run `<old binary> --export-credentials` (with the job's `TAWNY_CONFIG` and
+`TAWNY_STATE_PATH`) first, or re-enroll.
 
 ## Upgrade, rollback, and uninstall
 
@@ -195,7 +228,9 @@ Archive then remove `/etc/tawny` and `/var/lib/tawny` only after retention and
 incident-response requirements are met. Remove `tawny` account only after
 confirming no files or ACLs still reference it. Equivalent Windows/macOS removal
 must stop and delete service registration first, preserve config/spool for
-retention review, then remove program files.
+retention review, then remove program files. On macOS also delete the
+`dev.jusso.tawny-agent` keychain items (`agent-jwt`, `device-seed`) with
+`security delete-generic-password`, as shown in `production.md`.
 
 ## Rollout gate
 
