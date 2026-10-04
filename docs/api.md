@@ -178,6 +178,28 @@ Manually imported global IoC rules are excluded because they do not currently
 carry tenant ownership. Feed-backed rules are joined to their tenant before
 being returned.
 
+### GET `/api/alerts?after_id=0&limit=500`
+
+Accepts web users and `twny_` API tokens (Viewer or Admin). Without `after_id`
+or `since`, the newest alerts come first (dashboard view). With either, alerts
+are returned **oldest first by `id`** so integrations can page forward: store the
+last `id` you received and pass it as `after_id` next time. `limit` is capped at
+500. Each alert includes `mitre_techniques` (from its rule), `agent_id`,
+`hostname`, `agent_os` (`windows|macos|linux`), `agent_os_version`, the
+triggering telemetry `payload`, `severity` (`low|medium|high|critical`) and
+`status`.
+
+### POST `/api/agents/{id}/actions`
+
+Admin web user or Admin `twny_` API token. Body:
+`{"action_type":"kill_process"|"isolate_host"|"release_host","payload":{...},"idempotency_key":"..."}`.
+`kill_process` requires `payload.pid` (positive integer). Re-posting the same
+`idempotency_key` for the same agent returns the existing action. Poll
+`GET /api/agents/{id}/actions` for the outcome; actions are delivered on the
+agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
+`expired`. Host isolation and release are not yet implemented by the agent and
+currently complete as `failed`.
+
 ## Errors
 
 All errors are RFC 7807 problem details:

@@ -89,4 +89,7 @@ public record AlertResponse(
     string Title,
     string? Description,
     JsonElement? Enrichment,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    IReadOnlyList<string> MitreTechniques,
+    AgentPlatform AgentOs,
+    string AgentOsVersion);

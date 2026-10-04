@@ -91,6 +91,7 @@ public enum ResponseActionType
 {
     KillProcess = 0,
     IsolateHost = 1,
+    ReleaseHost = 2,
 }
 
 public enum ResponseActionStatus
