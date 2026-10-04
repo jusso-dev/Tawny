@@ -38,7 +38,7 @@ pub const Collector = struct {
             payloads.deinit();
         }
 
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .linux => {
                 try self.collectStaticHosts(&payloads);
                 if (try self.collectLinux(&payloads)) {
@@ -56,7 +56,7 @@ pub const Collector = struct {
         const since_arg = if (self.last_run_unix == 0)
             try self.allocator.dupe(u8, "60 seconds ago")
         else
-            try std.fmt.allocPrint(self.allocator, "@{d}", .{self.last_run_unix});
+            try self.allocator.print("@{d}", .{self.last_run_unix});
         defer self.allocator.free(since_arg);
 
         const result = std.process.run(self.allocator, iox.current(), .{

@@ -330,7 +330,7 @@ pub const Scanner = struct {
             else
                 raw_version;
 
-            const key = try std.fmt.allocPrint(self.allocator, "{s}@{s}", .{ module, version });
+            const key = try self.allocator.print("{s}@{s}", .{ module, version });
             if (seen.contains(key)) {
                 self.allocator.free(key);
                 continue;

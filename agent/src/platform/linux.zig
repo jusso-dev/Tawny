@@ -58,7 +58,7 @@ fn readParentPid(alloc: std.mem.Allocator, pid: u32) !u32 {
 }
 
 fn readProcText(alloc: std.mem.Allocator, pid: u32, name: []const u8) ![]u8 {
-    const path = try std.fmt.allocPrint(alloc, "/proc/{d}/{s}", .{ pid, name });
+    const path = try alloc.print("/proc/{d}/{s}", .{ pid, name });
     defer alloc.free(path);
     const io = iox.current();
     var file = try std.Io.Dir.openFileAbsolute(io, path, .{});

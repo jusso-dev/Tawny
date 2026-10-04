@@ -274,7 +274,7 @@ pub const Buffer = struct {
 
         var file = try std.Io.Dir.cwd().createFile(io, self.spool_path, .{
             .truncate = true,
-            .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+            .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
         });
         defer file.close(io);
         const header = makeHeader(spool_header_len);
@@ -312,12 +312,12 @@ pub const Buffer = struct {
 
         const kept = raw[@intCast(self.acknowledged_offset)..];
         const new_size = spool_header_len + kept.len;
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.spool_path});
+        const tmp_path = try self.allocator.print("{s}.tmp", .{self.spool_path});
         defer self.allocator.free(tmp_path);
         {
             var tmp = try std.Io.Dir.cwd().createFile(io, tmp_path, .{
                 .truncate = true,
-                .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+                .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
             });
             defer tmp.close(io);
             const header = makeHeader(spool_header_len);
@@ -356,13 +356,13 @@ pub const Buffer = struct {
             try self.appendOwned(id, seq, occurred_at, event_type, payload, 0);
         }
 
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{self.spool_path});
+        const tmp_path = try self.allocator.print("{s}.tmp", .{self.spool_path});
         defer self.allocator.free(tmp_path);
         const io = iox.current();
         {
             var tmp = try std.Io.Dir.cwd().createFile(io, tmp_path, .{
                 .truncate = true,
-                .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+                .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
             });
             defer tmp.close(io);
             const header = makeHeader(spool_header_len);
@@ -417,7 +417,7 @@ fn nextRecord(raw: []const u8, cursor: *usize) ?ParsedRecord {
         }
         const expected_crc = std.mem.readInt(u32, raw[cursor.* + 8 ..][0..4], .little);
         const body = raw[cursor.* + record_header_len .. end];
-        if (std.hash.crc.Crc32.hash(body) != expected_crc) {
+        if (std.hash.Crc32.hash(body) != expected_crc) {
             cursor.* += 1;
             continue;
         }
@@ -459,7 +459,7 @@ fn encodeRecord(
     std.mem.writeInt(u16, record[36..38], @intCast(event_type.len), .little);
     @memcpy(record[38 .. 38 + event_type.len], event_type);
     @memcpy(record[38 + event_type.len ..], payload);
-    std.mem.writeInt(u32, record[8..12], std.hash.crc.Crc32.hash(record[12..]), .little);
+    std.mem.writeInt(u32, record[8..12], std.hash.Crc32.hash(record[12..]), .little);
     return record;
 }
 
@@ -487,7 +487,7 @@ fn isZeroId(id: [16]u8) bool {
 }
 
 fn syncParentDirectory(path: []const u8) !void {
-    if (builtin.os.tag != .linux) return;
+    if (builtin.target.os.tag != .linux) return;
     const io = iox.current();
     const parent_path = std.fs.path.dirname(path) orelse ".";
     // `openDir` otherwise uses Linux O_PATH, which cannot be passed to fsync.

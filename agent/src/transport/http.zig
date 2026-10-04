@@ -80,9 +80,7 @@ pub const Client = struct {
     }
 
     pub fn heartbeat(self: *Client, p: HeartbeatPayload) !HeartbeatResult {
-        const body = try std.fmt.allocPrint(self.allocator,
-            \\{{"agent_version":"{s}","uptime_seconds":{d},"buffer_depth":{d}}}
-        , .{ p.agent_version, p.uptime_seconds, p.buffer_depth });
+        const body = try std.json.Stringify.valueAlloc(self.allocator, p, .{});
         defer self.allocator.free(body);
 
         const response = try self.post("/api/agents/heartbeat", body);
@@ -120,6 +118,12 @@ pub const Client = struct {
             }
 
             for (parsed.value.actions) |action| {
+                // Action ids are interpolated into a URL path when reporting
+                // results; never accept anything but a canonical UUID.
+                if (!isUuid(action.id)) {
+                    std.log.warn("ignoring response action with non-UUID id", .{});
+                    continue;
+                }
                 var payload: std.Io.Writer.Allocating = .init(self.allocator);
                 errdefer payload.deinit();
                 try std.json.Stringify.value(action.payload, .{}, &payload.writer);
@@ -142,26 +146,14 @@ pub const Client = struct {
         status: []const u8,
         message: []const u8,
     ) !void {
-        const path = try std.fmt.allocPrint(self.allocator, "/api/agents/actions/{s}/result", .{action_id});
+        if (!isUuid(action_id)) return error.InvalidActionId;
+        const path = try self.allocator.print("/api/agents/actions/{s}/result", .{action_id});
         defer self.allocator.free(path);
 
-        var body = std.array_list.Managed(u8).init(self.allocator);
-        defer body.deinit();
-        try body.print("{{\"status\":\"{s}\",\"execution_token\":", .{status});
-        {
-            var token_writer: std.Io.Writer.Allocating = .init(self.allocator);
-            defer token_writer.deinit();
-            try std.json.Stringify.value(execution_token, .{}, &token_writer.writer);
-            try body.appendSlice(token_writer.written());
-        }
-        try body.appendSlice(",\"message\":");
-        var body_writer: std.Io.Writer.Allocating = .init(self.allocator);
-        defer body_writer.deinit();
-        try std.json.Stringify.value(message, .{}, &body_writer.writer);
-        try body.appendSlice(body_writer.written());
-        try body.appendSlice(",\"result\":{}}");
+        const body = try buildActionResultBody(self.allocator, execution_token, status, message);
+        defer self.allocator.free(body);
 
-        const response = try self.post(path, body.items);
+        const response = try self.post(path, body);
         defer self.allocator.free(response);
     }
 
@@ -215,7 +207,7 @@ pub const Client = struct {
             std.crypto.hash.sha2.Sha256.hash(ev.payload, &digest, .{});
             try canonical.appendSlice(&uuid);
             try canonical.append('|');
-            const meta = try std.fmt.allocPrint(self.allocator, "{d}|{s}|{d}|", .{ ev.sequence, ev.event_type, ev.occurred_at });
+            const meta = try self.allocator.print("{d}|{s}|{d}|", .{ ev.sequence, ev.event_type, ev.occurred_at });
             defer self.allocator.free(meta);
             try canonical.appendSlice(meta);
             try appendHexLower(&canonical, &digest);
@@ -267,10 +259,10 @@ pub const Client = struct {
     }
 
     fn post(self: *Client, path: []const u8, body: []const u8) ![]u8 {
-        const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.base_url, path });
+        const url = try self.allocator.print("{s}{s}", .{ self.base_url, path });
         defer self.allocator.free(url);
 
-        const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{self.jwt});
+        const auth = try self.allocator.print("Bearer {s}", .{self.jwt});
         defer self.allocator.free(auth);
 
         const response = self.postTimed(url, auth, body) catch |err| {
@@ -335,7 +327,7 @@ fn fetchOnce(self: *Client, url: []const u8, auth: []const u8, body: []const u8)
         .keep_alive = false,
     });
 
-    const status_int = @intFromEnum(result.status);
+    const status_int = @backingInt(result.status);
     if (status_int >= 200 and status_int < 300) {
         return self.allocator.dupe(u8, response_writer.buffered());
     }
@@ -359,6 +351,33 @@ fn drainTimedResults(alloc: std.mem.Allocator, select: anytype) void {
             .timeout => {},
         }
     }
+}
+
+/// Canonical 8-4-4-4-12 hex UUID (either case). Used to gate any id that is
+/// placed into a request path.
+pub fn isUuid(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |ch, i| {
+        switch (i) {
+            8, 13, 18, 23 => if (ch != '-') return false,
+            else => if (!std.ascii.isHex(ch)) return false,
+        }
+    }
+    return true;
+}
+
+fn buildActionResultBody(
+    alloc: std.mem.Allocator,
+    execution_token: []const u8,
+    status: []const u8,
+    message: []const u8,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .status = status,
+        .execution_token = execution_token,
+        .message = message,
+        .result = struct {}{},
+    }, .{});
 }
 
 fn formatUuid(id: [16]u8, out: *[36]u8) void {
@@ -393,4 +412,53 @@ test "backoff grows within bounded jitter window" {
     try std.testing.expect(client.backoff_seconds >= 1 and client.backoff_seconds <= 2);
     for (0..10) |_| client.noteFailure();
     try std.testing.expect(client.backoff_seconds >= 4 and client.backoff_seconds <= 8);
+}
+
+test "isUuid accepts canonical UUIDs only" {
+    try std.testing.expect(isUuid("00112233-4455-4677-8899-aabbccddeeff"));
+    try std.testing.expect(isUuid("00112233-4455-4677-8899-AABBCCDDEEFF"));
+    try std.testing.expect(!isUuid(""));
+    try std.testing.expect(!isUuid("../../agents/enroll"));
+    try std.testing.expect(!isUuid("00112233-4455-4677-8899-aabbccddeef"));
+    try std.testing.expect(!isUuid("00112233-4455-4677-8899-aabbccddeefg"));
+    try std.testing.expect(!isUuid("00112233-4455-4677-8899?aabbccddeeff"));
+    try std.testing.expect(!isUuid("0011223-34455-4677-8899-aabbccddeeff"));
+    try std.testing.expect(!isUuid("00112233-4455-4677-8899-aabbccddeeff/x"));
+}
+
+test "reportActionResult rejects non-UUID action id before any request" {
+    var client = try Client.init(std.testing.allocator, "https://example.invalid", "jwt", 10, 8);
+    defer client.deinit();
+    try std.testing.expectError(
+        error.InvalidActionId,
+        client.reportActionResult("../heartbeat?x=1", "tok", "failed", "msg"),
+    );
+    try std.testing.expectError(
+        error.InvalidActionId,
+        client.reportActionResult("1234", "tok", "failed", "msg"),
+    );
+}
+
+test "action result body escapes untrusted strings" {
+    const alloc = std.testing.allocator;
+    const body = try buildActionResultBody(alloc, "tok\"\\", "failed", "line1\n\"quoted\"\x07");
+    defer alloc.free(body);
+    try std.testing.expectEqualStrings(
+        "{\"status\":\"failed\",\"execution_token\":\"tok\\\"\\\\\",\"message\":\"line1\\n\\\"quoted\\\"\\u0007\",\"result\":{}}",
+        body,
+    );
+}
+
+test "heartbeat body escapes agent version" {
+    const alloc = std.testing.allocator;
+    const body = try std.json.Stringify.valueAlloc(alloc, HeartbeatPayload{
+        .agent_version = "0.1.0\",\"x\":\"\\",
+        .uptime_seconds = 5,
+        .buffer_depth = 2,
+    }, .{});
+    defer alloc.free(body);
+    try std.testing.expectEqualStrings(
+        "{\"agent_version\":\"0.1.0\\\",\\\"x\\\":\\\"\\\\\",\"uptime_seconds\":5,\"buffer_depth\":2}",
+        body,
+    );
 }

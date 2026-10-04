@@ -41,13 +41,13 @@ pub const Watcher = struct {
         }
         errdefer watcher.deinit();
 
-        if (comptime builtin.os.tag == .linux) {
+        if (comptime builtin.target.os.tag == .linux) {
             const fd = std.c.inotify_init1(linux.IN.NONBLOCK | linux.IN.CLOEXEC);
             if (std.c.errno(fd) != .SUCCESS) return watcher;
             watcher.inotify_fd = fd;
             const mask = linux.IN.MODIFY | linux.IN.CREATE | linux.IN.DELETE | linux.IN.MOVED_FROM | linux.IN.MOVED_TO | linux.IN.ATTRIB;
             for (watcher.paths) |path| {
-                const path_z = alloc.dupeZ(u8, path) catch continue;
+                const path_z = alloc.dupeSentinel(u8, path, 0) catch continue;
                 defer alloc.free(path_z);
                 const wd = std.c.inotify_add_watch(fd, path_z.ptr, mask);
                 if (std.c.errno(wd) != .SUCCESS) continue;
@@ -59,7 +59,7 @@ pub const Watcher = struct {
     }
 
     pub fn deinit(self: *Watcher) void {
-        if (comptime builtin.os.tag == .linux) {
+        if (comptime builtin.target.os.tag == .linux) {
             if (self.inotify_fd) |fd| _ = linux.close(fd);
         }
         for (self.paths) |p| self.allocator.free(p);
@@ -76,7 +76,7 @@ pub const Watcher = struct {
             payloads.deinit();
         }
 
-        if (comptime builtin.os.tag != .linux) {
+        if (comptime builtin.target.os.tag != .linux) {
             return payloads.toOwnedSlice();
         }
 
@@ -87,7 +87,7 @@ pub const Watcher = struct {
 };
 
 fn drainLinux(self: *Watcher, fd: i32, payloads: *std.array_list.Managed([]u8)) !void {
-    if (comptime builtin.os.tag != .linux) return;
+    if (comptime builtin.target.os.tag != .linux) return;
 
     var buf: [4096]u8 align(@alignOf(linux.inotify_event)) = undefined;
     while (true) {

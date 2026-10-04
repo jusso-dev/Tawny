@@ -5,7 +5,7 @@ const privacy = @import("privacy.zig");
 const max_processes: usize = 2048;
 const max_process_name_bytes: usize = 256;
 
-const platform = switch (builtin.os.tag) {
+const platform = switch (builtin.target.os.tag) {
     .windows => @import("../platform/windows.zig"),
     .macos => @import("../platform/macos.zig"),
     .linux => @import("../platform/linux.zig"),

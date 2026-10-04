@@ -45,13 +45,13 @@ pub const Config = struct {
 
 /// Resolve the platform-default config directory.
 fn defaultConfigPath(alloc: std.mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         const programdata = env.getEnvVarOwned(alloc, "PROGRAMDATA") catch
             try alloc.dupe(u8, "C:\\ProgramData");
         defer alloc.free(programdata);
-        return std.fmt.allocPrint(alloc, "{s}\\Tawny\\config.toml", .{programdata});
+        return alloc.print("{s}\\Tawny\\config.toml", .{programdata});
     }
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         return alloc.dupe(u8, "/etc/tawny/config.toml");
     }
     return alloc.dupe(u8, "/Library/Application Support/Tawny/config.toml");
@@ -66,9 +66,9 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     var cfg = Config{
         .allocator = alloc,
         .backend_url = try alloc.dupe(u8, "http://localhost:5080"),
-        .spill_path = try std.fmt.allocPrint(alloc, "{s}.spool", .{path}),
+        .spill_path = try alloc.print("{s}.spool", .{path}),
         .config_path = path,
-        .state_path = if (env_state_path) |p| p else try std.fmt.allocPrint(alloc, "{s}.state", .{path}),
+        .state_path = if (env_state_path) |p| p else try alloc.print("{s}.state", .{path}),
     };
     errdefer cfg.deinit();
 
@@ -166,13 +166,13 @@ pub fn save(cfg: *const Config) !void {
     const io = iox.current();
     try std.Io.Dir.cwd().createDirPath(io, dir);
 
-    const tmp_path = try std.fmt.allocPrint(cfg.allocator, "{s}.tmp", .{cfg.state_path});
+    const tmp_path = try cfg.allocator.print("{s}.tmp", .{cfg.state_path});
     defer cfg.allocator.free(tmp_path);
 
     {
         var file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{
             .truncate = true,
-            .permissions = if (builtin.os.tag == .windows) .default_file else @enumFromInt(0o600),
+            .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
         });
         defer file.close(io);
         var writer_buffer: [4096]u8 = undefined;
@@ -192,8 +192,86 @@ pub fn save(cfg: *const Config) !void {
     try syncParentDirectory(cfg.state_path);
 }
 
+/// Return `raw` without any `enrollment_token = ...` lines, or null when the
+/// config contains no such line. Caller owns the returned slice.
+pub fn stripEnrollmentToken(alloc: std.mem.Allocator, raw: []const u8) !?[]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    var removed = false;
+    var line_iter = std.mem.splitScalar(u8, raw, '\n');
+    var first = true;
+    while (line_iter.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (std.mem.indexOfScalar(u8, line, '=')) |eq| {
+            if (line[0] != '#' and std.mem.eql(u8, std.mem.trim(u8, line[0..eq], " \t"), "enrollment_token")) {
+                removed = true;
+                continue;
+            }
+        }
+        if (!first) try out.writer.writeByte('\n');
+        first = false;
+        try out.writer.writeAll(line_raw);
+    }
+    if (!removed) {
+        out.deinit();
+        return null;
+    }
+    return try out.toOwnedSlice();
+}
+
+/// Atomically rewrite the static config file (tmp + rename) without the
+/// single-use enrollment token. Returns false when no token line was present.
+/// Fails (leaving the original untouched) when the config is not writable.
+pub fn removeEnrollmentToken(alloc: std.mem.Allocator, config_path: []const u8) !bool {
+    const io = iox.current();
+    const cwd = std.Io.Dir.cwd();
+
+    const file = cwd.openFile(io, config_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    const stat = file.stat(io) catch |err| {
+        file.close(io);
+        return err;
+    };
+    const raw = iox.readToEndAlloc(file, alloc, 64 * 1024) catch |err| {
+        file.close(io);
+        return err;
+    };
+    file.close(io);
+    defer alloc.free(raw);
+
+    const stripped = (try stripEnrollmentToken(alloc, raw)) orelse return false;
+    defer alloc.free(stripped);
+
+    const tmp_path = try alloc.print("{s}.tmp", .{config_path});
+    defer alloc.free(tmp_path);
+
+    writeSynced(io, tmp_path, stripped, stat.permissions) catch |err| {
+        cwd.deleteFile(io, tmp_path) catch {};
+        return err;
+    };
+    cwd.rename(tmp_path, cwd, config_path, io) catch |err| {
+        cwd.deleteFile(io, tmp_path) catch {};
+        return err;
+    };
+    try syncParentDirectory(config_path);
+    return true;
+}
+
+fn writeSynced(io: std.Io, path: []const u8, bytes: []const u8, permissions: std.Io.File.Permissions) !void {
+    var tmp = try std.Io.Dir.cwd().createFile(io, path, .{
+        .truncate = true,
+        // Windows: inherit the hardened ProgramData\Tawny ACL.
+        .permissions = if (builtin.target.os.tag == .windows) .default_file else permissions,
+    });
+    defer tmp.close(io);
+    try tmp.writePositionalAll(io, bytes, 0);
+    try tmp.sync(io);
+}
+
 fn syncParentDirectory(path: []const u8) !void {
-    if (builtin.os.tag != .linux) return;
+    if (builtin.target.os.tag != .linux) return;
     const io = iox.current();
     const parent_path = std.fs.path.dirname(path) orelse ".";
     // `openDir` otherwise uses Linux O_PATH, which cannot be passed to fsync.
@@ -416,4 +494,50 @@ test "mutable state persists separately and overrides legacy credentials" {
     try std.testing.expect(try loadState(&loaded));
     try std.testing.expectEqualStrings("new-id", loaded.agent_id.?);
     try std.testing.expectEqualStrings("new-jwt", loaded.agent_jwt.?);
+}
+
+test "stripEnrollmentToken removes only the token line" {
+    const alloc = std.testing.allocator;
+    const raw = "[agent]\nurl = \"https://tawny.example\"\n  enrollment_token = \"secret\"\n# enrollment_token = keep-comment\nheartbeat_interval_seconds = 60\n";
+    const stripped = (try stripEnrollmentToken(alloc, raw)).?;
+    defer alloc.free(stripped);
+    try std.testing.expectEqualStrings(
+        "[agent]\nurl = \"https://tawny.example\"\n# enrollment_token = keep-comment\nheartbeat_interval_seconds = 60\n",
+        stripped,
+    );
+    try std.testing.expect((try stripEnrollmentToken(alloc, "url = \"x\"\n")) == null);
+}
+
+test "removeEnrollmentToken rewrites config atomically" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const config_path = try std.fs.path.join(alloc, &.{ ".zig-cache", "tmp", &tmp.sub_path, "config.toml" });
+    defer alloc.free(config_path);
+    const io = iox.current();
+    {
+        var file = try std.Io.Dir.cwd().createFile(io, config_path, .{
+            .truncate = true,
+            .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o640)),
+        });
+        defer file.close(io);
+        try file.writePositionalAll(io, "url = \"https://tawny.example\"\nenrollment_token = \"tok\"\n", 0);
+    }
+
+    try std.testing.expect(try removeEnrollmentToken(alloc, config_path));
+    try std.testing.expect(!try removeEnrollmentToken(alloc, config_path));
+
+    const file = try std.Io.Dir.cwd().openFile(io, config_path, .{});
+    defer file.close(io);
+    const contents = try iox.readToEndAlloc(file, alloc, 4096);
+    defer alloc.free(contents);
+    try std.testing.expectEqualStrings("url = \"https://tawny.example\"\n", contents);
+    if (builtin.target.os.tag != .windows) {
+        const stat = try file.stat(io);
+        try std.testing.expectEqual(@as(u32, 0o640), @as(u32, @intCast(@backingInt(stat.permissions) & 0o777)));
+    }
+
+    const tmp_path = try alloc.print("{s}.tmp", .{config_path});
+    defer alloc.free(tmp_path);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(io, tmp_path, .{}));
 }

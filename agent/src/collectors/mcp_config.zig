@@ -127,7 +127,7 @@ fn sanitizeUrl(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
     if (std.mem.indexOfScalar(u8, authority, '@')) |at_idx| {
         authority = authority[at_idx + 1 ..];
     }
-    return std.fmt.allocPrint(alloc, "{s}://{s}", .{ scheme, authority });
+    return alloc.print("{s}://{s}", .{ scheme, authority });
 }
 
 test "sanitize url strips creds" {

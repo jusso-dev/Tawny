@@ -18,6 +18,8 @@ const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
 const response_actions = @import("response_actions.zig");
 const iox = @import("io_compat.zig");
+const lifecycle = @import("lifecycle.zig");
+const windows_service = if (builtin.target.os.tag == .windows) @import("platform/windows/service.zig") else struct {};
 
 const AGENT_VERSION = "0.1.0";
 
@@ -25,7 +27,23 @@ pub fn main(init: std.process.Init) !void {
     iox.initialize(init.io);
     const alloc = init.gpa;
 
-    std.debug.print("tawny-agent {s} starting on {s}\n", .{ AGENT_VERSION, @tagName(builtin.os.tag) });
+    if (builtin.target.os.tag == .windows) {
+        // Under the SCM this blocks until the service stops; ServiceMain runs
+        // the agent loop. Interactive launches fall through to console mode.
+        switch (try windows_service.runDispatcher(alloc, runAgent)) {
+            .ran_as_service => return,
+            .not_a_service => {},
+        }
+    } else {
+        lifecycle.installPosixSignalHandlers();
+    }
+    try runAgent(alloc);
+}
+
+/// Agent run loop shared by console mode and the Windows service. Returns
+/// cleanly once `lifecycle.requestStop()` has been called.
+fn runAgent(alloc: std.mem.Allocator) anyerror!void {
+    std.debug.print("tawny-agent {s} starting on {s}\n", .{ AGENT_VERSION, @tagName(builtin.target.os.tag) });
 
     var cfg = config_mod.load(alloc) catch |err| {
         std.debug.print("config load failed: {s}\n", .{@errorName(err)});
@@ -37,9 +55,15 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("not enrolled; running enrollment...\n", .{});
         try enrollment.run(alloc, &cfg, AGENT_VERSION);
         try config_mod.save(&cfg);
+        scrubEnrollmentToken(alloc, cfg.config_path);
+    } else if (cfg.enrollment_token) |token| {
+        // Already enrolled: the single-use token is never sent again.
+        alloc.free(token);
+        cfg.enrollment_token = null;
+        scrubEnrollmentToken(alloc, cfg.config_path);
     }
 
-    const device_key_path = try std.fmt.allocPrint(alloc, "{s}.devicekey", .{cfg.state_path});
+    const device_key_path = try alloc.print("{s}.devicekey", .{cfg.state_path});
     defer alloc.free(device_key_path);
     var http = try transport.Client.initFull(
         alloc,
@@ -96,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("system collector failed: {s}\n", .{@errorName(err)});
     }
 
-    while (true) {
+    while (!lifecycle.shouldStop()) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
             if (http.heartbeat(.{
@@ -121,6 +145,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (process_timer.read() / std.time.ns_per_s >= cfg.process_interval_seconds) {
             process_timer.reset();
             if (process_collector.collect(alloc)) |snap| {
@@ -131,6 +156,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (network_timer.read() / std.time.ns_per_s >= cfg.network_interval_seconds) {
             network_timer.reset();
             if (network_collector.collect(alloc)) |snap| {
@@ -141,6 +167,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (users_timer.read() / std.time.ns_per_s >= cfg.users_interval_seconds) {
             users_timer.reset();
             if (users_collector.collect(alloc)) |snap| {
@@ -151,6 +178,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (system_timer.read() / std.time.ns_per_s >= cfg.system_interval_seconds) {
             system_timer.reset();
             if (system_collector.collect(alloc)) |snap| {
@@ -161,6 +189,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (fim_timer.read() / std.time.ns_per_s >= cfg.fim_interval_seconds) {
             fim_timer.reset();
             if (fim.collectChanges()) |changes| {
@@ -174,6 +203,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
             process_events_timer.reset();
             if (process_tracker.collectLaunches()) |launches| {
@@ -183,6 +213,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
             fs_events_timer.reset();
             if (fs_watcher.collectEvents()) |events| {
@@ -192,6 +223,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         if (dns_timer.read() / std.time.ns_per_s >= cfg.dns_interval_seconds) {
             dns_timer.reset();
             if (dns.collectQueries()) |queries| {
@@ -201,6 +233,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         // Supply-chain inventory + extensions + MCP configs run on a much
         // longer cadence — these are slow filesystem walks, not real-time.
         if (supply_chain_timer.read() / std.time.ns_per_s >= cfg.supply_chain_interval_seconds) {
@@ -212,18 +245,21 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("inventory collector failed: {s}\n", .{@errorName(err)});
             }
 
+            if (lifecycle.shouldStop()) break;
             if (extensions.collectExtensions(.editor)) |payloads| {
                 emitBatch(&buf, "editor_extension", payloads, alloc);
             } else |err| {
                 std.debug.print("editor extensions failed: {s}\n", .{@errorName(err)});
             }
 
+            if (lifecycle.shouldStop()) break;
             if (extensions.collectExtensions(.browser)) |payloads| {
                 emitBatch(&buf, "browser_extension", payloads, alloc);
             } else |err| {
                 std.debug.print("browser extensions failed: {s}\n", .{@errorName(err)});
             }
 
+            if (lifecycle.shouldStop()) break;
             if (mcp.collectConfigs()) |payloads| {
                 emitBatch(&buf, "mcp_config", payloads, alloc);
             } else |err| {
@@ -231,6 +267,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
+        if (lifecycle.shouldStop()) break;
         const retry_ready = http.backoff_seconds == 0 or
             flush_retry_timer.read() / std.time.ns_per_s >= http.backoff_seconds;
         if (buf.len() > 0 and retry_ready) {
@@ -245,6 +282,18 @@ pub fn main(init: std.process.Init) !void {
 
         iox.sleep(1 * std.time.ns_per_s);
     }
+    std.debug.print("tawny-agent stopping\n", .{});
+}
+
+fn scrubEnrollmentToken(alloc: std.mem.Allocator, config_path: []const u8) void {
+    const removed = config_mod.removeEnrollmentToken(alloc, config_path) catch |err| {
+        std.log.warn(
+            "enrollment token is still present in {s} and could not be removed ({s}); delete the enrollment_token line manually",
+            .{ config_path, @errorName(err) },
+        );
+        return;
+    };
+    if (removed) std.log.info("removed spent enrollment_token from {s}", .{config_path});
 }
 
 test "main module loads" {
@@ -264,6 +313,8 @@ test "main module loads" {
     _ = extensions_collector;
     _ = mcp_collector;
     _ = response_actions;
+    _ = lifecycle;
+    if (builtin.target.os.tag == .windows) _ = windows_service;
 }
 
 fn emitBatch(

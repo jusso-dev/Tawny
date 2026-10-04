@@ -10,7 +10,7 @@ const curl_timeout: std.Io.Timeout = .{ .duration = .{
 } };
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
         .linux => collectLinux(alloc),
@@ -18,10 +18,9 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     };
 }
 
-const c = if (builtin.os.tag == .macos) @cImport({
-    @cInclude("sys/sysctl.h");
-    @cInclude("sys/utsname.h");
-}) else struct {};
+// @cImport was removed in Zig 0.17; std.c already declares the Darwin
+// uname/sysctlbyname bindings we need.
+const c = std.c;
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     var uts: c.utsname = undefined;
@@ -196,7 +195,7 @@ fn createImdsHeaderFile(alloc: std.mem.Allocator, token: []const u8) ?ImdsHeader
     var random: [16]u8 = undefined;
     std.Io.randomSecure(iox.current(), &random) catch return null;
     const random_hex = std.fmt.bytesToHex(random, .lower);
-    const path = std.fmt.allocPrint(alloc, "/tmp/tawny-imds-{s}.header", .{random_hex}) catch return null;
+    const path = alloc.print("/tmp/tawny-imds-{s}.header", .{random_hex}) catch return null;
     errdefer alloc.free(path);
 
     const io = iox.current();
@@ -210,7 +209,7 @@ fn createImdsHeaderFile(alloc: std.mem.Allocator, token: []const u8) ?ImdsHeader
     file.writeStreamingAll(io, "X-aws-ec2-metadata-token: ") catch return null;
     file.writeStreamingAll(io, token) catch return null;
 
-    const curl_argument = std.fmt.allocPrint(alloc, "@{s}", .{path}) catch return null;
+    const curl_argument = alloc.print("@{s}", .{path}) catch return null;
     return .{ .path = path, .curl_argument = curl_argument };
 }
 
@@ -240,8 +239,7 @@ fn fetchEc2Metadata(
     header_file_argument: []const u8,
     path: []const u8,
 ) ?[]u8 {
-    const url = std.fmt.allocPrint(
-        alloc,
+    const url = alloc.print(
         "http://169.254.169.254/latest/meta-data/{s}",
         .{path},
     ) catch return null;
@@ -285,8 +283,7 @@ fn fetchEc2InterfaceValues(
         if (!isValidMac(mac)) continue;
         count += 1;
 
-        const path = std.fmt.allocPrint(
-            alloc,
+        const path = alloc.print(
             "network/interfaces/macs/{s}/{s}",
             .{ mac, field },
         ) catch continue;

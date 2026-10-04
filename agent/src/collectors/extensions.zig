@@ -137,7 +137,7 @@ pub const Scanner = struct {
                     const source_path = std.fs.path.join(self.allocator, &.{ root, profile_entry.name, "Extensions", ext_id, version_entry.name }) catch continue;
                     defer self.allocator.free(source_path);
 
-                    const composite_id = std.fmt.allocPrint(self.allocator, "{s} ({s})", .{ ext_id, declared_name }) catch continue;
+                    const composite_id = self.allocator.print("{s} ({s})", .{ ext_id, declared_name }) catch continue;
                     defer self.allocator.free(composite_id);
 
                     const payload = try buildExtensionEvent(

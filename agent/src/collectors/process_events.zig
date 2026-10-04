@@ -40,7 +40,7 @@ pub const Tracker = struct {
             payloads.deinit();
         }
 
-        switch (builtin.os.tag) {
+        switch (builtin.target.os.tag) {
             .linux => try self.collectLinux(&payloads),
             else => {}, // Win/macOS exec-event capture is deferred to kernel-level work.
         }
@@ -89,7 +89,7 @@ pub const Tracker = struct {
 };
 
 fn pidExists(pid: u32) bool {
-    if (builtin.os.tag != .linux) return true;
+    if (builtin.target.os.tag != .linux) return true;
     const io = iox.current();
     var buf: [64]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "/proc/{d}", .{pid}) catch return false;
@@ -145,7 +145,7 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, pid: u32) ![]u8 {
 }
 
 fn readProcText(alloc: std.mem.Allocator, pid: u32, name: []const u8) ![]u8 {
-    const path = try std.fmt.allocPrint(alloc, "/proc/{d}/{s}", .{ pid, name });
+    const path = try alloc.print("/proc/{d}/{s}", .{ pid, name });
     defer alloc.free(path);
     const io = iox.current();
     var file = try std.Io.Dir.openFileAbsolute(io, path, .{});
@@ -209,7 +209,7 @@ fn readUid(alloc: std.mem.Allocator, pid: u32) !u32 {
 }
 
 fn readExeLink(alloc: std.mem.Allocator, pid: u32) ![]u8 {
-    const link_path = try std.fmt.allocPrint(alloc, "/proc/{d}/exe", .{pid});
+    const link_path = try alloc.print("/proc/{d}/exe", .{pid});
     defer alloc.free(link_path);
     var buf: [4096]u8 = undefined;
     const len = std.Io.Dir.readLinkAbsolute(iox.current(), link_path, &buf) catch return alloc.dupe(u8, "");

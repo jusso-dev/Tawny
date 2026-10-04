@@ -13,7 +13,7 @@ const command_timeout: std.Io.Timeout = .{ .duration = .{
 } };
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
         .linux => collectLinux(alloc),
@@ -118,8 +118,7 @@ fn parseProcNetEndpoint(alloc: std.mem.Allocator, protocol: []const u8, endpoint
     if (!std.mem.endsWith(u8, protocol, "6") and address_hex.len == 8) {
         const raw = std.fmt.parseInt(u32, address_hex, 16) catch return error.InvalidEndpoint;
         return .{
-            .address = try std.fmt.allocPrint(
-                alloc,
+            .address = try alloc.print(
                 "{d}.{d}.{d}.{d}",
                 .{ raw & 0xff, (raw >> 8) & 0xff, (raw >> 16) & 0xff, (raw >> 24) & 0xff },
             ),
@@ -359,8 +358,7 @@ extern "iphlpapi" fn GetExtendedUdpTable(
 fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
     const tcp_bytes = try tableSize(alloc, true);
     const udp_bytes = try tableSize(alloc, false);
-    return std.fmt.allocPrint(
-        alloc,
+    return alloc.print(
         "{{\"source\":\"iphlpapi\",\"tcp_table_bytes\":{d},\"udp_table_bytes\":{d}}}",
         .{ tcp_bytes, udp_bytes },
     );

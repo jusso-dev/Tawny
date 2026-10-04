@@ -10,7 +10,7 @@ const command_timeout: std.Io.Timeout = .{ .duration = .{
 } };
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .macos => collectMacos(alloc),
         .windows => collectWindows(alloc),
         .linux => collectLinux(alloc),
@@ -18,9 +18,23 @@ pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     };
 }
 
-const c = if (builtin.os.tag == .macos) @cImport({
-    @cInclude("utmpx.h");
-}) else struct {};
+// @cImport was removed in Zig 0.17. Hand-written Darwin <utmpx.h> bindings.
+const c = if (builtin.target.os.tag == .macos) struct {
+    const USER_PROCESS: c_short = 7;
+    const utmpx = extern struct {
+        ut_user: [256]u8,
+        ut_id: [4]u8,
+        ut_line: [32]u8,
+        ut_pid: std.c.pid_t,
+        ut_type: c_short,
+        ut_tv: std.c.timeval,
+        ut_host: [256]u8,
+        ut_pad: [16]u32,
+    };
+    extern "c" fn setutxent() void;
+    extern "c" fn endutxent() void;
+    extern "c" fn getutxent() ?*utmpx;
+} else struct {};
 
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);

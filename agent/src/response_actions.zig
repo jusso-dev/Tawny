@@ -43,7 +43,7 @@ fn executeKillProcess(
         try assertProcessIdentity(alloc, parsed.value.pid, parsed.value.image_path, parsed.value.start_time_unix);
     }
 
-    switch (builtin.os.tag) {
+    switch (builtin.target.os.tag) {
         .windows => return error.UnsupportedPlatform,
         else => try std.posix.kill(parsed.value.pid, std.posix.SIG.TERM),
     }
@@ -58,7 +58,7 @@ fn assertProcessIdentity(
     expected_path: ?[]const u8,
     expected_start: ?i64,
 ) !void {
-    if (builtin.os.tag != .linux) {
+    if (builtin.target.os.tag != .linux) {
         // Path/start identity checks are Linux /proc-backed for now.
         // When identity was requested on other platforms, fail closed.
         if (expected_path != null or expected_start != null) return error.ProcessIdentityUnavailable;
@@ -88,7 +88,7 @@ fn readLinuxProcessImagePath(alloc: std.mem.Allocator, pid: i32) ![]u8 {
     var path_buf: [64]u8 = undefined;
     const link_path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/exe", .{pid});
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-    // Zig 0.16: use Io.Dir.readLinkAbsolute (std.posix.readlink is not available).
+    // Zig 0.16+: use Io.Dir.readLinkAbsolute (std.posix.readlink is not available).
     const n = std.Io.Dir.readLinkAbsolute(iox.current(), link_path, &target_buf) catch
         return error.ProcessIdentityMismatch;
     return try alloc.dupe(u8, target_buf[0..n]);
