@@ -70,4 +70,40 @@ if bash "$installer" \
   exit 1
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  # The dry run prints the generated launchd plist; it must lint and carry the
+  # hardening keys.
+  for scope in system user; do
+    scope_args=()
+    if [[ "$scope" == "user" ]]; then scope_args=(--user); fi
+    plist_out="$test_dir/$scope.plist"
+    bash "$installer" ${scope_args[@]+"${scope_args[@]}"} \
+      --install-dir "$install_dir" \
+      --config-path "$config_path" \
+      --state-dir "$state_dir & <odd>" \
+      --binary-path "$local_binary" \
+      --sha256 "$sha256" \
+      --skip-attestation \
+      --dry-run | sed -n 's/^\[dry-run\]   //p' > "$plist_out"
+    plutil -lint "$plist_out" >/dev/null
+    for expected in \
+      '"KeepAlive" => true' \
+      '"ProcessType" => "Standard"' \
+      '"Umask" => 63' \
+      '"SessionCreate" => false' \
+      '"ThrottleInterval" => 10' \
+      "state & <odd>/state.toml"; do
+      if ! plutil -p "$plist_out" | grep -F -- "$expected" >/dev/null; then
+        echo "$scope plist missing: $expected" >&2
+        exit 1
+      fi
+    done
+    if [[ "$scope" == "system" ]]; then
+      plutil -p "$plist_out" | grep -F '"StandardErrorPath" => "/Library/Logs/Tawny/agent.log"' >/dev/null
+    else
+      plutil -p "$plist_out" | grep -F "\"StandardErrorPath\" => \"$HOME/Library/Logs/Tawny/agent.log\"" >/dev/null
+    fi
+  done
+fi
+
 printf 'installer smoke tests passed\n'

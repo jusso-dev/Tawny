@@ -19,6 +19,11 @@ rollback_needed=0
 binary_path=""
 backup_path=""
 os_family=""
+log_dir=""
+keychain_path=""
+credentials_exported=0
+launchd_label="dev.jusso.tawny-agent"
+keychain_service="dev.jusso.tawny-agent"
 
 usage() {
   cat <<'USAGE'
@@ -74,12 +79,17 @@ case "$os_name" in
       : "${install_dir:=$HOME/.local/bin}"
       plist_path="$HOME/Library/LaunchAgents/dev.jusso.tawny-agent.plist"
       launchd_domain="gui/$(id -u)"
+      log_dir="$HOME/Library/Logs/Tawny"
+      # Login keychain (default search list).
+      keychain_path=""
     else
       default_config_path="/Library/Application Support/Tawny/config.toml"
       : "${state_dir:=/Library/Application Support/Tawny}"
       : "${install_dir:=/usr/local/tawny}"
       plist_path="/Library/LaunchDaemons/dev.jusso.tawny-agent.plist"
       launchd_domain="system"
+      log_dir="/Library/Logs/Tawny"
+      keychain_path="/Library/Keychains/System.keychain"
     fi
     ;;
   Linux)
@@ -175,6 +185,97 @@ toml_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+xml_escape() {
+  printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+}
+
+# macOS: true when the agent's JWT or device seed is in the keychain. Reads
+# item attributes only (no secret, no prompt).
+has_keychain_credentials() {
+  local account
+  for account in agent-jwt device-seed; do
+    if security find-generic-password -s "$keychain_service" -a "$account" \
+        ${keychain_path:+"$keychain_path"} >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+binary_supports_credential_export() {
+  [[ -f "$1" ]] && LC_ALL=C grep -aqF -- '--export-credentials' "$1"
+}
+
+# Keychain items are readable only by the exact (ad-hoc signed) build that
+# created them. Before a binary swap, the running build copies the JWT and
+# device seed back to 0600 state files; the next build moves them into the
+# keychain again on first start.
+export_keychain_credentials() {
+  local agent_binary="$1"
+  TAWNY_CONFIG="$config_path" TAWNY_STATE_PATH="$state_dir/state.toml" \
+    "$agent_binary" --export-credentials
+}
+
+# Write the launchd job definition to $1.
+write_launchd_plist() {
+  local dest="$1"
+  local x_binary x_config x_state x_log
+  x_binary="$(xml_escape "$binary_path")"
+  x_config="$(xml_escape "$config_path")"
+  x_state="$(xml_escape "$state_dir/state.toml")"
+  x_log="$(xml_escape "$log_dir/agent.log")"
+  # Decisions:
+  # - Root (implicit for LaunchDaemons): needed to see every user's processes
+  #   and sockets. SessionCreate stays false; the System keychain needs no
+  #   security session.
+  # - KeepAlive true: restart after any exit, including a SIGTERM that did not
+  #   come from launchctl. `launchctl bootout` still stops the job.
+  # - ProcessType Standard: Background applies CPU, I/O and timer throttling
+  #   that delays event collection. LowPriorityIO is left off so spool writes
+  #   are never starved; collection cadence already bounds disk use.
+  # - Umask 077 (63 decimal): every file the agent creates is owner-only.
+  cat > "$dest" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$launchd_label</string>
+  <key>ProgramArguments</key>
+  <array><string>$x_binary</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TAWNY_CONFIG</key><string>$x_config</string>
+    <key>TAWNY_STATE_PATH</key><string>$x_state</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Standard</string>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>30</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>SessionCreate</key><false/>
+  <key>StandardOutPath</key><string>$x_log</string>
+  <key>StandardErrorPath</key><string>$x_log</string>
+</dict>
+</plist>
+EOF
+}
+
+# Pre-create the owner-only log file launchd appends to.
+prepare_log_file() {
+  mkdir -p "$log_dir"
+  if [[ "$service_scope" == "system" ]]; then
+    chown root:wheel "$log_dir"
+  fi
+  chmod 0700 "$log_dir"
+  touch "$log_dir/agent.log"
+  if [[ "$service_scope" == "system" ]]; then
+    chown root:wheel "$log_dir/agent.log"
+  fi
+  chmod 0600 "$log_dir/agent.log"
+}
+
 rollback() {
   local status=$?
   rm -f "${candidate:-}"
@@ -185,6 +286,12 @@ rollback() {
       systemctl stop tawny-agent.service >/dev/null 2>&1 || true
     elif [[ "$os_family" == "macos" ]]; then
       launchctl bootout "$launchd_domain/dev.jusso.tawny-agent" >/dev/null 2>&1 || true
+      # The new build may already have moved credentials into the keychain,
+      # where the previous build cannot read them. Hand them back as files.
+      if [[ "$credentials_exported" -eq 1 ]] && binary_supports_credential_export "$binary_path"; then
+        export_keychain_credentials "$binary_path" >/dev/null 2>&1 ||
+          echo "Could not export credentials from the new build; the previous build may need re-enrollment." >&2
+      fi
     fi
     mv -f "$backup_path" "$binary_path"
     if [[ "$os_family" == "linux" ]] && command -v systemctl >/dev/null 2>&1; then
@@ -194,6 +301,10 @@ rollback() {
     fi
   elif [[ "$rollback_needed" -eq 2 && -n "$binary_path" ]]; then
     rm -f "$binary_path"
+  elif [[ "$rollback_needed" -eq 0 && "$credentials_exported" -eq 1 ]]; then
+    # Failed before the binary swap: restart the untouched previous job. It
+    # moves any exported files back into the keychain on start.
+    launchctl bootstrap "$launchd_domain" "$plist_path" >/dev/null 2>&1 || true
   fi
   exit "$status"
 }
@@ -260,9 +371,18 @@ if [[ "$os_family" == "linux" ]]; then
   fi
 else
   if [[ "$service_scope" == "system" ]]; then
-    run chown root:wheel "$state_dir"
+    run chown root:wheel "$install_dir" "$state_dir"
+    run chmod 0755 "$install_dir"
   fi
   run chmod 0700 "$state_dir"
+  # Owner-only config directory, but never chmod a shared parent such as /etc
+  # when --config-path points somewhere unusual.
+  if [[ "$config_dir" == "$state_dir" || "$(basename "$config_dir")" == [Tt]awny ]]; then
+    if [[ "$service_scope" == "system" ]]; then
+      run chown root:wheel "$config_dir"
+    fi
+    run chmod 0700 "$config_dir"
+  fi
 fi
 
 if [[ "$dry_run" -eq 1 ]]; then
@@ -363,6 +483,20 @@ else
   fi
 fi
 
+if [[ "$os_family" == "macos" && -f "$binary_path" ]]; then
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf '[dry-run] stop %s and export keychain credentials with the current binary when present\n' "$launchd_label"
+  elif has_keychain_credentials; then
+    if ! binary_supports_credential_export "$binary_path"; then
+      echo "Keychain credentials exist but $binary_path cannot export them; aborting upgrade." >&2
+      exit 1
+    fi
+    launchctl bootout "$launchd_domain/$launchd_label" >/dev/null 2>&1 || true
+    credentials_exported=1
+    export_keychain_credentials "$binary_path"
+  fi
+fi
+
 if [[ "$dry_run" -ne 1 ]]; then
   rm -f "$backup_path"
   if [[ -f "$binary_path" ]]; then
@@ -373,48 +507,38 @@ if [[ "$dry_run" -ne 1 ]]; then
   fi
   mv "$candidate" "$binary_path"
   candidate=""
+  if [[ "$os_family" == "macos" && "$service_scope" == "system" ]]; then
+    chown root:wheel "$binary_path"
+  fi
+  chmod 0755 "$binary_path"
 fi
 
 if [[ "$os_family" == "macos" ]]; then
   if [[ "$dry_run" -eq 1 ]]; then
-    printf '[dry-run] write and bootstrap %s launchd job %s\n' "$service_scope" "$plist_path"
+    plist_preview="$(mktemp "${TMPDIR:-/tmp}/tawny-agent.plist.XXXXXX")"
+    write_launchd_plist "$plist_preview"
+    if command -v plutil >/dev/null 2>&1; then
+      plutil -lint "$plist_preview" >/dev/null
+    fi
+    printf '[dry-run] write and bootstrap %s launchd job %s (log %s):\n' \
+      "$service_scope" "$plist_path" "$log_dir/agent.log"
+    sed 's/^/[dry-run]   /' "$plist_preview"
+    rm -f "$plist_preview"
   else
+    prepare_log_file
     mkdir -p "$(dirname "$plist_path")"
     plist_candidate="$(mktemp "$(dirname "$plist_path")/.tawny-agent.plist.XXXXXX")"
-    cat > "$plist_candidate" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>dev.jusso.tawny-agent</string>
-  <key>ProgramArguments</key>
-  <array><string>$binary_path</string></array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>TAWNY_CONFIG</key><string>$config_path</string>
-    <key>TAWNY_STATE_PATH</key><string>$state_dir/state.toml</string>
-  </dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ProcessType</key><string>Background</string>
-  <key>ThrottleInterval</key><integer>10</integer>
-  <key>Umask</key><integer>27</integer>
-  <key>StandardOutPath</key><string>$state_dir/agent.log</string>
-  <key>StandardErrorPath</key><string>$state_dir/agent.err</string>
-</dict>
-</plist>
-EOF
+    write_launchd_plist "$plist_candidate"
     plutil -lint "$plist_candidate" >/dev/null
     if [[ "$service_scope" == "system" ]]; then
       chown root:wheel "$plist_candidate"
     fi
     chmod 0644 "$plist_candidate"
     mv -f "$plist_candidate" "$plist_path"
-    launchctl bootout "$launchd_domain/dev.jusso.tawny-agent" >/dev/null 2>&1 || true
+    launchctl bootout "$launchd_domain/$launchd_label" >/dev/null 2>&1 || true
     launchctl bootstrap "$launchd_domain" "$plist_path"
-    launchctl kickstart -k "$launchd_domain/dev.jusso.tawny-agent"
-    launchctl print "$launchd_domain/dev.jusso.tawny-agent" >/dev/null
+    launchctl kickstart -k "$launchd_domain/$launchd_label"
+    launchctl print "$launchd_domain/$launchd_label" >/dev/null
   fi
 else
   service_path="/etc/systemd/system/tawny-agent.service"
