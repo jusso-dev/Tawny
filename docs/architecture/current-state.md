@@ -8,6 +8,10 @@ is noted in §13.
 
 Paths are repo-relative. Line numbers are approximate and drift with edits.
 
+> Several issues recorded here were fixed in Phase 0 (see
+> [target-edr.md §16](target-edr.md#16-pre-existing-issues-to-fix-first-phase-0)).
+> This file stays as the pre-Phase-0 baseline.
+
 **Summary.** Tawny today is a well-hardened *telemetry and inventory* platform
 with IOC/Sigma-lite alerting, not an EDR. The agent polls; only Linux has
 near-real-time process/file/DNS collection. Process identity is PID-only, so

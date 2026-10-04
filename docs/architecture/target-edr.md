@@ -506,6 +506,11 @@ CPU, RSS, drops, upload rate; fail CI on regression beyond tolerance.
 
 ## 16. Pre-existing issues to fix first (Phase 0)
 
+**Status: done (2026-10-04, branch `edr/phase-0`).** Also completed: Brolga
+reputation provider removed, Kelpie leftovers removed, backend on .NET 10.0.12
+with current packages, agent on Zig 0.17.0, Windows service runs as
+`LocalSystem`.
+
 | Issue | Where |
 |---|---|
 | Open sign-up with default `Admin` role | `web/lib/auth.ts`, `web/prisma/schema.prisma` |
