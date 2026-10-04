@@ -78,94 +78,189 @@ pub fn main(init: std.process.Init) !void {
     var last_reputation: i64 = 0;
     var last_backup: i64 = 0;
     var last_release: i64 = 0;
+    // Live SSE clients outlive the accept that started them. Reaped when phase hits 2.
+    var parked: [32]*Client = undefined;
+    var parked_n: usize = 0;
     while (true) {
+        parked_n = reapClients(allocator, &parked, parked_n);
         var stream = listener.accept(io) catch |err| {
             std.debug.print("accept failed: {s}\n", .{@errorName(err)});
             continue;
         };
-        handleConnection(allocator, io, conn, stream) catch |err| {
-            std.debug.print("connection failed: {s}\n", .{@errorName(err)});
+        const client = allocator.create(Client) catch {
+            stream.close(io);
+            std.debug.print("connection failed: OutOfMemory\n", .{});
+            continue;
         };
-        stream.close(io);
-        // 202 is already on the wire. Detection runs only from the queue.
-        if (detect.drain(allocator, io, conn)) |_| {} else |err| {
-            std.debug.print("detect drain failed: {s}\n", .{@errorName(err)});
-        }
-        if (deliver.drain(allocator, io, conn, sink_targets)) |_| {} else |err| {
-            std.debug.print("sink drain failed: {s}\n", .{@errorName(err)});
-        }
-        const now = util.nowUnix(io);
-        if (now - last_purge >= 3600) {
-            last_purge = now;
-            var pbuf: [32]u8 = undefined;
-            const stamp = util.formatRfc3339(&pbuf, now);
-            purge.run(conn, stamp) catch |err| {
-                std.debug.print("purge job failed: {s}\n", .{@errorName(err)});
+        client.* = .{
+            .allocator = allocator,
+            .io = io,
+            .database_url = cfg.database_url,
+            .stream = stream,
+            .phase = .init(0),
+        };
+        const thread = std.Thread.spawn(.{ .stack_size = 1024 * 1024 }, serveClient, .{client}) catch |err| {
+            std.debug.print("connection thread failed: {s}\n", .{@errorName(err)});
+            handleConnection(allocator, io, conn, stream, &client.phase) catch |fallback_err| {
+                std.debug.print("connection failed: {s}\n", .{@errorName(fallback_err)});
             };
+            stream.close(io);
+            allocator.destroy(client);
+            runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release);
+            continue;
+        };
+        thread.detach();
+        // Phase 0: handler has not finished a normal response and has not
+        // handed the socket to the SSE loop. Phase 1: SSE owns the socket.
+        // Phase 2: worker is done. Jobs run only after that handoff so a
+        // live stream does not stall accept or the queue drains.
+        while (client.phase.load(.acquire) == 0) {
+            std.Io.sleep(io, .fromMilliseconds(1), .awake) catch {};
         }
-        if (now - last_hunt >= 300) {
-            last_hunt = now;
-            if (hunts.run(allocator, io, conn, now)) |_| {} else |err| {
-                std.debug.print("hunt job failed: {s}\n", .{@errorName(err)});
+        if (client.phase.load(.acquire) == 2) {
+            allocator.destroy(client);
+        } else if (parked_n < parked.len) {
+            parked[parked_n] = client;
+            parked_n += 1;
+        } else {
+            while (parked_n == parked.len) {
+                parked_n = reapClients(allocator, &parked, parked_n);
+                if (parked_n == parked.len) std.Io.sleep(io, .fromMilliseconds(20), .awake) catch {};
             }
+            parked[parked_n] = client;
+            parked_n += 1;
         }
-        if (now - last_ti >= 600) {
-            last_ti = now;
-            if (threat_intel.run(allocator, io, conn, .{
-                .now_unix = now,
-                .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
-                .secret = envSpan("TAWNY_INTEGRATION_ENCRYPTION_KEY"),
-            })) |_| {} else |err| {
-                std.debug.print("threat intel job failed: {s}\n", .{@errorName(err)});
-            }
+        runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release);
+    }
+}
+
+const Client = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    database_url: []const u8,
+    stream: std.Io.net.Stream,
+    /// 0 handling, 1 SSE loop owns the socket, 2 worker finished.
+    phase: std.atomic.Value(u8),
+};
+
+fn reapClients(allocator: std.mem.Allocator, parked: *[32]*Client, n: usize) usize {
+    var w: usize = 0;
+    for (parked.*[0..n]) |client| {
+        if (client.phase.load(.acquire) == 2) {
+            allocator.destroy(client);
+        } else {
+            parked[w] = client;
+            w += 1;
         }
-        if (now - last_reputation >= 300) {
-            last_reputation = now;
-            if (reputation.run(allocator, io, conn, .{
-                .now_unix = now,
-                .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
-                .enrich = enrichOn(),
-                .vt_key = envSpan("TAWNY_VIRUSTOTAL_API_KEY"),
-                .abuse_key = envSpan("TAWNY_ABUSEIPDB_API_KEY"),
-                .gn_key = envSpan("TAWNY_GREYNOISE_API_KEY"),
-            })) |_| {} else |err| {
-                std.debug.print("reputation job failed: {s}\n", .{@errorName(err)});
-            }
+    }
+    return w;
+}
+
+fn serveClient(client: *Client) void {
+    defer client.phase.store(2, .release);
+    const db = pg.Conn.connect(client.allocator, client.io, client.database_url) catch |err| {
+        std.debug.print("client db connect failed: {s}\n", .{@errorName(err)});
+        client.stream.close(client.io);
+        return;
+    };
+    defer client.allocator.destroy(db);
+    defer db.close();
+    defer client.stream.close(client.io);
+    handleConnection(client.allocator, client.io, db, client.stream, &client.phase) catch |err| {
+        std.debug.print("connection failed: {s}\n", .{@errorName(err)});
+    };
+}
+
+fn runJobs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    sink_targets: deliver.Targets,
+    last_stale: *i64,
+    last_purge: *i64,
+    last_hunt: *i64,
+    last_ti: *i64,
+    last_reputation: *i64,
+    last_backup: *i64,
+    last_release: *i64,
+) void {
+    if (detect.drain(allocator, io, conn)) |_| {} else |err| {
+        std.debug.print("detect drain failed: {s}\n", .{@errorName(err)});
+    }
+    if (deliver.drain(allocator, io, conn, sink_targets)) |_| {} else |err| {
+        std.debug.print("sink drain failed: {s}\n", .{@errorName(err)});
+    }
+    const now = util.nowUnix(io);
+    if (now - last_purge.* >= 3600) {
+        last_purge.* = now;
+        var pbuf: [32]u8 = undefined;
+        const stamp = util.formatRfc3339(&pbuf, now);
+        purge.run(conn, stamp) catch |err| {
+            std.debug.print("purge job failed: {s}\n", .{@errorName(err)});
+        };
+    }
+    if (now - last_hunt.* >= 300) {
+        last_hunt.* = now;
+        if (hunts.run(allocator, io, conn, now)) |_| {} else |err| {
+            std.debug.print("hunt job failed: {s}\n", .{@errorName(err)});
         }
-        if (now - last_backup >= 86400) {
-            last_backup = now;
-            if (backup.run(allocator, io, conn, .{
-                .now_unix = now,
-                .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
-                .local_path = backupLocalPath(),
-                .s3_bucket = envSpan("TAWNY_BACKUP_S3_BUCKET"),
-                .s3_prefix = envSpanDefault("TAWNY_BACKUP_S3_PREFIX", "telemetry"),
-                .s3_region = awsRegion(),
-                .s3_endpoint = envSpan("TAWNY_BACKUP_S3_ENDPOINT"),
-                .access_key_id = envSpan("AWS_ACCESS_KEY_ID"),
-                .secret_access_key = envSpan("AWS_SECRET_ACCESS_KEY"),
-            })) |_| {} else |err| {
-                std.debug.print("backup job failed: {s}\n", .{@errorName(err)});
-            }
+    }
+    if (now - last_ti.* >= 600) {
+        last_ti.* = now;
+        if (threat_intel.run(allocator, io, conn, .{
+            .now_unix = now,
+            .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
+            .secret = envSpan("TAWNY_INTEGRATION_ENCRYPTION_KEY"),
+        })) |_| {} else |err| {
+            std.debug.print("threat intel job failed: {s}\n", .{@errorName(err)});
         }
-        if (now - last_release >= 3600) {
-            last_release = now;
-            if (releases.run(allocator, io, conn, .{
-                .now_unix = now,
-                .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
-                .url = envSpanDefault("TAWNY_RELEASES_URL", "https://api.github.com/repos/jusso-dev/tawny/releases/latest"),
-            })) |_| {} else |err| {
-                std.debug.print("release check failed: {s}\n", .{@errorName(err)});
-            }
+    }
+    if (now - last_reputation.* >= 300) {
+        last_reputation.* = now;
+        if (reputation.run(allocator, io, conn, .{
+            .now_unix = now,
+            .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
+            .enrich = enrichOn(),
+            .vt_key = envSpan("TAWNY_VIRUSTOTAL_API_KEY"),
+            .abuse_key = envSpan("TAWNY_ABUSEIPDB_API_KEY"),
+            .gn_key = envSpan("TAWNY_GREYNOISE_API_KEY"),
+        })) |_| {} else |err| {
+            std.debug.print("reputation job failed: {s}\n", .{@errorName(err)});
         }
-        if (now - last_stale >= 60) {
-            last_stale = now;
-            var tbuf: [32]u8 = undefined;
-            const stamp = util.formatRfc3339(&tbuf, now);
-            stale.mark(conn, stamp) catch |err| {
-                std.debug.print("stale job failed: {s}\n", .{@errorName(err)});
-            };
+    }
+    if (now - last_backup.* >= 86400) {
+        last_backup.* = now;
+        if (backup.run(allocator, io, conn, .{
+            .now_unix = now,
+            .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
+            .local_path = backupLocalPath(),
+            .s3_bucket = envSpan("TAWNY_BACKUP_S3_BUCKET"),
+            .s3_prefix = envSpanDefault("TAWNY_BACKUP_S3_PREFIX", "telemetry"),
+            .s3_region = awsRegion(),
+            .s3_endpoint = envSpan("TAWNY_BACKUP_S3_ENDPOINT"),
+            .access_key_id = envSpan("AWS_ACCESS_KEY_ID"),
+            .secret_access_key = envSpan("AWS_SECRET_ACCESS_KEY"),
+        })) |_| {} else |err| {
+            std.debug.print("backup job failed: {s}\n", .{@errorName(err)});
         }
+    }
+    if (now - last_release.* >= 3600) {
+        last_release.* = now;
+        if (releases.run(allocator, io, conn, .{
+            .now_unix = now,
+            .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
+            .url = envSpanDefault("TAWNY_RELEASES_URL", "https://api.github.com/repos/jusso-dev/tawny/releases/latest"),
+        })) |_| {} else |err| {
+            std.debug.print("release check failed: {s}\n", .{@errorName(err)});
+        }
+    }
+    if (now - last_stale.* >= 60) {
+        last_stale.* = now;
+        var tbuf: [32]u8 = undefined;
+        const stamp = util.formatRfc3339(&tbuf, now);
+        stale.mark(conn, stamp) catch |err| {
+            std.debug.print("stale job failed: {s}\n", .{@errorName(err)});
+        };
     }
 }
 
@@ -223,6 +318,7 @@ fn handleConnection(
     io: std.Io,
     conn: *pg.Conn,
     stream: std.Io.net.Stream,
+    phase: *std.atomic.Value(u8),
 ) !void {
     var rbuf: [16 * 1024]u8 = undefined;
     var wbuf: [16 * 1024]u8 = undefined;
@@ -260,7 +356,7 @@ fn handleConnection(
             try static_files.serve(allocator, io, &request, envSpanDefault("TAWNY_UI_DIR", "ui"));
         } else {
             const dispatch = @import("http/dispatch.zig");
-            try dispatch.handle(allocator, io, conn, &request);
+            try dispatch.handle(allocator, io, conn, &request, phase);
         }
         if (!request.head.keep_alive) return;
     }
@@ -328,4 +424,5 @@ comptime {
     _ = @import("sinks/slack.zig");
     _ = @import("sinks/tawny_soc.zig");
     _ = @import("sinks/egress.zig");
+    _ = @import("fuzz.zig");
 }

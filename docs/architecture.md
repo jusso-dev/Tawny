@@ -56,7 +56,7 @@ Browser -> Caddy (TLS) -> tawny-server
        -> PostgreSQL
 ```
 
-The static UI polls. `GET /api/agents/{id}/events/stream` returns one `text/event-stream` payload and closes. It does not hold the connection open.
+Agent detail holds `GET /api/agents/{id}/events/stream` open. Each `data:` frame is a JSON array of the latest telemetry, and a `: keep-alive` comment is sent about every 15 seconds. That connection is on its own thread, so the accept loop still serves other requests.
 
 ## Background jobs
 

@@ -1027,37 +1027,45 @@ pub fn listAgentEvents(
     try util.respondJson(request, .ok, out.items);
 }
 
-/// One Server-Sent Event, then close. EventSource reconnects. A held-open
-/// stream would block the single-threaded accept loop.
-pub fn streamAgentEvents(
-    allocator: std.mem.Allocator,
-    conn: *pg.Conn,
-    request: *std.http.Server.Request,
-    web: auth.WebUser,
-    agent_id: []const u8,
-) !void {
-    _ = util.readBody(allocator, request, 1024) catch {};
-    const exists = try conn.exec(allocator, "SELECT 1 FROM agents WHERE id = $1::uuid AND tenant_id = $2::uuid", &.{
-        .{ .text = agent_id },
-        .{ .text = web.tenant_id },
-    });
-    defer {
-        for (exists) |row| row.deinit(allocator);
-        allocator.free(exists);
+const sse_keepalive = ": keep-alive\n\n";
+const sse_slot_cap: u32 = 32;
+var sse_slots = std.atomic.Value(u32).init(0);
+
+const event_window_sql =
+    \\SELECT id::text, event_type, occurred_at::text
+    \\FROM telemetry_events
+    \\WHERE agent_id = $1::uuid AND tenant_id = $2::uuid
+    \\ORDER BY id DESC
+    \\LIMIT 20
+;
+
+fn acquireSseSlot() bool {
+    const held = sse_slots.fetchAdd(1, .monotonic);
+    if (held >= sse_slot_cap) {
+        _ = sse_slots.fetchSub(1, .monotonic);
+        return false;
     }
-    if (exists.len == 0) return util.problem(request, allocator, .not_found, "Agent not found.");
-    const rows = try conn.exec(allocator,
-        \\SELECT id::text, event_type, occurred_at::text
-        \\FROM telemetry_events
-        \\WHERE agent_id = $1::uuid AND tenant_id = $2::uuid
-        \\ORDER BY received_at DESC LIMIT 20
-    , &.{ .{ .text = agent_id }, .{ .text = web.tenant_id } });
-    defer {
-        for (rows) |row| row.deinit(allocator);
-        allocator.free(rows);
-    }
+    return true;
+}
+
+fn releaseSseSlot() void {
+    _ = sse_slots.fetchSub(1, .monotonic);
+}
+
+fn freeRows(allocator: std.mem.Allocator, rows: []pg.Row) void {
+    for (rows) |row| row.deinit(allocator);
+    allocator.free(rows);
+}
+
+fn newestEventId(rows: []const pg.Row) i64 {
+    if (rows.len == 0) return 0;
+    const text = rows[0].cols[0] orelse return 0;
+    return std.fmt.parseInt(i64, text, 10) catch 0;
+}
+
+fn eventsJson(allocator: std.mem.Allocator, rows: []const pg.Row) ![]u8 {
     var json: std.ArrayList(u8) = .empty;
-    defer json.deinit(allocator);
+    errdefer json.deinit(allocator);
     try json.append(allocator, '[');
     for (rows, 0..) |row, i| {
         if (i != 0) try json.append(allocator, ',');
@@ -1072,18 +1080,59 @@ pub fn streamAgentEvents(
         try json.appendSlice(allocator, line);
     }
     try json.append(allocator, ']');
+    return json.toOwnedSlice(allocator);
+}
+
+fn formatSse(allocator: std.mem.Allocator, json: []const u8, event_id: ?[]const u8) ![]u8 {
     var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
+    errdefer body.deinit(allocator);
     try body.appendSlice(allocator, "retry: 5000\n");
-    if (rows.len > 0) if (rows[0].cols[0]) |id| {
+    if (event_id) |id| if (id.len > 0) {
         try body.appendSlice(allocator, "id: ");
         try body.appendSlice(allocator, id);
         try body.append(allocator, '\n');
     };
     try body.appendSlice(allocator, "data: ");
-    try body.appendSlice(allocator, json.items);
+    try body.appendSlice(allocator, json);
     try body.appendSlice(allocator, "\n\n");
-    try request.respond(body.items, .{
+    return body.toOwnedSlice(allocator);
+}
+
+fn queryEventWindow(
+    allocator: std.mem.Allocator,
+    conn: *pg.Conn,
+    agent_id: []const u8,
+    tenant_id: []const u8,
+) ![]pg.Row {
+    return conn.exec(allocator, event_window_sql, &.{ .{ .text = agent_id }, .{ .text = tenant_id } });
+}
+
+fn writeSse(body: *std.http.BodyWriter, bytes: []const u8) !void {
+    try body.writer.writeAll(bytes);
+    try body.writer.flush();
+    // The chunked writer stores the CRLF trailer until the next chunk starts.
+    // Finish this chunk so the event is readable before the next write.
+    switch (body.state) {
+        .chunk_len => |n| if (n == 2) {
+            try body.http_protocol_output.writeAll("\r\n");
+            body.state = .{ .chunk_len = 0 };
+        },
+        else => {},
+    }
+    try body.flush();
+}
+
+fn respondOneShot(
+    allocator: std.mem.Allocator,
+    request: *std.http.Server.Request,
+    rows: []const pg.Row,
+) !void {
+    const json = try eventsJson(allocator, rows);
+    defer allocator.free(json);
+    const event_id: ?[]const u8 = if (rows.len > 0) rows[0].cols[0] else null;
+    const frame = try formatSse(allocator, json, event_id);
+    defer allocator.free(frame);
+    try request.respond(frame, .{
         .status = .ok,
         .extra_headers = &.{
             .{ .name = "content-type", .value = "text/event-stream" },
@@ -1093,8 +1142,123 @@ pub fn streamAgentEvents(
     });
 }
 
+/// Hold the agent event stream open. The worker thread flushes one frame,
+/// stores phase 1, then writes a fresh latest-20 array when the newest id
+/// changes and a comment every 15s. `end` is not called; closing the socket
+/// ends the chunked body. The 33rd concurrent stream is one frame then close.
+pub fn streamAgentEvents(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    web: auth.WebUser,
+    agent_id: []const u8,
+    phase: *std.atomic.Value(u8),
+) !void {
+    _ = util.readBody(allocator, request, 1024) catch {};
+    if (agent_id.len > 64 or web.tenant_id.len > 64) {
+        return util.problem(request, allocator, .not_found, "Agent not found.");
+    }
+    var agent_buf: [64]u8 = undefined;
+    var tenant_buf: [64]u8 = undefined;
+    @memcpy(agent_buf[0..agent_id.len], agent_id);
+    @memcpy(tenant_buf[0..web.tenant_id.len], web.tenant_id);
+    const agent_copy = agent_buf[0..agent_id.len];
+    const tenant_copy = tenant_buf[0..web.tenant_id.len];
+
+    const exists = try conn.exec(allocator, "SELECT 1 FROM agents WHERE id = $1::uuid AND tenant_id = $2::uuid", &.{
+        .{ .text = agent_copy },
+        .{ .text = tenant_copy },
+    });
+    defer freeRows(allocator, exists);
+    if (exists.len == 0) return util.problem(request, allocator, .not_found, "Agent not found.");
+
+    if (!acquireSseSlot()) {
+        const rows = try queryEventWindow(allocator, conn, agent_copy, tenant_copy);
+        defer freeRows(allocator, rows);
+        return respondOneShot(allocator, request, rows);
+    }
+    defer releaseSseSlot();
+
+    var last_id: i64 = 0;
+    const first_frame = blk: {
+        const rows = try queryEventWindow(allocator, conn, agent_copy, tenant_copy);
+        defer freeRows(allocator, rows);
+        last_id = newestEventId(rows);
+        const json = try eventsJson(allocator, rows);
+        defer allocator.free(json);
+        const event_id: ?[]const u8 = if (rows.len > 0) rows[0].cols[0] else null;
+        break :blk try formatSse(allocator, json, event_id);
+    };
+    defer allocator.free(first_frame);
+
+    request.head.keep_alive = false;
+    var scratch: [8192]u8 = undefined;
+    var body = try request.respondStreaming(&scratch, .{
+        .respond_options = .{
+            .status = .ok,
+            .extra_headers = &.{
+                .{ .name = "content-type", .value = "text/event-stream" },
+                .{ .name = "cache-control", .value = "no-cache" },
+            },
+            .keep_alive = false,
+        },
+    });
+    try writeSse(&body, first_frame);
+    phase.store(1, .release);
+
+    var ticks: u32 = 0;
+    while (true) {
+        std.Io.sleep(io, .fromMilliseconds(1000), .awake) catch return;
+        ticks += 1;
+        const rows = queryEventWindow(allocator, conn, agent_copy, tenant_copy) catch |err| {
+            std.debug.print("sse query failed: {s}\n", .{@errorName(err)});
+            if (ticks >= 15) {
+                writeSse(&body, sse_keepalive) catch return;
+                ticks = 0;
+            }
+            continue;
+        };
+        const now_id = newestEventId(rows);
+        if (now_id != last_id) {
+            const json = eventsJson(allocator, rows) catch {
+                freeRows(allocator, rows);
+                return;
+            };
+            defer allocator.free(json);
+            const event_id: ?[]const u8 = if (rows.len > 0) rows[0].cols[0] else null;
+            const frame = formatSse(allocator, json, event_id) catch {
+                freeRows(allocator, rows);
+                return;
+            };
+            defer allocator.free(frame);
+            freeRows(allocator, rows);
+            writeSse(&body, frame) catch return;
+            last_id = now_id;
+            ticks = 0;
+        } else {
+            freeRows(allocator, rows);
+            if (ticks >= 15) {
+                writeSse(&body, sse_keepalive) catch return;
+                ticks = 0;
+            }
+        }
+    }
+}
+
 test "enroll token prefix" {
     try std.testing.expect(std.mem.startsWith(u8, "wte_abc", "wte_"));
+}
+
+test "sse frame is retry, id, and one data array" {
+    const allocator = std.testing.allocator;
+    const empty = try formatSse(allocator, "[]", null);
+    defer allocator.free(empty);
+    try std.testing.expectEqualStrings("retry: 5000\ndata: []\n\n", empty);
+    const framed = try formatSse(allocator, "[{\"id\":\"10\"}]", "10");
+    defer allocator.free(framed);
+    try std.testing.expectEqualStrings("retry: 5000\nid: 10\ndata: [{\"id\":\"10\"}]\n\n", framed);
+    try std.testing.expectEqualStrings(": keep-alive\n\n", sse_keepalive);
 }
 
 test "idempotency conflict message names the key" {
