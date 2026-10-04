@@ -158,7 +158,8 @@ public class TawnyDbContext(DbContextOptions<TawnyDbContext> options) : DbContex
             e.HasOne(a => a.TelemetryEvent)
                 .WithMany()
                 .HasForeignKey(a => a.TelemetryEventId)
-                .OnDelete(DeleteBehavior.Cascade);
+                // Alerts outlive raw telemetry; PurgeOldEventsJob keeps referenced events.
+                .OnDelete(DeleteBehavior.Restrict);
             e.HasIndex(a => new { a.TenantId, a.Status, a.CreatedAt });
             e.HasIndex(a => new { a.TenantId, a.AgentId, a.CreatedAt });
         });
