@@ -215,6 +215,31 @@ pub fn pathOnly(target: []const u8) []const u8 {
     return target;
 }
 
+/// Decode a query value. `+` is a space. `%XX` is one byte. A bad escape stays literal.
+pub fn percentDecode(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < raw.len) {
+        if (raw[i] == '+' ) {
+            try out.append(allocator, ' ');
+            i += 1;
+        } else if (raw[i] == '%' and i + 2 < raw.len) {
+            const byte = std.fmt.parseInt(u8, raw[i + 1 .. i + 3], 16) catch {
+                try out.append(allocator, raw[i]);
+                i += 1;
+                continue;
+            };
+            try out.append(allocator, byte);
+            i += 3;
+        } else {
+            try out.append(allocator, raw[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn queryParam(target: []const u8, key: []const u8) ?[]const u8 {
     const q = std.mem.indexOfScalar(u8, target, '?') orelse return null;
     var rest = target[q + 1 ..];
@@ -375,6 +400,16 @@ pub fn cookieValue(cookie_header: []const u8, name: []const u8) ?[]const u8 {
 }
 
 pub const default_tenant = "00000000-0000-0000-0000-000000000001";
+
+test "percent-decode query timestamp" {
+    const allocator = std.testing.allocator;
+    const stamp = try percentDecode(allocator, "2026-09-01T00%3A00%3A00.000Z");
+    defer allocator.free(stamp);
+    try std.testing.expectEqualStrings("2026-09-01T00:00:00.000Z", stamp);
+    const plus = try percentDecode(allocator, "a+b%2Bc");
+    defer allocator.free(plus);
+    try std.testing.expectEqualStrings("a b+c", plus);
+}
 
 test "parse os arch" {
     try std.testing.expectEqualStrings("linux", parseOs("Linux").?);
