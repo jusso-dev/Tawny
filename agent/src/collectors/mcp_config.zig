@@ -1,6 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const env = @import("../env.zig");
+const iox = @import("../io_compat.zig");
 
 /// MCP server-config scanner inspired by Perplexity's Bumblebee.
 ///
@@ -20,19 +20,57 @@ const env = @import("../env.zig");
 ///      credentials cannot leak.
 pub const Scanner = struct {
     allocator: std.mem.Allocator,
+    /// Tests point this at a fixture root. Production leaves it null and scans $HOME.
+    home_override: ?[]const u8 = null,
 
     pub fn init(alloc: std.mem.Allocator) Scanner {
         return .{ .allocator = alloc };
     }
 
     pub fn collectConfigs(self: *Scanner) ![][]u8 {
-        return self.allocator.alloc([]u8, 0);
+        var payloads: std.array_list.Managed([]u8) = .init(self.allocator);
+        errdefer {
+            for (payloads.items) |p| self.allocator.free(p);
+            payloads.deinit();
+        }
+
+        const home = if (self.home_override) |override|
+            try self.allocator.dupe(u8, override)
+        else
+            env.getEnvVarOwned(self.allocator, "HOME") catch try self.allocator.dupe(u8, "/");
+        defer self.allocator.free(home);
+
+        // Per Bumblebee's documented MCP file paths. Relative to $HOME only;
+        // do not walk the home tree.
+        const candidates = [_][]const u8{
+            ".config/claude/claude_desktop_config.json",
+            ".config/Claude/claude_desktop_config.json",
+            "Library/Application Support/Claude/claude_desktop_config.json",
+            ".cursor/mcp.json",
+            ".vscode/mcp.json",
+            ".vscode-server/mcp.json",
+            ".windsurf/mcp.json",
+            ".cline/cline_mcp_settings.json",
+            ".config/cline/cline_mcp_settings.json",
+            ".mcp.json",
+            "mcp.json",
+            "mcp_config.json",
+            "mcp_settings.json",
+        };
+        for (candidates) |sub| {
+            const path = std.fs.path.join(self.allocator, &.{ home, sub }) catch continue;
+            defer self.allocator.free(path);
+            self.parseConfigFile(path, &payloads) catch continue;
+        }
+        return payloads.toOwnedSlice();
     }
 
     fn parseConfigFile(self: *Scanner, path: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
-        var file = std.fs.openFileAbsolute(path, .{}) catch return;
-        defer file.close();
-        const body = file.readToEndAlloc(self.allocator, 1 * 1024 * 1024) catch return;
+        if (!std.fs.path.isAbsolute(path)) return;
+        const io = iox.current();
+        var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
+        defer file.close(io);
+        const body = iox.readToEndAlloc(file, self.allocator, 1 * 1024 * 1024) catch return;
         defer self.allocator.free(body);
 
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch return;
@@ -139,4 +177,40 @@ test "sanitize url strips creds" {
 test "scanner module loads" {
     var s = Scanner.init(std.testing.allocator);
     _ = &s;
+}
+
+test "config fixture emits a sanitized server and drops env values" {
+    const alloc = std.testing.allocator;
+    const io = iox.current();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".cursor");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".cursor/mcp.json",
+        .data = "{\"mcpServers\":{\"demo\":{\"command\":\"npx\",\"args\":[\"-y\",\"srv\"],\"url\":\"https://user:pass@mcp.example.com:8443/api?token=abc#x\",\"env\":{\"API_KEY\":\"super-secret-value\"}}}}",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    var scanner = Scanner.init(alloc);
+    scanner.home_override = path_buf[0..n];
+
+    const payloads = try scanner.collectConfigs();
+    defer {
+        for (payloads) |payload| alloc.free(payload);
+        alloc.free(payloads);
+    }
+    try std.testing.expectEqual(@as(usize, 1), payloads.len);
+    const payload = payloads[0];
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"ecosystem\":\"mcp\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"name\":\"demo\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"command\":\"npx\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"arg_count\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"env_var_count\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "https://mcp.example.com:8443") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "super-secret-value") == null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "API_KEY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "user:pass") == null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "token=abc") == null);
 }

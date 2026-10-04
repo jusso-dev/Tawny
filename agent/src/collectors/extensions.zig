@@ -1,6 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const env = @import("../env.zig");
+const iox = @import("../io_compat.zig");
 
 /// Editor + browser extension scanner inspired by Perplexity's Bumblebee.
 /// Each extension is emitted with `ecosystem = "editor-extension"` or
@@ -12,14 +12,31 @@ const env = @import("../env.zig");
 /// background script paths, or settings.
 pub const Scanner = struct {
     allocator: std.mem.Allocator,
+    /// Tests point this at a fixture root. Production leaves it null and scans $HOME.
+    home_override: ?[]const u8 = null,
 
     pub fn init(alloc: std.mem.Allocator) Scanner {
         return .{ .allocator = alloc };
     }
 
     pub fn collectExtensions(self: *Scanner, kind: Kind) ![][]u8 {
-        _ = kind;
-        return self.allocator.alloc([]u8, 0);
+        var payloads: std.array_list.Managed([]u8) = .init(self.allocator);
+        errdefer {
+            for (payloads.items) |p| self.allocator.free(p);
+            payloads.deinit();
+        }
+
+        const home = if (self.home_override) |override|
+            try self.allocator.dupe(u8, override)
+        else
+            env.getEnvVarOwned(self.allocator, "HOME") catch try self.allocator.dupe(u8, "/");
+        defer self.allocator.free(home);
+
+        switch (kind) {
+            .editor => try self.scanEditorRoots(home, &payloads),
+            .browser => try self.scanBrowserRoots(home, &payloads),
+        }
+        return payloads.toOwnedSlice();
     }
 
     fn scanEditorRoots(self: *Scanner, home: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
@@ -39,27 +56,34 @@ pub const Scanner = struct {
     }
 
     fn scanEditorRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
-        var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
-        defer dir.close();
+        const io = iox.current();
+        if (!std.fs.path.isAbsolute(root)) return;
+        var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+        defer dir.close(io);
 
         var it = dir.iterate();
-        while (it.next() catch null) |entry| {
+        while (it.next(io) catch null) |entry| {
             if (entry.kind != .directory) continue;
+            // `entry.name` dies on the next `next` call.
+            const dir_name = self.allocator.dupe(u8, entry.name) catch continue;
+            defer self.allocator.free(dir_name);
             // Convention: directory name is `<publisher>.<name>-<version>` and
             // optionally suffixed with `-<platform>` for native deps.
-            const dir_name = entry.name;
             const id_and_version = parseExtensionDirName(dir_name) orelse continue;
 
-            var sub = dir.openDir(dir_name, .{}) catch continue;
-            defer sub.close();
+            var sub = dir.openDir(io, dir_name, .{}) catch continue;
+            defer sub.close(io);
             const pkg_json = readFile(self.allocator, sub, "package.json", 256 * 1024) catch null;
             defer if (pkg_json) |body| self.allocator.free(body);
 
             // Cross-check version with package.json when available; the
             // directory name can lie if the install was renamed by hand.
+            var json_version: ?[]u8 = null;
+            defer if (json_version) |jv| self.allocator.free(jv);
             var resolved_version = id_and_version.version;
             if (pkg_json) |body| {
                 if (extractJsonString(self.allocator, body, "version")) |jv| {
+                    json_version = jv;
                     resolved_version = jv;
                 }
             }
@@ -101,40 +125,47 @@ pub const Scanner = struct {
     }
 
     fn scanChromiumRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
-        var root_dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
-        defer root_dir.close();
+        const io = iox.current();
+        if (!std.fs.path.isAbsolute(root)) return;
+        var root_dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+        defer root_dir.close(io);
 
         var profile_it = root_dir.iterate();
-        while (profile_it.next() catch null) |profile_entry| {
+        while (profile_it.next(io) catch null) |profile_entry| {
             if (profile_entry.kind != .directory) continue;
-            var profile_dir = root_dir.openDir(profile_entry.name, .{}) catch continue;
-            defer profile_dir.close();
+            const profile_name = self.allocator.dupe(u8, profile_entry.name) catch continue;
+            defer self.allocator.free(profile_name);
+            var profile_dir = root_dir.openDir(io, profile_name, .{}) catch continue;
+            defer profile_dir.close(io);
 
-            var ext_dir = profile_dir.openDir("Extensions", .{ .iterate = true }) catch continue;
-            defer ext_dir.close();
+            var ext_dir = profile_dir.openDir(io, "Extensions", .{ .iterate = true }) catch continue;
+            defer ext_dir.close(io);
 
             var ext_it = ext_dir.iterate();
-            while (ext_it.next() catch null) |ext_entry| {
+            while (ext_it.next(io) catch null) |ext_entry| {
                 if (ext_entry.kind != .directory) continue;
-                const ext_id = ext_entry.name;
-                var per_ext = ext_dir.openDir(ext_id, .{ .iterate = true }) catch continue;
-                defer per_ext.close();
+                const ext_id = self.allocator.dupe(u8, ext_entry.name) catch continue;
+                defer self.allocator.free(ext_id);
+                var per_ext = ext_dir.openDir(io, ext_id, .{ .iterate = true }) catch continue;
+                defer per_ext.close(io);
 
                 var version_it = per_ext.iterate();
-                while (version_it.next() catch null) |version_entry| {
+                while (version_it.next(io) catch null) |version_entry| {
                     if (version_entry.kind != .directory) continue;
-                    var version_dir = per_ext.openDir(version_entry.name, .{}) catch continue;
-                    defer version_dir.close();
+                    const version_name = self.allocator.dupe(u8, version_entry.name) catch continue;
+                    defer self.allocator.free(version_name);
+                    var version_dir = per_ext.openDir(io, version_name, .{}) catch continue;
+                    defer version_dir.close(io);
 
                     const manifest = readFile(self.allocator, version_dir, "manifest.json", 512 * 1024) catch continue;
                     defer self.allocator.free(manifest);
 
                     const declared_name = extractJsonString(self.allocator, manifest, "name") orelse try self.allocator.dupe(u8, ext_id);
                     defer self.allocator.free(declared_name);
-                    const declared_version = extractJsonString(self.allocator, manifest, "version") orelse try self.allocator.dupe(u8, version_entry.name);
+                    const declared_version = extractJsonString(self.allocator, manifest, "version") orelse try self.allocator.dupe(u8, version_name);
                     defer self.allocator.free(declared_version);
 
-                    const source_path = std.fs.path.join(self.allocator, &.{ root, profile_entry.name, "Extensions", ext_id, version_entry.name }) catch continue;
+                    const source_path = std.fs.path.join(self.allocator, &.{ root, profile_name, "Extensions", ext_id, version_name }) catch continue;
                     defer self.allocator.free(source_path);
 
                     const composite_id = self.allocator.print("{s} ({s})", .{ ext_id, declared_name }) catch continue;
@@ -153,18 +184,22 @@ pub const Scanner = struct {
     }
 
     fn scanFirefoxRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
-        var root_dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
-        defer root_dir.close();
+        const io = iox.current();
+        if (!std.fs.path.isAbsolute(root)) return;
+        var root_dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+        defer root_dir.close(io);
 
         var profile_it = root_dir.iterate();
-        while (profile_it.next() catch null) |profile| {
+        while (profile_it.next(io) catch null) |profile| {
             if (profile.kind != .directory) continue;
-            var profile_dir = root_dir.openDir(profile.name, .{}) catch continue;
-            defer profile_dir.close();
+            const profile_name = self.allocator.dupe(u8, profile.name) catch continue;
+            defer self.allocator.free(profile_name);
+            var profile_dir = root_dir.openDir(io, profile_name, .{}) catch continue;
+            defer profile_dir.close(io);
             const body = readFile(self.allocator, profile_dir, "extensions.json", 4 * 1024 * 1024) catch continue;
             defer self.allocator.free(body);
 
-            const source_path = std.fs.path.join(self.allocator, &.{ root, profile.name, "extensions.json" }) catch continue;
+            const source_path = std.fs.path.join(self.allocator, &.{ root, profile_name, "extensions.json" }) catch continue;
             defer self.allocator.free(source_path);
 
             var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch continue;
@@ -237,9 +272,10 @@ fn extractJsonString(alloc: std.mem.Allocator, body: []const u8, key: []const u8
 }
 
 fn readFile(alloc: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, max_bytes: usize) ![]u8 {
-    var file = try dir.openFile(name, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, max_bytes);
+    const io = iox.current();
+    var file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, max_bytes);
 }
 
 fn buildExtensionEvent(
@@ -268,4 +304,53 @@ test "extension dir name parser" {
     const a = parseExtensionDirName("ms-vscode.csharp-1.25.0") orelse unreachable;
     try std.testing.expectEqualStrings("ms-vscode.csharp", a.id);
     try std.testing.expectEqualStrings("1.25.0", a.version);
+}
+
+test "editor and browser fixtures emit extension events" {
+    const alloc = std.testing.allocator;
+    const io = iox.current();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, ".vscode/extensions/ms-vscode.csharp-1.25.0");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = ".vscode/extensions/ms-vscode.csharp-1.25.0/package.json",
+        .data = "{\"name\":\"csharp\",\"version\":\"9.9.9\",\"permissions\":[\"tabs\"]}",
+    });
+
+    const browser_rel = "Library/Application Support/Google/Chrome/Default/Extensions/abcdefghijklmnop/1.2.3";
+    try tmp.dir.createDirPath(io, browser_rel);
+    try tmp.dir.writeFile(io, .{
+        .sub_path = browser_rel ++ "/manifest.json",
+        .data = "{\"name\":\"Demo\",\"version\":\"1.2.3\",\"permissions\":[\"tabs\"]}",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    var scanner = Scanner.init(alloc);
+    scanner.home_override = path_buf[0..n];
+
+    const editor = try scanner.collectExtensions(.editor);
+    defer {
+        for (editor) |payload| alloc.free(payload);
+        alloc.free(editor);
+    }
+    try std.testing.expectEqual(@as(usize, 1), editor.len);
+    try std.testing.expect(std.mem.indexOf(u8, editor[0], "\"ecosystem\":\"editor-extension\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, editor[0], "\"name\":\"ms-vscode.csharp\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, editor[0], "\"version\":\"9.9.9\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, editor[0], "permissions") == null);
+    try std.testing.expect(std.mem.indexOf(u8, editor[0], "tabs") == null);
+
+    const browser = try scanner.collectExtensions(.browser);
+    defer {
+        for (browser) |payload| alloc.free(payload);
+        alloc.free(browser);
+    }
+    try std.testing.expectEqual(@as(usize, 1), browser.len);
+    try std.testing.expect(std.mem.indexOf(u8, browser[0], "\"ecosystem\":\"browser-extension\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser[0], "abcdefghijklmnop (Demo)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser[0], "\"version\":\"1.2.3\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser[0], "permissions") == null);
+    try std.testing.expect(std.mem.indexOf(u8, browser[0], "tabs") == null);
 }

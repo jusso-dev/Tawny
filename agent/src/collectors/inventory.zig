@@ -1,6 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const env = @import("../env.zig");
+const iox = @import("../io_compat.zig");
 
 /// Periodic software-inventory scanner inspired by Perplexity's Bumblebee.
 /// Walks well-known package roots, parses lockfiles + install metadata, and
@@ -8,12 +8,12 @@ const env = @import("../env.zig");
 /// execute package managers, never parse source files, never read environment
 /// variables.
 ///
-/// v1 covers npm (package-lock.json), pnpm (pnpm-lock.yaml), and pypi
-/// (*.dist-info/METADATA). Bun / yarn / go / rubygems / composer use the
-/// same on-disk shapes documented by Bumblebee and slot in via the same
-/// `scanDir` walk — the parsers just haven't been written yet.
+/// Parsers cover npm, pnpm, yarn, bun, go, rubygems, composer, and pypi
+/// (*.dist-info/METADATA).
 pub const Scanner = struct {
     allocator: std.mem.Allocator,
+    /// Tests point this at a fixture root. Production leaves it null and scans $HOME.
+    home_override: ?[]const u8 = null,
 
     pub fn init(alloc: std.mem.Allocator) Scanner {
         return .{ .allocator = alloc };
@@ -22,12 +22,36 @@ pub const Scanner = struct {
     /// Returns one JSON payload per discovered package record. Caller owns
     /// both the outer slice and each inner payload.
     pub fn collectInventory(self: *Scanner) ![][]u8 {
-        return self.allocator.alloc([]u8, 0);
+        var payloads: std.array_list.Managed([]u8) = .init(self.allocator);
+        errdefer {
+            for (payloads.items) |p| self.allocator.free(p);
+            payloads.deinit();
+        }
+
+        const home = try self.resolveHome();
+        defer self.allocator.free(home);
+
+        // Fixture scans stay inside the override. Production also checks the
+        // system npm prefixes, which are no-ops when those directories are absent.
+        if (self.home_override != null) {
+            self.scanRoot(home, &payloads) catch {};
+        } else {
+            const roots = [_][]const u8{ home, "/usr/local/lib/node_modules", "/usr/lib/node_modules" };
+            for (roots) |root| self.scanRoot(root, &payloads) catch continue;
+        }
+        return payloads.toOwnedSlice();
+    }
+
+    fn resolveHome(self: *Scanner) ![]u8 {
+        if (self.home_override) |home| return self.allocator.dupe(u8, home);
+        return env.getEnvVarOwned(self.allocator, "HOME") catch self.allocator.dupe(u8, "/");
     }
 
     fn scanRoot(self: *Scanner, root: []const u8, payloads: *std.array_list.Managed([]u8)) !void {
-        var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch return;
-        defer dir.close();
+        if (!std.fs.path.isAbsolute(root)) return;
+        const io = iox.current();
+        var dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+        defer dir.close(io);
         try self.walk(root, dir, 0, payloads);
     }
 
@@ -35,20 +59,24 @@ pub const Scanner = struct {
         // Cap recursion so we don't pull the entire filesystem into memory.
         // Bumblebee uses scan profiles for this; we just hard-cap at 6 levels.
         if (depth > 6) return;
+        const io = iox.current();
 
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
-            if (skipDirent(entry.name)) continue;
+        while (iter.next(io) catch null) |entry| {
+            // `entry.name` dies on the next `next` call. Copy it before recursing.
+            const name = try self.allocator.dupe(u8, entry.name);
+            defer self.allocator.free(name);
+            if (skipDirent(name)) continue;
 
             if (entry.kind == .file) {
-                self.handleFile(base, dir, entry.name, payloads) catch {};
+                self.handleFile(base, dir, name, payloads) catch {};
                 continue;
             }
             if (entry.kind != .directory) continue;
 
-            var sub_dir = dir.openDir(entry.name, .{ .iterate = true }) catch continue;
-            defer sub_dir.close();
-            const sub_base = std.fs.path.join(self.allocator, &.{ base, entry.name }) catch continue;
+            var sub_dir = dir.openDir(io, name, .{ .iterate = true }) catch continue;
+            defer sub_dir.close(io);
+            const sub_base = std.fs.path.join(self.allocator, &.{ base, name }) catch continue;
             defer self.allocator.free(sub_base);
             self.walk(sub_base, sub_dir, depth + 1, payloads) catch continue;
         }
@@ -606,9 +634,10 @@ fn extractQuotedValue(line: []const u8) ?[]const u8 {
 }
 
 fn readFile(alloc: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, max_bytes: usize) ![]u8 {
-    var file = try dir.openFile(name, .{});
-    defer file.close();
-    return file.readToEndAlloc(alloc, max_bytes);
+    const io = iox.current();
+    var file = try dir.openFile(io, name, .{});
+    defer file.close(io);
+    return iox.readToEndAlloc(file, alloc, max_bytes);
 }
 
 fn buildInventoryEvent(
@@ -671,4 +700,39 @@ test "endsWithSegment respects path separators" {
     try std.testing.expect(endsWithSegment("/home/user/vendor/composer", "composer"));
     try std.testing.expect(!endsWithSegment("/home/user/notcomposer", "composer"));
     try std.testing.expect(endsWithSegment("composer", "composer"));
+}
+
+test "lockfile under a temp root emits a package event" {
+    const alloc = std.testing.allocator;
+    const io = iox.current();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "proj/node_modules/nested");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "proj/package-lock.json",
+        .data = "{\"packages\":{\"node_modules/left-pad\":{\"version\":\"1.3.0\"}}}",
+    });
+    // node_modules is skipped, so this lockfile must not produce an event.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "proj/node_modules/nested/package-lock.json",
+        .data = "{\"packages\":{\"node_modules/should-skip\":{\"version\":\"9.9.9\"}}}",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &path_buf);
+    var scanner = Scanner.init(alloc);
+    scanner.home_override = path_buf[0..n];
+
+    const payloads = try scanner.collectInventory();
+    defer {
+        for (payloads) |payload| alloc.free(payload);
+        alloc.free(payloads);
+    }
+    try std.testing.expectEqual(@as(usize, 1), payloads.len);
+    try std.testing.expect(std.mem.indexOf(u8, payloads[0], "\"ecosystem\":\"npm\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payloads[0], "\"name\":\"left-pad\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payloads[0], "\"version\":\"1.3.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payloads[0], "\"source_type\":\"npm-lockfile\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payloads[0], "should-skip") == null);
 }
