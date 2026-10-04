@@ -7,9 +7,8 @@ repo_dir="$(cd "$docker_dir/.." && pwd)"
 env_file="$docker_dir/.env"
 project_name="${TAWNY_DOCKER_PROJECT:-tawny}"
 platform="${DOCKER_DEFAULT_PLATFORM:-}"
-admin_email="${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}"
-admin_password="${BOOTSTRAP_ADMIN_PASSWORD:-ChangeMe123!}"
-admin_name="${BOOTSTRAP_ADMIN_NAME:-Tawny Admin}"
+admin_email="${TAWNY_BOOTSTRAP_ADMIN_EMAIL:-}"
+admin_password="${TAWNY_BOOTSTRAP_ADMIN_PASSWORD:-}"
 build_arg="--build"
 with_agent="false"
 
@@ -19,27 +18,24 @@ Usage: docker/scripts/bootstrap-docker.sh [options]
 
 Bootstraps Tawny in Docker:
   - creates local secrets and docker/.env
-  - starts SQL Server, the .NET API, and the Next.js web app
-  - runs the web Prisma migration
-  - creates the first admin user if no users exist
-  - verifies the API and web endpoints
+  - starts PostgreSQL, tawny-server, and Caddy (Caddy terminates TLS)
+  - tawny-server applies migrations and creates the first admin only when no users exist
+  - verifies https://localhost:<port>/api/health
 
 Options:
-  --admin-email EMAIL       Admin email. Default: admin@example.com
-  --admin-password PASS     Admin password. Default: ChangeMe123!
-  --admin-name NAME         Admin display name. Default: Tawny Admin
+  --admin-email EMAIL       Bootstrap admin email, used only when no users exist
+  --admin-password PASS     Bootstrap admin password, used only when no users exist
   --project-name NAME       Docker Compose project. Default: tawny
-  --platform PLATFORM       Docker platform, e.g. linux/amd64 for Apple Silicon SQL Server
-  --no-build                Do not rebuild api/web images
-  --with-agent              Start the real Linux agent container after bootstrap
+  --platform PLATFORM       Docker platform, e.g. linux/arm64
+  --no-build                Do not rebuild the tawny-server image
+  --with-agent              Start the optional Linux agent profile (needs TAWNY_AGENT_ENROLLMENT_TOKEN)
   --with-synthetic-agent    Alias for --with-agent
   --with-docker-agent       Alias for --with-agent
   -h, --help                Show this help
 
 Examples:
   docker/scripts/bootstrap-docker.sh
-  docker/scripts/bootstrap-docker.sh --platform linux/amd64
-  BOOTSTRAP_ADMIN_PASSWORD='better-local-password' docker/scripts/bootstrap-docker.sh
+  TAWNY_BOOTSTRAP_ADMIN_PASSWORD='better-local-password' docker/scripts/bootstrap-docker.sh
 EOF
 }
 
@@ -51,10 +47,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --admin-password)
       admin_password="${2:?--admin-password requires a value}"
-      shift 2
-      ;;
-    --admin-name)
-      admin_name="${2:?--admin-name requires a value}"
       shift 2
       ;;
     --project-name)
@@ -190,7 +182,7 @@ wait_for_url() {
 
   printf 'Waiting for %s at %s' "$label" "$url"
   while true; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    if curl -kfsS "$url" >/dev/null 2>&1; then
       printf '\n'
       return
     fi
@@ -198,7 +190,7 @@ wait_for_url() {
     if (( "$(date +%s)" - started >= timeout_seconds )); then
       printf '\n'
       echo "Timed out waiting for $label. Recent logs:" >&2
-      docker compose -p "$project_name" -f "$docker_dir/docker-compose.yml" logs --tail=80 api web db >&2 || true
+      docker compose -p "$project_name" -f "$docker_dir/docker-compose.yml" logs --tail=80 tawny-server caddy postgres >&2 || true
       exit 1
     fi
 
@@ -263,55 +255,39 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 log "Creating local secrets"
-"$script_dir/init-secrets.sh"
-ensure_env "MSSQL_SA_PASSWORD" "DevPassw0rd!"
-
-mssql_password="$(read_env_value MSSQL_SA_PASSWORD)"
-if [[ -z "$mssql_password" ]]; then
-  echo "MSSQL_SA_PASSWORD is missing from $env_file" >&2
-  exit 1
+if [[ -n "$admin_email" ]]; then
+  set_env "TAWNY_BOOTSTRAP_ADMIN_EMAIL" "$admin_email"
 fi
+if [[ -n "$admin_password" ]]; then
+  set_env "TAWNY_BOOTSTRAP_ADMIN_PASSWORD" "$admin_password"
+fi
+"$script_dir/init-secrets.sh"
 
-mssql_port="$(ensure_port_env MSSQL_PORT 1433)"
-api_port="$(ensure_port_env TAWNY_API_PORT 5080)"
-web_port="$(ensure_port_env TAWNY_WEB_PORT 3000)"
+https_port="$(ensure_port_env TAWNY_HTTPS_PORT 8443)"
+admin_email="$(read_env_value TAWNY_BOOTSTRAP_ADMIN_EMAIL)"
 
 if [[ -n "$platform" ]]; then
   export DOCKER_DEFAULT_PLATFORM="$platform"
 fi
 
-log "Starting Tawny Docker services"
+log "Starting PostgreSQL, tawny-server, and Caddy"
 if [[ -n "$build_arg" ]]; then
   compose up -d "$build_arg"
 else
   compose up -d
 fi
+compose up -d --wait postgres tawny-server caddy
 
-log "Waiting for SQL Server"
-compose up -d --wait db
-
-log "Running web database migration and admin seed"
-docker run --rm \
-  --network "${project_name}_default" \
-  -v "$repo_dir/web:/app" \
-  -v "${project_name}-web-node-modules:/app/node_modules" \
-  -v "${project_name}-pnpm-store:/pnpm/store" \
-  -w /app \
-  -e "PNPM_HOME=/pnpm" \
-  -e "DATABASE_URL=sqlserver://db:1433;database=Tawny;user=sa;password=${mssql_password};encrypt=false;trustServerCertificate=true" \
-  -e "BOOTSTRAP_ADMIN_EMAIL=$admin_email" \
-  -e "BOOTSTRAP_ADMIN_PASSWORD=$admin_password" \
-  -e "BOOTSTRAP_ADMIN_NAME=$admin_name" \
-  node:22-bookworm \
-  bash -lc 'corepack enable && pnpm config set store-dir /pnpm/store && pnpm install --frozen-lockfile && pnpm exec prisma generate && (pnpm db:migrate || (pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/20260514005000_better_auth_init/migration.sql && pnpm exec prisma migrate resolve --applied 20260514005000_better_auth_init)) && pnpm seed'
-
-log "Verifying HTTP endpoints"
-wait_for_url "http://localhost:${api_port}/api/health" "API health"
-wait_for_url "http://localhost:${web_port}" "web app"
+log "Verifying HTTPS health"
+wait_for_url "https://localhost:${https_port}/api/health" "tawny-server health"
 
 if [[ "$with_agent" == "true" ]]; then
+  token="$(read_env_value TAWNY_AGENT_ENROLLMENT_TOKEN)"
+  if [[ -z "$token" ]]; then
+    echo "TAWNY_AGENT_ENROLLMENT_TOKEN is empty. Create one in Enrollment, put it in docker/.env, then rerun with --with-agent." >&2
+    exit 1
+  fi
   log "Starting real Linux agent container"
-  set_env "TAWNY_AGENT_ENROLLMENT_TOKEN" "$(create_agent_token)"
   compose_agent up -d --build agent
 fi
 
@@ -319,16 +295,15 @@ cat <<EOF
 
 Tawny is running.
 
-Web:  http://localhost:$web_port
-API:  http://localhost:$api_port
-SQL:  localhost:$mssql_port
+Dashboard: https://localhost:${https_port}
+Health:    https://localhost:${https_port}/api/health
+Postgres is only on the compose network.
 
-Admin login:
-  Email:    $admin_email
-  Password: $admin_password
+Admin email: $admin_email
+The bootstrap password is in docker/.env. init-secrets prints it once, when it is first generated. The server uses it only when the user table is empty, and it does not log the password.
 
 Useful commands:
-  cd "$docker_dir" && docker compose -p "$project_name" logs -f api web db
+  cd "$docker_dir" && docker compose -p "$project_name" logs -f tawny-server caddy postgres
   cd "$docker_dir" && docker compose -p "$project_name" --profile agent logs -f agent
   cd "$docker_dir" && docker compose -p "$project_name" down
 EOF

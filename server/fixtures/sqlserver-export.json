@@ -1,0 +1,50 @@
+{
+  "users": [
+    {
+      "id": "betterauth_legacy_admin",
+      "email": "legacy@tawny.example",
+      "name": "Legacy Admin",
+      "role": "Admin",
+      "password_hash": "00112233445566778899aabbccddeeff:13af89ff6a88bb0fb3277e79ba724c6c0731b15919ca892969d63abd1534b867d110179e3bc8af39995ede0f9b2ac14b2b97573df10ba3802c498dbeb61e4f64"
+    }
+  ],
+  "agents": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "hostname": "kept-host",
+      "operating_system": "linux",
+      "os_version": "sqlserver",
+      "agent_version": "0.1.0",
+      "architecture": "x64",
+      "credential_version": 3,
+      "device_public_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "status": "offline"
+    }
+  ],
+  "api_tokens": [
+    {
+      "id": "22222222-2222-4333-8444-555555555555",
+      "name": "legacy-api",
+      "token_hash": "9aba534a3eff8a6dbae727a3733b410a6a5a8e120fa678f4ba8a56054bfa8c64",
+      "token_prefix": "twny_legacy",
+      "role": "admin"
+    }
+  ],
+  "enrollment_tokens": [
+    {
+      "id": "33333333-2222-4333-8444-555555555555",
+      "token_hash": "0220c000529cf4daadf52c10fccc98c45250561fac11546f3230cf02512e31a3",
+      "expires_at": "2027-01-01T00:00:00Z"
+    }
+  ],
+  "threat_intel_feeds": [
+    {
+      "id": "44444422-2222-4333-8444-555555555555",
+      "name": "legacy-feed",
+      "kind": "json",
+      "url": "https://example.invalid/iocs",
+      "auth_header_value_encrypted": "v1.ERERERERERERERERT71hRpPeNcfo5t9CIwXXyVNdE3vM19b3fcN45DWMUozj4w==",
+      "default_severity": "medium"
+    }
+  ]
+}

@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="web/public/logo.png" alt="Tawny EDR" width="320" />
+  <img src="docs/logo.png" alt="Tawny EDR" width="320" />
 </p>
 
 # Tawny
 
 > Quiet eyes on every endpoint.
 
-Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux, ships telemetry to a .NET 10 backend over HTTPS, evaluates alert rules, and surfaces it through a polished Next.js 16 dashboard. Hangfire handles offline detection, retention, backups, and agent update checks.
+Tawny is a self-hosted, lightweight EDR (endpoint detection and response) system. A tiny Zig agent runs on Windows, macOS, and Linux and ships telemetry over HTTPS to `tawny-server`. That one Zig process stores events in PostgreSQL, evaluates alert rules off the request path, serves the dashboard, and runs retention, backup, hunt, threat-intel, reputation, and release-check jobs. Caddy terminates TLS.
 
 The MVP is intentionally small. No kernel hooks, no driver signing, and no attempt to replace a SIEM. Clean architecture, real telemetry, detection imports, Wazuh, Slack, and Microsoft Sentinel forwarding, and a UI that looks like a product.
 
@@ -75,18 +75,7 @@ The MVP is intentionally small. No kernel hooks, no driver signing, and no attem
 
 </details>
 
-Generate README-ready product screenshots from the running Docker stack:
-
-```bash
-cd web
-pnpm screenshots:readme
-```
-
-The script logs in with the local bootstrap admin, forces dark mode by default, and writes screenshots to `docs/screenshots/`. To capture light mode as well:
-
-```bash
-TAWNY_SCREENSHOT_THEME=light TAWNY_SCREENSHOT_OUT_DIR=docs/screenshots/light pnpm screenshots:readme
-```
+The gallery above was captured from the previous Next.js dashboard. The running UI is the static pages `tawny-server` serves on the Caddy origin.
 
 ## Why "Tawny"?
 
@@ -97,23 +86,20 @@ The tawny frogmouth is also small, unassuming, and frequently underestimated. Th
 ## Architecture
 
 ```
-+------------------------+        HTTPS         +-------------------------+
-| Zig Agent              | -------------------> | .NET 10 API             |
-| (Windows/macOS/Linux)  |  JWT, batched JSON   | ASP.NET Core            |
-|                        |                      | EF Core + SQL Server    |
-+------------------------+                      | Hangfire (in-process)   |
-                                                +-----------+-------------+
-                                                            |
-                                                            v
-                                                +-------------------------+
-                                                | SQL Server 2022         |
-                                                +-------------------------+
-                                                            ^
-                                                            | REST (cookie auth)
-                                                +-------------------------+
-                                                | Next.js 16 Dashboard    |
-                                                | Better Auth, shadcn/ui  |
-                                                +-------------------------+
++------------------------+   HTTPS (Caddy)   +---------------------------+
+| Zig Agent              | ----------------> | tawny-server              |
+| (Windows/macOS/Linux)  |  JWT, batched JSON| Zig: API, static UI, jobs |
++------------------------+                   +-------------+-------------+
+                                                           |
+                                                           v
+                                             +---------------------------+
+                                             | PostgreSQL                |
+                                             +---------------------------+
+                                                           ^
+                                                           | same origin, session cookie
+                                             +---------------------------+
+                                             | Browser                   |
+                                             +---------------------------+
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the deeper version.
@@ -124,14 +110,14 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 - Process, network, user session, system info, and file integrity telemetry, visible through per-agent event tabs with raw payload inspection.
 - Short-lived, single-use enrollment tokens and generated install commands for Windows services, macOS launchd jobs, and Linux systemd services.
 - Multi-tenant data model and request scoping across agents, telemetry, alerts, enrollment tokens, audit logs, and response actions.
-- Alert rule evaluation on ingest with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
+- Alert rule evaluation after ingest returns 202, with Tawny predicates, focused Sigma YAML imports, and threat-intel IoC imports from STIX 2.1, OpenIOC, CSV, or raw advisory text.
 - IoC hunts for SHA-1/SHA-256 file hashes, IPv4/IPv6 remote addresses, and domains in DNS query telemetry (`qname`).
 - Default public threat-intel feeds seeded per tenant on API startup; matching IoCs raise Tawny alerts.
 - Alert review workflow with severity, status, matched telemetry payloads, Slack/Sentinel delivery state, and generated Wazuh-compatible syslog events.
 - Response action queue with heartbeat dispatch and agent result reporting. `kill_process` is implemented; host isolation is modeled but waits for OS firewall handlers.
-- Hangfire jobs for stale/offline agent status, retention cleanup, telemetry backups, and GitHub release synchronization.
-- Better Auth dashboard login with email/password and optional GitHub OAuth, plus HMAC-signed server-to-API calls.
-- Docker bootstrap scripts for repeatable local development, optional real Linux agent container, SQL migrations, generated secrets, and seeded admin user.
+- In-process jobs for stale/offline agent status, retention cleanup, telemetry backups, saved hunts, threat-intel refresh, alert reputation, and GitHub release synchronization.
+- Dashboard login with an HttpOnly session cookie, email/password, and optional GitHub OAuth that only links an existing user. No self-service signup and no HMAC hop.
+- Docker bootstrap for PostgreSQL, tawny-server, and Caddy, plus an optional Linux agent container, generated secrets, and a first admin only when the user table is empty.
 - CI builds and unit-tests the Zig agent natively on Windows, macOS, and Linux (plus cross-compiles remaining release targets), with on-demand `workflow_dispatch`; security audit and release workflows publish agent artefacts with SHA-256 sidecars.
 
 ## Repo layout
@@ -139,9 +125,8 @@ See [docs/architecture.md](docs/architecture.md) for the deeper version.
 ```
 tawny/
   agent/      # Zig agent
-  backend/    # .NET 10 solution (Api / Domain / Infrastructure / Jobs / Tests)
-  web/        # Next.js 16 dashboard
-  docker/     # docker-compose for local dev
+  server/     # Zig tawny-server and static UI (server/ui)
+  docker/     # PostgreSQL + tawny-server + Caddy
   docs/       # architecture, threat model, API
   .github/    # CI + release workflows
 ```
@@ -150,81 +135,58 @@ tawny/
 
 Requirements:
 
-- Docker 24+
-- macOS Apple Silicon: enable Docker Desktop's x86/amd64 emulation/Rosetta support for SQL Server, or pass `--platform linux/amd64`
-- .NET 10 SDK, Node 22 + pnpm 10, and Zig 0.17+ only if you want to work outside Docker or build the agent locally
+- Docker 24+ with Compose v2
+- Zig 0.17 if you build `tawny-server` or the agent outside Docker
 
 ```bash
-# macOS / Linux
 docker/scripts/bootstrap-docker.sh
-
-# macOS Apple Silicon, if SQL Server needs amd64 emulation
-docker/scripts/bootstrap-docker.sh --platform linux/amd64
 ```
 
-```powershell
-# Windows PowerShell
-.\docker\scripts\bootstrap-docker.ps1
-```
+On Windows, run that script from Git Bash or WSL. `docker/scripts/bootstrap-docker.ps1` exits on purpose: it targeted SQL Server and the old two-process stack.
 
-The bootstrap scripts generate local secrets, start SQL Server + API + Web, apply API and web database migrations, seed the first admin user when the database is empty, and verify the local HTTP endpoints. They default to web `3000`, API `5080`, and SQL Server `1433`, but automatically pick the next available host port when one is already in use.
+The script writes `docker/.env` and an RSA PEM under `docker/secrets`, starts PostgreSQL, `tawny-server`, and Caddy, and waits until `https://localhost:8443/api/health` answers. Postgres is not published. Caddy publishes host ports `8080` (HTTP) and `8443` (HTTPS) unless `docker/.env` already chose others. `tls internal` uses Caddy's local CA. `curl` needs `-k` until that CA is trusted. For a public name, set `TAWNY_DOMAIN` and remove `tls internal` from `docker/Caddyfile`.
 
-Open the dashboard at the URL printed by the script. It is usually:
+Open the dashboard at the URL the script prints. The default is:
 
 ```text
-http://localhost:3000
+https://localhost:8443
 ```
 
-For a remote homelab host, set public LAN URLs before bootstrap so browser
-sessions and generated agent enrollment commands do not point at the remote
-host's loopback interface:
+For a LAN host, set the public origin before bootstrap so enrollment commands do not point at loopback:
 
 ```bash
-TAWNY_PUBLIC_WEB_URL=http://192.168.1.10:3000
-TAWNY_PUBLIC_API_URL=http://192.168.1.10:5080
+TAWNY_PUBLIC_URL=https://192.168.1.10:8443
+TAWNY_DOMAIN=192.168.1.10
 docker/scripts/bootstrap-docker.sh
 ```
 
-The backend and web app still communicate over Docker's private network.
-Only browser-facing and agent-facing URLs use these public settings.
-
-Default local login:
-
-```text
-Email: admin@example.com
-Password: ChangeMe123!
-```
-
-Override the local admin during bootstrap:
+The first admin email defaults to `admin@tawny.local`. `init-secrets.sh` prints the password once, when it creates `TAWNY_BOOTSTRAP_ADMIN_PASSWORD`, and stores it in `docker/.env`. The server uses that password only when the user table is empty, and it does not log it. Override it before the first boot:
 
 ```bash
-BOOTSTRAP_ADMIN_EMAIL='you@example.com' \
-BOOTSTRAP_ADMIN_PASSWORD='better-local-password' \
+TAWNY_BOOTSTRAP_ADMIN_EMAIL='you@example.com' \
+TAWNY_BOOTSTRAP_ADMIN_PASSWORD='better-local-password' \
 docker/scripts/bootstrap-docker.sh
 ```
 
-```powershell
-.\docker\scripts\bootstrap-docker.ps1 -AdminEmail "you@example.com" -AdminPassword "better-local-password"
-```
-
-Create an enrollment token from the `/enrollment` page, then run the agent against your local backend:
+Create an enrollment token on `/enrollment`, then point a host agent at the Caddy origin. The agent reads `url` and `enrollment_token` from its config file. It does not take those as flags. Trust Caddy's local root (`caddy` container path `/data/caddy/pki/authorities/local/root.crt`) or the TLS handshake fails.
 
 ```bash
 cd agent
-zig build run -- --enrollment-token wte_xxx --backend http://localhost:5080
+cat > config.toml <<'EOF'
+url = "https://localhost:8443"
+enrollment_token = "wte_xxx"
+EOF
+TAWNY_CONFIG=./config.toml zig build run
 ```
 
-To test telemetry end to end entirely in Docker, start the real Linux agent container:
+The optional compose agent talks to `http://tawny-server:8080` on the compose network and sets `allow_insecure_http`. Put an enrollment token in `docker/.env` first. Bootstrap does not mint one.
 
 ```bash
+printf 'TAWNY_AGENT_ENROLLMENT_TOKEN=wte_xxx\n' >> docker/.env
 docker/scripts/bootstrap-docker.sh --with-agent
 ```
 
-```powershell
-.\docker\scripts\bootstrap-docker.ps1 -WithAgent
-```
-
-Or create an enrollment token in the dashboard and start it against an already-running stack:
+Or, against a stack that is already up:
 
 ```bash
 cd docker
@@ -235,22 +197,17 @@ docker compose -p tawny --env-file .env --profile agent logs -f agent
 
 The container runs the same Zig agent binary used on hosts. Its first start consumes `TAWNY_AGENT_ENROLLMENT_TOKEN`, writes a persistent config into the `agent-state` volume, and then heartbeats and posts Linux process, network, system, session, and FIM telemetry through the normal agent APIs.
 
-Agent detail event tabs load the latest telemetry, then stream new events live over Server-Sent Events (proxied and signed by the web server at `/api/agents/[id]/events/stream`). Use Pause to freeze the table while inspecting payloads.
+Agent detail loads the latest telemetry. `GET /api/agents/{id}/events/stream` is one Server-Sent Events payload, then the connection closes.
 
-EF migrations live in `backend/src/Tawny.Infrastructure/Migrations`. Automatic migration application is opt-in with `Tawny__ApplyMigrationsOnStartup=true` or `TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in `docker/.env`. For production, leave that flag off and run:
-
-```bash
-cd backend
-dotnet ef database update --project src/Tawny.Infrastructure --startup-project src/Tawny.Api
-```
+`tawny-server` applies the embedded SQL migrations on startup (`TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in compose). `tawny-server migrate` applies the same files without listening.
 
 ## Why Zig?
 
-Zig produces small, static binaries and cross-compiles to Windows, macOS, and Linux from one machine without a fleet of toolchains. The C interop story is excellent, which matters when you are calling `CreateToolhelp32Snapshot` on Windows, `sysctl` on macOS, and procfs-backed collectors on Linux. No runtime, no GC, predictable memory. A good fit for an endpoint agent that has to live quietly inside other people's machines.
+Zig produces small, static binaries and cross-compiles to Windows, macOS, and Linux from one machine without a fleet of toolchains. The C interop story is excellent, which matters when you are calling `CreateToolhelp32Snapshot` on Windows, `sysctl` on macOS, and procfs-backed collectors on Linux. No runtime, no GC, predictable memory. A good fit for an endpoint agent, and for the one server process that replaced the API and the dashboard.
 
 ## Why this stack?
 
-.NET 10 with EF Core and Hangfire keeps the backend boring and productive. Hangfire's SQL Server storage means one database to operate. Next.js 16 with the App Router and Server Components keeps the dashboard fast and lets us colocate data fetching with the views that need it. Better Auth handles email/password and GitHub OAuth without owning a session store. shadcn/ui plus Tailwind keeps the visual surface coherent without designing from scratch.
+One static binary keeps the operator surface small: PostgreSQL for state, Caddy for TLS, `tawny-server` for the API, the UI, and the jobs. The browser and the API share an origin, so the session cookie does not cross a second host. There is no HMAC secret between a web process and an API process.
 
 ## Not in scope for MVP
 
@@ -315,8 +272,8 @@ required for the defaults:
 | Emerging Threats Compromised IPs | Off (opt-in) | Compromised-host IPs |
 | Blocklist.de Recent Attackers | Off (opt-in) | Recent attacker IPs (noisy) |
 
-Hangfire pulls enabled feeds on a schedule (about every 10 minutes, or sooner
-when a feed’s own interval is due). Each indicator becomes an **enabled IoC
+`tawny-server` pulls enabled feeds about every 10 minutes, or sooner
+when a feed’s own interval is due. Each indicator becomes an **enabled IoC
 alert rule**. When agent telemetry matches, Tawny creates a normal **alert**
 in the Alerts UI. That path does **not** depend on Slack, Sentinel, or
 other sinks — those only forward alerts after creation.
@@ -396,7 +353,7 @@ Requests use JSON and an optional bearer token. Raw telemetry is off by default 
   installers fail closed on a missing or invalid SHA-256 and verify GitHub
   artifact provenance by default.
 - Enrollment tokens are single-use and short-lived. Rotate the signing key if leaked.
-- SQL Server creds live in env vars; use Key Vault or similar in production.
+- Postgres is not published. `POSTGRES_PASSWORD` lives in `docker/.env`; use a secret store in production.
 - Integration credentials are encrypted with `TAWNY_INTEGRATION_ENCRYPTION_KEY`.
   Back up this key with the database; rotating or losing it makes stored
   integration secrets unreadable.
@@ -444,7 +401,7 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out tawny-jwt-key
 chmod 0600 tawny-jwt-key
 ```
 
-Set `Tawny__AgentJwt__SigningKeyPem` to the PEM file path or the inline PEM value. In production, `AgentJwtService` refuses to start without a configured signing key. Docker compose mounts `docker/secrets` at `/run/secrets`; `docker/scripts/init-secrets.sh` creates `docker/secrets/tawny-jwt-key`, `TAWNY_WEB_HMAC_SECRET`, and `BETTER_AUTH_SECRET` for local development.
+New agent JWTs are Ed25519. Set `TAWNY_AGENT_JWT_SEED` to 64 hex characters so that seed survives a restart. `TAWNY_AGENT_JWT_SIGNING_KEY_PEM` is the RSA PEM, or a path to it, and is used only to verify tokens issued before the cutover. Compose mounts `docker/secrets/tawny-jwt-key` at `/run/secrets/tawny-jwt-key`. This engine ignores secret uid and mode, so `init-secrets.sh` leaves the PEM mode `0644` and the server reads it as uid 65532. `docker/scripts/init-secrets.sh` creates that PEM, `POSTGRES_PASSWORD`, `TAWNY_INTEGRATION_ENCRYPTION_KEY`, and `TAWNY_AGENT_JWT_SEED`. It does not create an HMAC secret.
 
 See [docs/threat-model.md](docs/threat-model.md).
 

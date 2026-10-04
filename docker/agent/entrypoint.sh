@@ -3,7 +3,7 @@ set -eu
 umask 027
 
 config_path="${TAWNY_CONFIG:-/etc/tawny/config.toml}"
-backend_url="${TAWNY_AGENT_BACKEND_URL:-http://api:5080}"
+backend_url="${TAWNY_AGENT_BACKEND_URL:-http://tawny-server:8080}"
 enrollment_token="${TAWNY_AGENT_ENROLLMENT_TOKEN:-}"
 fim_paths="${TAWNY_AGENT_FIM_PATHS:-/etc/hosts,/var/lib/tawny/watch.txt}"
 
@@ -40,7 +40,11 @@ if ! grep -q '^agent_jwt = ' "$state_path" 2>/dev/null \
   {
     printf '[backend]\n'
     printf 'url = "%s"\n' "$escaped_backend"
-    printf 'enrollment_token = "%s"\n\n' "$escaped_token"
+    printf 'enrollment_token = "%s"\n' "$escaped_token"
+    if [ "${TAWNY_AGENT_ALLOW_INSECURE_HTTP:-}" = "1" ] || [ "${TAWNY_AGENT_ALLOW_INSECURE_HTTP:-}" = "true" ]; then
+      printf 'allow_insecure_http = true\n'
+    fi
+    printf '\n'
     printf '[collection]\n'
     printf 'heartbeat_interval_seconds = %s\n' "$heartbeat_interval"
     printf 'process_interval_seconds = %s\n' "$process_interval"

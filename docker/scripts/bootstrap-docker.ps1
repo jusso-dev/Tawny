@@ -13,6 +13,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+Write-Error "bootstrap-docker.ps1 targeted SQL Server, the .NET API, and Next.js. Compose is now PostgreSQL, tawny-server, and Caddy. Run docker/scripts/bootstrap-docker.sh from Git Bash or WSL."
+exit 1
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DockerDir = Split-Path -Parent $ScriptDir
 $RepoDir = Split-Path -Parent $DockerDir

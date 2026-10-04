@@ -7,64 +7,80 @@ on:
   workflow_dispatch:
 
 jobs:
-  backend:
-    name: backend (.NET 10)
+  server:
+    name: tawny-server
     runs-on: ubuntu-latest
     services:
-      sqlserver:
-        image: mcr.microsoft.com/mssql/server:2022-latest
+      postgres:
+        image: postgres:17
         env:
-          ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: "DevPassw0rd!"
-          MSSQL_PID: "Developer"
+          POSTGRES_USER: tawny
+          POSTGRES_PASSWORD: tawny
+          POSTGRES_DB: tawny
         ports:
-          - 1433:1433
+          - 5432:5432
         options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'DevPassw0rd!' -Q 'SELECT 1' || exit 1"
-          --health-interval 10s
+          --health-cmd "pg_isready -U tawny -d tawny"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
+          --health-retries 20
     env:
-      ConnectionStrings__Default: "Server=localhost,1433;Database=TawnyCi;User Id=sa;Password=DevPassw0rd!;TrustServerCertificate=True;Encrypt=False"
-      Tawny__AgentJwt__SigningKeyPem: ""
-      Tawny__AgentJwt__RequireConfiguredSigningKey: "false"
+      TAWNY_DATABASE_URL: postgres://tawny:tawny@localhost:5432/tawny
+      TAWNY_BOOTSTRAP_ADMIN_EMAIL: admin@tawny.local
+      TAWNY_BOOTSTRAP_ADMIN_PASSWORD: contract-password
+      TAWNY_INTEGRATION_ENCRYPTION_KEY: test-integration-encryption-key
+      TAWNY_HTTP_HOST: 127.0.0.1
+      TAWNY_HTTP_PORT: "18080"
+      TAWNY_PUBLIC_URL: http://127.0.0.1:18080
+      TAWNY_ENRICH_ALERTS: "off"
+      TAWNY_BACKUP_LOCAL_PATH: "off"
+      TAWNY_CONTRACT_AUTH: session
+      TAWNY_BASE_URL: http://127.0.0.1:18080
+      TAWNY_CONTRACT_EMAIL: admin@tawny.local
+      TAWNY_CONTRACT_PASSWORD: contract-password
     defaults:
       run:
-        working-directory: backend
+        working-directory: server
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-      - run: dotnet restore
-      - run: dotnet build --configuration Release --no-restore
-      - name: apply migrations to SQL Server
+      - name: install Zig 0.17.0
+        working-directory: ${{ github.workspace }}
         run: |
-          dotnet tool install --global dotnet-ef --version 10.0.12
-          ~/.dotnet/tools/dotnet-ef database update --project src/Tawny.Infrastructure --startup-project src/Tawny.Api
-      - run: dotnet test --configuration Release --no-build --verbosity normal
-
-  web:
-    name: web (Next.js 16)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm build
+          set -euo pipefail
+          zig_version=0.17.0
+          sha256=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+          archive="$RUNNER_TEMP/zig.tar.xz"
+          zig_dir="$RUNNER_TEMP/zig-$zig_version"
+          curl -fsSL --retry 3 \
+            "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz" \
+            -o "$archive"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$zig_dir"
+          tar -xJf "$archive" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
+      - name: zig test
+        run: zig test src/main.zig -lc
+      - name: contract suite
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          cd server
+          zig build -Doptimize=ReleaseSafe
+          ./zig-out/bin/tawny-server serve > "$RUNNER_TEMP/tawny-server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/tawny-server.pid"
+          cd ..
+          ready=0
+          for _ in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/health/ready >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+          python3 contract-tests/suite.py
+          kill "$(cat "$RUNNER_TEMP/tawny-server.pid")" || true
 
   # Native build + unit tests on real Windows / macOS / Linux runners.
   # Proves platform collectors and the binary actually run, not just cross-compile.
