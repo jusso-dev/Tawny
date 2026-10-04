@@ -11,6 +11,7 @@ config_path=""
 state_dir=""
 service_scope="system"
 dry_run=0
+enable_macos_dns_logging=0
 allow_insecure_http=0
 skip_attestation=0
 candidate=""
@@ -42,6 +43,10 @@ Options:
   --allow-insecure-http       Allow an HTTP backend URL. Intended only for isolated development.
   --skip-attestation          Skip GitHub artifact attestation verification. Not for production.
   --dry-run                   Print actions without changing the host.
+  --enable-macos-dns-logging  macOS only: unredact mDNSResponder query names in the unified
+                              log (com.apple.mDNSResponder subsystem only) so the agent can
+                              report DNS queries. Without it, macOS hides names as <private>
+                              and the DNS collector stays idle.
 USAGE
 }
 
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --allow-insecure-http) allow_insecure_http=1; shift ;;
     --skip-attestation) skip_attestation=1; shift ;;
     --dry-run) dry_run=1; shift ;;
+    --enable-macos-dns-logging) enable_macos_dns_logging=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -141,6 +147,11 @@ if [[ -n "$source_binary_path" && -z "$sha256" ]]; then
   echo "--sha256 is required with --binary-path." >&2
   exit 2
 fi
+if [[ "$enable_macos_dns_logging" -eq 1 && ( "$(uname -s)" != "Darwin" || "$service_scope" != "system" ) ]]; then
+  echo "warning: --enable-macos-dns-logging only applies to system installs on macOS; ignoring." >&2
+  enable_macos_dns_logging=0
+fi
+
 if [[ "$dry_run" -ne 1 && "$service_scope" == "system" && "$(id -u)" -ne 0 ]]; then
   echo "Run installer as root (for example, sudo install.sh ...)." >&2
   exit 1
@@ -274,6 +285,47 @@ prepare_log_file() {
     chown root:wheel "$log_dir/agent.log"
   fi
   chmod 0600 "$log_dir/agent.log"
+}
+
+# Unredacts DNS query names for the mDNSResponder subsystem only (not system-wide
+# private data). Merges into an existing override instead of replacing it.
+enable_mdns_private_logging() {
+  local plist="/Library/Preferences/Logging/Subsystems/com.apple.mDNSResponder.plist"
+  if [[ "$dry_run" -eq 1 ]]; then
+    printf '[dry-run] enable Enable-Private-Data + Info level in %s\n' "$plist"
+    return
+  fi
+  mkdir -p "$(dirname "$plist")"
+  if [[ ! -f "$plist" ]]; then
+    cat >"$plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>DEFAULT-OPTIONS</key>
+  <dict>
+    <key>Enable-Private-Data</key>
+    <true/>
+    <key>Level</key>
+    <dict>
+      <key>Enable</key>
+      <string>Info</string>
+    </dict>
+  </dict>
+</dict>
+</plist>
+PLIST
+  else
+    plutil -extract DEFAULT-OPTIONS raw "$plist" >/dev/null 2>&1 \
+      || plutil -insert DEFAULT-OPTIONS -dictionary "$plist"
+    plutil -replace DEFAULT-OPTIONS.Enable-Private-Data -bool YES "$plist"
+    plutil -extract DEFAULT-OPTIONS.Level raw "$plist" >/dev/null 2>&1 \
+      || plutil -insert DEFAULT-OPTIONS.Level -dictionary "$plist"
+    plutil -replace DEFAULT-OPTIONS.Level.Enable -string Info "$plist"
+  fi
+  chown root:wheel "$plist"
+  chmod 0644 "$plist"
+  plutil -lint "$plist" >/dev/null
 }
 
 rollback() {
@@ -520,6 +572,9 @@ if [[ "$os_family" == "macos" ]]; then
     if command -v plutil >/dev/null 2>&1; then
       plutil -lint "$plist_preview" >/dev/null
     fi
+    if [[ "$enable_macos_dns_logging" -eq 1 && "$service_scope" == "system" ]]; then
+      enable_mdns_private_logging
+    fi
     printf '[dry-run] write and bootstrap %s launchd job %s (log %s):\n' \
       "$service_scope" "$plist_path" "$log_dir/agent.log"
     sed 's/^/[dry-run]   /' "$plist_preview"
@@ -535,6 +590,9 @@ if [[ "$os_family" == "macos" ]]; then
     fi
     chmod 0644 "$plist_candidate"
     mv -f "$plist_candidate" "$plist_path"
+    if [[ "$enable_macos_dns_logging" -eq 1 && "$service_scope" == "system" ]]; then
+      enable_mdns_private_logging
+    fi
     launchctl bootout "$launchd_domain/$launchd_label" >/dev/null 2>&1 || true
     launchctl bootstrap "$launchd_domain" "$plist_path"
     launchctl kickstart -k "$launchd_domain/$launchd_label"

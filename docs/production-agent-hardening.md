@@ -170,6 +170,27 @@ installs a LaunchAgent under the current account with configuration in
 `~/Library/Logs/Tawny/agent.log`, and secrets in the login keychain. Do not use
 this reduced-visibility mode for production SOC coverage.
 
+### macOS telemetry sources
+
+All collection is user mode (no Endpoint Security, no kernel extension):
+
+| Event | Source |
+| --- | --- |
+| `process_snapshot` | libproc (`proc_listallpids`, `proc_pidinfo`, `proc_pidpath`) + `KERN_PROCARGS2` for full argv |
+| `process_launch` | 5 s libproc diff keyed on pid + start time (very short-lived processes can be missed) |
+| `network_snapshot` | libproc socket enumeration with owning `pid`/`process_name`; ARP neighbors, resolvers |
+| `file_event` | FSEvents (recursive) on the configured watch paths |
+| `dns_query` | `log stream` of the `com.apple.mDNSResponder` subsystem; network lookups only (cached answers are not logged), no response IPs |
+
+macOS redacts DNS query names in the unified log as `<private>` by default.
+`install.sh --enable-macos-dns-logging` writes (or merges into)
+`/Library/Preferences/Logging/Subsystems/com.apple.mDNSResponder.plist`
+setting `Enable-Private-Data` and `Info` level for that one subsystem only — not
+the system-wide private-data switch. This makes DNS names visible to anyone who
+can read the unified log on that Mac (admins), so treat it as a privacy decision
+and prefer deploying the same profile via MDM. Without it the DNS collector
+detects redaction, stays idle and retries hourly. To revert, delete that plist.
+
 macOS upgrades: keychain items are readable only by the exact ad-hoc signed
 build that created them, so the installer stops the job and runs the current
 binary with `--export-credentials` before swapping binaries (and the new one
