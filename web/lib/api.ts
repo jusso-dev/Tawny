@@ -158,3 +158,21 @@ export async function apiDelete(path: string, userId: string, role: string): Pro
     throw new ApiError(await errorMessage(res, `API ${path} returned ${res.status}`), res.status);
   }
 }
+
+/** Opens a signed GET to a streaming endpoint and returns the raw response (e.g. SSE). */
+export async function apiStream(
+  path: string,
+  userId: string,
+  role: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { ...sign("GET", path, userId, role, "", ""), Accept: "text/event-stream" },
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new ApiError(await errorMessage(res, `API ${path} returned ${res.status}`), res.status);
+  }
+  return res;
+}
