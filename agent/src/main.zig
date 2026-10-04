@@ -27,6 +27,11 @@ pub fn main(init: std.process.Init) !void {
     iox.initialize(init.io);
     const alloc = init.gpa;
 
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--export-credentials")) {
+        return config_mod.exportCredentialsCommand(alloc);
+    }
+
     if (builtin.target.os.tag == .windows) {
         // Under the SCM this blocks until the service stops; ServiceMain runs
         // the agent loop. Interactive launches fall through to console mode.
@@ -75,6 +80,7 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         cfg.max_retry_backoff_seconds,
     );
     defer http.deinit();
+    http.secret_store = cfg.secret_store;
 
     var buf = try buffer.Buffer.init(
         alloc,

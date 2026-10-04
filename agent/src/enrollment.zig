@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const Config = @import("config.zig").Config;
 const iox = @import("io_compat.zig");
+const keystore = @import("keystore.zig");
 
 extern "kernel32" fn GetComputerNameA(
     name: [*]u8,
@@ -29,28 +30,22 @@ fn base64Encode(alloc: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
-/// Generate Ed25519 keypair, persist seed next to state, return base64 public key.
+/// Load or generate the Ed25519 device seed (keystore when available, else
+/// `<state>.devicekey`), return the base64 public key.
 fn ensureDeviceKey(alloc: std.mem.Allocator, cfg: *const Config) ![]u8 {
-    const seed_path = try alloc.print("{s}.devicekey", .{cfg.state_path});
+    const seed_path = try keystore.deviceSeedPath(alloc, cfg.state_path);
     defer alloc.free(seed_path);
 
-    var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
-    const io = iox.current();
-    const existing = std.Io.Dir.cwd().openFile(io, seed_path, .{}) catch null;
-    if (existing) |file| {
-        defer file.close(io);
-        const n = try file.readPositionalAll(io, &seed, 0);
-        if (n != seed.len) return error.CorruptDeviceKey;
-    } else {
-        try std.Io.randomSecure(io, &seed);
-        var file = try std.Io.Dir.cwd().createFile(io, seed_path, .{
-            .truncate = true,
-            .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
-        });
-        defer file.close(io);
-        try file.writePositionalAll(io, &seed, 0);
-        try file.sync(io);
-    }
+    const existing = keystore.loadDeviceSeed(alloc, cfg.secret_store, seed_path) catch |err| blk: {
+        // An unreadable keystore item (for example one written by another
+        // agent build) is replaced: this enrollment registers the new key.
+        std.log.warn("existing device key unreadable ({s}); generating a new one", .{@errorName(err)});
+        // A truncated seed file would otherwise shadow the new keystore seed.
+        if (err == error.CorruptDeviceKey) try keystore.scrubAndDelete(seed_path);
+        break :blk null;
+    };
+    var seed = existing orelse try keystore.createDeviceSeed(alloc, cfg.secret_store, seed_path);
+    defer std.crypto.secureZero(u8, &seed);
 
     const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
     return try base64Encode(alloc, &kp.public_key.bytes);

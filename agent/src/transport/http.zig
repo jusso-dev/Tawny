@@ -1,6 +1,7 @@
 const std = @import("std");
 const buffer_mod = @import("buffer.zig");
 const iox = @import("../io_compat.zig");
+const keystore = @import("../keystore.zig");
 
 pub const HeartbeatPayload = struct {
     agent_version: []const u8,
@@ -36,7 +37,13 @@ pub const Client = struct {
     base_url: []const u8,
     jwt: []const u8,
     agent_id: []const u8 = "",
+    /// Plaintext seed location (legacy layout / keystore fallback).
     device_key_path: []const u8 = "",
+    /// Keystore holding the device seed; plaintext-only unless set.
+    secret_store: keystore.Store = .{},
+    /// Device key, loaded on first signature and kept for the process life.
+    device_key: ?std.crypto.sign.Ed25519.KeyPair = null,
+    device_key_warned: bool = false,
     request_timeout_seconds: u32,
     max_backoff_seconds: u64,
     backoff_seconds: u64 = 0,
@@ -217,7 +224,7 @@ pub const Client = struct {
         }
         try body.appendSlice("]");
 
-        if (trySignBatch(self.allocator, self.device_key_path, canonical.items)) |sig_b64| {
+        if (self.trySignBatch(canonical.items)) |sig_b64| {
             defer self.allocator.free(sig_b64);
             try body.appendSlice(",\"signature\":\"");
             try body.appendSlice(sig_b64);
@@ -241,21 +248,35 @@ pub const Client = struct {
         }
     }
 
-    fn trySignBatch(alloc: std.mem.Allocator, device_key_path: []const u8, canonical: []const u8) ?[]u8 {
-        if (device_key_path.len == 0) return null;
-        const io = iox.current();
-        const file = std.Io.Dir.cwd().openFile(io, device_key_path, .{}) catch return null;
-        defer file.close(io);
-        var seed: [std.crypto.sign.Ed25519.KeyPair.seed_length]u8 = undefined;
-        const n = file.readPositionalAll(io, &seed, 0) catch return null;
-        if (n != seed.len) return null;
-        const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return null;
+    fn trySignBatch(self: *Client, canonical: []const u8) ?[]u8 {
+        const kp = self.deviceKey() orelse return null;
         const sig = kp.sign(canonical, null) catch return null;
         const Encoder = std.base64.standard.Encoder;
         const out_len = Encoder.calcSize(sig.toBytes().len);
-        const out = alloc.alloc(u8, out_len) catch return null;
+        const out = self.allocator.alloc(u8, out_len) catch return null;
         _ = Encoder.encode(out, &sig.toBytes());
         return out;
+    }
+
+    /// Device key from the plaintext seed file or the keystore. Failures are
+    /// retried on the next flush and logged once.
+    fn deviceKey(self: *Client) ?std.crypto.sign.Ed25519.KeyPair {
+        if (self.device_key) |kp| return kp;
+        if (self.device_key_path.len == 0) return null;
+        const loaded = keystore.loadDeviceSeed(self.allocator, self.secret_store, self.device_key_path) catch |err| {
+            if (!self.device_key_warned) {
+                self.device_key_warned = true;
+                std.log.warn(
+                    "device key unavailable from {s} ({s}, status {d}); event batches are sent unsigned",
+                    .{ self.secret_store.describe(), @errorName(err), keystore.lastOsStatus() },
+                );
+            }
+            return null;
+        };
+        var seed = loaded orelse return null;
+        defer std.crypto.secureZero(u8, &seed);
+        self.device_key = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return null;
+        return self.device_key;
     }
 
     fn post(self: *Client, path: []const u8, body: []const u8) ![]u8 {
