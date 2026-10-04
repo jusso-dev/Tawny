@@ -16,14 +16,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    if (target.result.os.tag == .windows) {
-        exe_mod.linkSystemLibrary("ws2_32", .{});
-        exe_mod.linkSystemLibrary("kernel32", .{});
-        exe_mod.linkSystemLibrary("advapi32", .{});
-        exe_mod.linkSystemLibrary("iphlpapi", .{});
-        exe_mod.linkSystemLibrary("wtsapi32", .{});
-        exe_mod.linkSystemLibrary("ntdll", .{});
-    }
+    linkPlatformLibraries(exe_mod, target.result.os.tag);
 
     b.installArtifact(exe);
 
@@ -44,14 +37,25 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
-    if (target.result.os.tag == .windows) {
-        test_mod.linkSystemLibrary("ws2_32", .{});
-        test_mod.linkSystemLibrary("kernel32", .{});
-        test_mod.linkSystemLibrary("advapi32", .{});
-        test_mod.linkSystemLibrary("iphlpapi", .{});
-        test_mod.linkSystemLibrary("wtsapi32", .{});
-        test_mod.linkSystemLibrary("ntdll", .{});
-    }
+    linkPlatformLibraries(test_mod, target.result.os.tag);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+}
+
+fn linkPlatformLibraries(mod: *std.Build.Module, os: std.Target.Os.Tag) void {
+    switch (os) {
+        .windows => {
+            mod.linkSystemLibrary("ws2_32", .{});
+            mod.linkSystemLibrary("kernel32", .{});
+            mod.linkSystemLibrary("advapi32", .{});
+            mod.linkSystemLibrary("iphlpapi", .{});
+            mod.linkSystemLibrary("wtsapi32", .{});
+            mod.linkSystemLibrary("ntdll", .{});
+        },
+        // macOS: libproc and libdispatch come from libSystem (link_libc).
+        // CoreServices/CoreFoundation (FSEvents) are dlopen'd at runtime by
+        // platform/macos/fsevents.zig: linking frameworks needs the macOS SDK,
+        // and release builds cross-compile both macOS targets on Linux.
+        else => {},
+    }
 }

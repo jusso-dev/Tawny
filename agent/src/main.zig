@@ -322,6 +322,7 @@ test "main module loads" {
     _ = lifecycle;
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
+    if (builtin.target.os.tag == .macos) _ = @import("platform/macos/fsevents.zig");
     if (builtin.target.os.tag == .windows) _ = windows_service;
 }
 
