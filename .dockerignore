@@ -1,0 +1,9 @@
+.git
+.zig-cache
+**/zig-out
+**/node_modules
+backend
+web
+docker/data
+docker/secrets
+**/*.pem

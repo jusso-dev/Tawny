@@ -67,3 +67,7 @@ README screenshots should show real application state:
 4. Enrollment flow with install commands visible
 
 Use a desktop viewport first. Capture dark theme by default, with one optional light-theme screenshot only if it adds clarity.
+
+## Session
+
+The dashboard and the API are one origin. Login sets an HttpOnly, Secure, SameSite=Lax session cookie. State-changing requests from that session send `X-CSRF-Token`. There is no second web process and no HMAC hop.

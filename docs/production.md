@@ -2,42 +2,38 @@
 
 ## Secure configuration (required)
 
-Production (and any process with `Tawny:Security:EnforceSecureDefaults=true`) **fails startup** when insecure:
+`docker compose` runs PostgreSQL 17, one `tawny-server` process, and Caddy. Caddy terminates TLS. The Zig process speaks HTTP only on the compose network and is not published. Postgres is not published. An optional `agent` profile joins the same network.
 
 | Setting | Requirement |
 | --- | --- |
-| `Tawny:WebUserHmacSecret` / `TAWNY_WEB_HMAC_SECRET` | ≥ 32 random bytes (`openssl rand -hex 32`) |
-| `Tawny:AgentJwt:SigningKeyPem` | Stable RSA private key PEM (path or inline) |
-| `ConnectionStrings:Default` | Present |
-| `Tawny:Security:PublicApiUrl` | `https://…` public agent/API URL |
-| `Tawny:Security:PublicWebUrl` | `https://…` dashboard URL |
-| `Tawny:IntegrationEncryptionKey` / `TAWNY_INTEGRATION_ENCRYPTION_KEY` | ≥ 32 random characters, not the `dev-only…` default |
+| `POSTGRES_PASSWORD` | Random (`openssl rand -hex 24`). Only the compose network sees it. |
+| `TAWNY_DATABASE_URL` | `postgres://tawny:<password>@postgres:5432/tawny` |
+| `TAWNY_INTEGRATION_ENCRYPTION_KEY` | ≥ 32 random bytes. Losing it makes stored integration secrets unreadable. |
+| `TAWNY_AGENT_JWT_SEED` | 64 hex characters. Stable Ed25519 seed for newly issued agent JWTs. |
+| `TAWNY_AGENT_JWT_SIGNING_KEY_PEM` | RSA PEM used only to verify tokens issued before the Ed25519 cutover. |
+| `TAWNY_PUBLIC_URL` | `https://…` origin browsers and enrollment commands use. |
 
-Escape hatch (dangerous): `Tawny:Security:AllowInsecurePublicHttp=true` permits non-HTTPS public URLs. Prefer fixing TLS instead.
+There is no web-to-API HMAC secret and no separate web process. The browser holds an HttpOnly, Secure, SameSite=Lax session cookie. State-changing session requests send `X-CSRF-Token`. API tokens (`twny_`) and agent JWTs do not use that cookie.
 
-Dashboard accounts are not self-service: email/password and GitHub sign-up are disabled. The first admin comes from `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD`; users created any other way default to `Viewer`. Deployments that ran an earlier build with open sign-up should review the `user` table for unexpected `Admin` accounts.
+Dashboard accounts are not self-service. GitHub OAuth links an existing user and does not create one. The first admin is created from `TAWNY_BOOTSTRAP_ADMIN_EMAIL` / `TAWNY_BOOTSTRAP_ADMIN_PASSWORD` only when the user table is empty. The server does not log that password. Later users default to Viewer.
 
-Generate secrets offline; never commit them. Rotate HMAC secret and agent signing key after compromise; revoke all agents after signing-key rotation if needed.
+`tawny-server import-mssql <export.json>` loads a SQL Server plus Better Auth export into the current database. The command is idempotent. It keeps agent id, credential version, and device public key, stores `twny_` and `wte_` SHA-256 hashes as exported, and leaves `v1.` feed secrets unchanged (it decrypts them with `TAWNY_INTEGRATION_ENCRYPTION_KEY` only to prove the key still opens them). Better Auth user ids that are not UUIDs are mapped to a stable UUID. A legacy `saltHex:keyHex` scrypt password is kept until that user logs in, then replaced with argon2id. The command prints inserted and unchanged row counts plus `report_sha256`. `server/fixtures/sqlserver-export.json` is a small export fixture. A copy of a real install is still required for a production rehearsal.
+
+`docker/scripts/init-secrets.sh` writes `docker/.env` and the RSA PEM. Compose mounts `docker/secrets/tawny-jwt-key` at `/run/secrets/tawny-jwt-key`. This Compose engine ignores secret uid and mode, so the script sets the file mode to `0644` and uid 65532 can read it. An unset backup path is `off` inside the read-only container; set `TAWNY_BACKUP_LOCAL_PATH` to a mounted directory, or set `TAWNY_BACKUP_S3_BUCKET`, to keep the daily backup. The script prints the bootstrap password once, when it first creates it.
 
 ## TLS termination
 
-The development compose stack exposes the API and web containers over HTTP. Production deployments should place a reverse proxy in front of both services and terminate TLS there.
-
-Example Caddyfile:
+Caddy is the only published listener. `docker/Caddyfile` reverse-proxies `tawny-server:8080`. `tls internal` is the local and LAN default. For a public name, set `TAWNY_DOMAIN` and remove the `tls internal` line so Caddy can obtain a public certificate.
 
 ```caddyfile
-tawny.example.com {
-  encode zstd gzip
-  reverse_proxy tawny-web:3000
-}
-
-api.tawny.example.com {
-  encode zstd gzip
-  reverse_proxy tawny-api:5080
+{$TAWNY_DOMAIN:localhost} {
+	tls internal
+	encode gzip
+	reverse_proxy tawny-server:8080
 }
 ```
 
-Set `BETTER_AUTH_URL=https://tawny.example.com`, `TAWNY_API_URL=http://tawny-api:5080` for server-side web-to-API calls (cluster-internal HTTP is fine), and `NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL=https://api.tawny.example.com` so enrollment install commands point agents at the TLS endpoint.
+Enrollment install commands must use `TAWNY_PUBLIC_URL` (`https://…`). The optional compose agent profile talks to `http://tawny-server:8080` with `allow_insecure_http` because that hop stays on the compose network. Do not point a WAN agent at plaintext HTTP.
 
 ### Agent HTTPS defaults
 
@@ -66,7 +62,7 @@ Revoke immediately:
 POST /api/agents/{id}/revoke
 ```
 
-(Admin WebUser or API token.)
+(Admin session or API token.)
 
 ### Where the agent keeps its secrets
 
@@ -106,18 +102,17 @@ Dispatched actions include a single-use `execution_token`, payload hash, and exp
 POST /api/agents/{agentId}/actions/{id}/cancel
 ```
 
-## OpenAPI and Hangfire
+## Jobs
 
-- OpenAPI is **not** mapped in Production unless `Tawny:Security:EnableOpenApi=true`.
-- Hangfire dashboard stays behind WebUser Admin authorization; do not expose `/hangfire` publicly.
+There is no Hangfire dashboard. An admin session reads `GET /api/admin/jobs`. The seven jobs run inside `tawny-server`.
 
 ## Incident recovery (short)
 
-1. Rotate `TAWNY_WEB_HMAC_SECRET` and redeploy web + API together.
-2. Rotate agent JWT signing key only with a planned re-enroll window.
-3. Revoke compromised agents; re-issue enrollment tokens.
-4. Preserve audit log and database backups offline encrypted.
-5. Check Hangfire recurring jobs after restore.
+1. Rotate `TAWNY_AGENT_JWT_SEED` only with a planned re-enroll window. Keep the RSA PEM until every agent has heartbeated onto Ed25519.
+2. Revoke compromised agents; re-issue enrollment tokens.
+3. Preserve the audit log and database backups offline and encrypted.
+4. Keep `TAWNY_INTEGRATION_ENCRYPTION_KEY` with the database backup. A new key does not decrypt old rows.
+5. After restore, confirm `GET /api/health/ready` and `GET /api/admin/jobs`.
 
 ## Linux and Amazon EC2 network collection
 
@@ -317,7 +312,7 @@ Only new alerts generated after Slack is enabled are posted. Tawny records Slack
 ## Threat intelligence (default feeds)
 
 Tawny seeds public starter feeds for every tenant on API startup
-and before each Hangfire TI poll (idempotent by URL). Feodo Tracker and
+and before each threat-intel poll (idempotent by URL). Feodo Tracker and
 OpenPhish are **enabled** by default; PhishTank, Emerging Threats, and
 blocklist.de ship disabled. Imported indicators become IoC alert rules and
 raise Tawny alerts on matching agent telemetry without enabling any alert sink.

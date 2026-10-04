@@ -12,8 +12,12 @@ model and response contract, but sensor depth on them is a later phase.
 
 ## 0. Design principles
 
-1. **Evolve, don't rewrite.** Keep the .NET/SQL Server/Next.js/Zig stack,
-   enrollment, JWT, device signatures, spool format family, TI fetchers, sinks.
+1. **Evolve the product, replace the host stack once.** Issue #49 replaces
+   the .NET API, Next.js server, and SQL Server with one Zig `tawny-server`,
+   PostgreSQL, and a static UI. Enrollment, device signatures, the spool
+   format family, TI fetchers, and sinks stay. Agent JWTs move to EdDSA;
+   RS256 tokens still verify until the following release. EDR features in
+   Phases 1–8 still land on this base; they are not part of the cutover.
 2. **One canonical event model**, versioned, shared by every platform and
    every consumer (detection, graph, hunting, UI, sinks).
 3. **Process entity ID is the join key** for everything. PID is never identity.
@@ -23,41 +27,57 @@ model and response contract, but sensor depth on them is a later phase.
    local failsafe; updates must verify signatures; queues are bounded.
 6. **Budgets are features.** CPU <1% typical, RSS tens of MB, bounded disk,
    measured in CI.
-7. **Single-node first.** Target ≤1,000 endpoints on one API node + one SQL
-   Server. Remove in-memory state that blocks a second node, but do not add
+7. **Single-node first.** Target ≤1,000 endpoints on one `tawny-server` plus
+   one PostgreSQL instance (2 vCPU / 4 GB reference box). Advisory locks and
+   `SKIP LOCKED` keep a second instance safe later. Do not add
    Kafka/ClickHouse/Redis now.
 
 ## 1. Data flow
 
+Cutover (issue #49): one Zig process, `tawny-server`. Caddy terminates TLS.
+Zig does not. The browser loads the static SPA from that same origin and
+calls the API with an HttpOnly session cookie. There is no web→API HMAC hop.
+Agents keep enroll, heartbeat, event ingest, and action-result. Newly issued
+agent JWTs are EdDSA. RS256 tokens signed by the current PEM still verify
+and rotate to EdDSA on the next heartbeat.
+
 ```
 Agent sensors ─► priority ring buffers ─► spool (P0..P3) ─► uploader (gzip, signed)
                                                               │
-                         POST /api/agents/events (v2) ◄───────┘
-                                   │  validate, dedupe, persist (fast path only)
+                         POST /api/agents/events ◄────────────┘
+                                   │  validate, dedupe, persist, enqueue
+                                   │  202 — detection does not run inline
                                    ▼
-                          Events (typed columns) ──► IngestQueue (DB-backed cursor)
-                                                        │
-                       ┌────────────────────────────────┼─────────────────────────┐
-                       ▼                                ▼                         ▼
-               Graph builder                    Detection engine            IOC matcher
-         (ProcessEntities, Edges)        (atomic/sequence/threshold/   (hash/domain/IP/URL
-                       │                  relationship/rarity, Sigma)    index, in memory)
-                       └────────────────────────────────┬─────────────────────────┘
-                                                        ▼
-                                          Detections (evidence items)
-                                                        ▼
-                                  Correlator ─► Incidents ─► Risk engine
-                                                        ▼
-                                   Alerts/Incidents API, UI, sinks (async)
-                                                        ▼
-                                       Response engine ─► durable action queue ─► agent
-TI feeds ─► Indicators (lifecycle) ─► IOC index        Reputation enrichment (async, cached)
+                            PostgreSQL work_queue
+                                   │
+           ┌───────────────────────┼────────────────────────┐
+           ▼                       ▼                        ▼
+    Detection worker          Sink delivery            SSE broker
+    predicate, Sigma,         Wazuh, Slack,            LISTEN/NOTIFY
+    IOC, sequence,            Sentinel, Tawny-SOC      /events/stream
+    YARA-lite, exposure,
+    suppression
+           │
+           ▼
+    alerts ─► dashboard, BlakSoc, jobs
+           │
+           ▼
+    response actions ─► heartbeat (≤10, execution token) ─► agent
+
+Browser ──HTTPS──► Caddy ──HTTP──► tawny-server
+                   static SPA, session cookie, CSRF on writes
+
+TI feeds ─► indicators ─► IOC index     Reputation enrichment (async, 24 h cache)
 ```
 
-Ingest commits telemetry and returns. Everything after `IngestQueue` is
-asynchronous (hosted service draining a DB cursor), so slow TI providers,
-sinks or rule evaluation never block agents. Restart-safe because the cursor
-and sequence state live in SQL.
+Ingest only validates, persists, and enqueues. A worker creates alerts and
+enqueues sink delivery after the `202` returns, so a slow provider never
+blocks an agent. Sequence progress and the hunt cursor live in Postgres, so
+a restart does not re-alert an event a scheduled hunt already matched.
+
+The activity graph, incident correlator, and risk engine drawn in earlier
+drafts of this section are Phases 1–8. They are not built here. The queue
+is the seam they attach to later.
 
 ## 2. Canonical event model (schema v2)
 
@@ -212,36 +232,88 @@ fully unprivileged.
 
 ## 4. Backend storage
 
-Keep SQL Server. Add typed tables; keep the raw payload for fidelity.
+PostgreSQL 16 or 17, volume-backed. The application connects as a role that
+does not own the tables. Every tenant-owned table has `tenant_id` and
+`FORCE ROW LEVEL SECURITY`, keyed on `current_setting('tawny.tenant_id', true)`
+for the transaction. Queries still pass `tenant_id` (defence in depth).
+Jobs that read across tenants use a separate `BYPASSRLS` role.
+
+Identity columns: `uuid` where .NET used `Guid`, `bigint GENERATED ALWAYS AS
+IDENTITY` where it used `long`. Timestamps are `timestamptz`. Telemetry and
+rule payloads are `jsonb`. `alert_rules.mitre_techniques` and `agents.tags`
+are `text[]`.
+
+`telemetry_events` is range-partitioned by `received_at`, one partition per
+month. Retention deletes alerts older than 365 days, then deletes telemetry
+older than 30 days that no surviving alert references. A month partition is
+detached only when no surviving alert still points at a row in it. Referenced
+rows stay in that partition so the foreign key remains valid. PostgreSQL
+requires a unique key on a partitioned table to include the partition column,
+so the alert foreign key is `(telemetry_received_at, telemetry_event_id)` and
+the wire field stays `telemetry_event_id`. `ON DELETE` is `NO ACTION` (no
+cascade). Dedupe of `client_event_id` lives on the unpartitioned
+`telemetry_dedupe` table, unique on `(tenant_id, agent_id, client_event_id)`,
+because that unique key cannot include `received_at`.
+
+Cutover tables: `tenants`, `users`, `sessions`, `agents`, `telemetry_events`,
+`telemetry_dedupe`, `alert_rules`, `alerts`, `response_actions`,
+`suppression_rules`, `threat_intel_feeds`, `reputation_cache`, `saved_hunts`,
+`hunt_runs`, `hunt_cursors`, `api_tokens`, `enrollment_tokens`, `audit_log`,
+`agent_releases`, `jobs`, `work_queue`, `sequence_state`, `schema_migrations`.
+
+`audit_log` is append-only for the app role (`INSERT`, `SELECT`) and stores
+a hash chain (`prev_hash`, `hash`). `sequence_state` persists partial
+sequence-rule progress. `hunt_cursors` stores the last matched event per
+scheduled hunt so a later run does not raise the same alert again.
+`work_queue` is claimed with `FOR UPDATE SKIP LOCKED`. Each job takes
+`pg_try_advisory_lock` before it runs.
+
+`group_by` on sequence rules stays ignored, matching the .NET evaluator.
+That choice is recorded in the release notes.
+
+Graph tables (`process_entities`, `activity_edges`) and incident/risk tables
+are not created by this migration. When they land, relations stay
+`USER_STARTED_PROCESS`, `PROCESS_SPAWNED_PROCESS`, `PROCESS_CONNECTED_TO_IP`,
+`PROCESS_QUERIED_DOMAIN`, `PROCESS_CREATED_FILE`, `PROCESS_MODIFIED_FILE`,
+`PROCESS_EXECUTED_FILE`, `PROCESS_MODIFIED_REGISTRY`, `PROCESS_CREATED_SERVICE`,
+`PROCESS_CREATED_TASK`, joined by entity id rather than row order.
+
+### 4.1 Zig 0.17 standard-library spike
+
+Toolchain `0.17.0`, the same `minimum_zig_version` as `agent/build.zig.zon`.
+macOS arm64 tarball sha256
+`b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a`.
+No third-party Zig packages.
+
+`std.http.Server` handles one connection: `init(*Reader, *Writer)`,
+`receiveHead`, `respond` / `respondStreaming`. It does not listen. The
+accept loop is `std.Io.net.IpAddress.listen` and `std.Io.net.Server.accept`
+on `std.Io.Threaded`. The reader buffer is the header cap;
+`error.HttpHeadersOversize` is the slowloris / oversize-head signal.
+`std.crypto.tls` exposes `Client` only. There is no TLS server, so Caddy
+terminates TLS.
+
+Crypto that the server uses from `std`, confirmed present in 0.17.0:
+
+- `std.crypto.sign.Ed25519` to issue agent JWTs (`generate(io)`, `sign`, `verify`)
+- `std.crypto.Certificate.rsa.PKCS1v1_5Signature` to verify legacy RS256 tokens
+- `std.crypto.aead.aes_gcm.Aes256Gcm` for `v1.` integration secrets (12-byte nonce, 16-byte tag, empty AAD)
+- `std.crypto.pwhash.argon2` and `std.crypto.pwhash.scrypt` for passwords
+- HMAC-SHA256 and PBKDF2 for Postgres SCRAM-SHA-256 and AWS SigV4
+
+The spike listens on `127.0.0.1:18717`, answers `GET /api/health` with
+`{"status":"ok"}` (105-byte HTTP response, status 200), signs and verifies
+an Ed25519 message, and round-trips AES-256-GCM. `std.crypto.tls.Client` is
+referenced so a missing TLS server type fails the build. Run on Zig 0.17.0
+aarch64-macos printed:
 
 ```
-Events          (Id bigint, TenantId, AgentId, EventId uuid unique, EventType smallint,
-                 Ts datetime2(6), ReceivedAt, Seq, Priority, SchemaVersion,
-                 ProcessEntityId binary(16) null, ParentEntityId binary(16) null,
-                 UserName, ImageName, DstIp, DstPort, DnsQuery, FilePath, Sha256, RegistryKey,
-                 Data nvarchar(max))         -- clustered columnstore + rowstore NCIs
-ProcessEntities (TenantId, AgentId, EntityId PK, ParentEntityId, Pid, Ppid, StartTime, EndTime,
-                 Image, CommandLine, UserName, UserSid, SessionId, Integrity, Elevated,
-                 Sha256, SignatureStatus, Signer, FirstEventId)
-ActivityEdges   (TenantId, AgentId, Ts, SrcEntityId, Relation smallint,
-                 DstKind smallint, DstKey nvarchar(512), EventId)
+spike-ok http=std.http.Server tls_server=absent ed25519=ok aes256gcm=ok
 ```
-
-Relations: `USER_STARTED_PROCESS`, `PROCESS_SPAWNED_PROCESS`,
-`PROCESS_CONNECTED_TO_IP`, `PROCESS_QUERIED_DOMAIN`, `PROCESS_CREATED_FILE`,
-`PROCESS_MODIFIED_FILE`, `PROCESS_EXECUTED_FILE` (file written then started:
-join `FILE_*` path/sha256 to `PROCESS_START.image`), `PROCESS_MODIFIED_REGISTRY`,
-`PROCESS_CREATED_SERVICE`, `PROCESS_CREATED_TASK`.
-
-Trees via recursive CTE on `ProcessEntities.ParentEntityId` (depth-capped).
-Late-arriving parents are linked when they appear (edges keyed by entity ID,
-not row order).
-
-Retention: separate policies for raw events (default 30 d), entities/edges
-(90 d), detections/incidents/alerts (1 y). **Remove the alert→event cascade**;
-detections store an evidence snapshot.
 
 ### Investigation APIs
+
+Not in this cutover. Phase 1+ will add:
 
 ```
 GET /api/processes/{entityId}                 entity + parent chain

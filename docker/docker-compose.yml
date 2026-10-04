@@ -1,125 +1,116 @@
-services:
-  db:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: tawny-db
-    environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-DevPassw0rd!}"
-      MSSQL_PID: "Developer"
-    ports:
-      - "${MSSQL_PORT:-1433}:1433"
-    volumes:
-      - ./data/mssql:/var/opt/mssql
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -Q "SELECT 1" || exit 1
-      interval: 10s
-      retries: 10
-      start_period: 30s
+# PostgreSQL + tawny-server + Caddy. Caddy terminates TLS. Zig does not.
+# Postgres is not published to the host. Optional agent: --profile agent.
+name: tawny
 
-  api:
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: tawny
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: tawny
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tawny -d tawny"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  tawny-server:
     build:
-      context: ../backend
-      dockerfile: src/Tawny.Api/Dockerfile
-    container_name: tawny-api
+      context: ..
+      dockerfile: docker/server/Dockerfile
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
     environment:
-      ASPNETCORE_ENVIRONMENT: "Development"
-      ASPNETCORE_URLS: "http://+:5080"
-      ConnectionStrings__Default: "Server=db,1433;Database=Tawny;User Id=sa;Password=${MSSQL_SA_PASSWORD:-DevPassw0rd!};TrustServerCertificate=True;Encrypt=False"
-      Tawny__ApplyMigrationsOnStartup: "${TAWNY_APPLY_MIGRATIONS_ON_STARTUP:-false}"
-      Tawny__WebUserHmacSecret: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
-      Tawny__IntegrationEncryptionKey: "${TAWNY_INTEGRATION_ENCRYPTION_KEY:-dev-only-integration-key}"
-      Tawny__AgentJwt__Issuer: "tawny"
-      Tawny__AgentJwt__Audience: "tawny-agents"
-      Tawny__AgentJwt__SigningKeyPem: "/run/secrets/tawny-jwt-key"
-      Tawny__AgentJwt__RequireConfiguredSigningKey: "true"
-      Tawny__Wazuh__Enabled: "${TAWNY_WAZUH_ENABLED:-false}"
-      Tawny__Wazuh__Host: "${TAWNY_WAZUH_HOST:-}"
-      Tawny__Wazuh__Port: "${TAWNY_WAZUH_PORT:-514}"
-      Tawny__Wazuh__Protocol: "${TAWNY_WAZUH_PROTOCOL:-udp}"
-      Tawny__Wazuh__Facility: "${TAWNY_WAZUH_FACILITY:-16}"
-      Tawny__Wazuh__AppName: "${TAWNY_WAZUH_APP_NAME:-tawny}"
-      Tawny__Wazuh__Hostname: "${TAWNY_WAZUH_HOSTNAME:-}"
-      Tawny__Wazuh__MaxMessageBytes: "${TAWNY_WAZUH_MAX_MESSAGE_BYTES:-8192}"
-      Tawny__Slack__Enabled: "${TAWNY_SLACK_ENABLED:-false}"
-      Tawny__Slack__WebhookUrl: "${TAWNY_SLACK_WEBHOOK_URL:-}"
-      Tawny__Slack__Username: "${TAWNY_SLACK_USERNAME:-Tawny}"
-      Tawny__Slack__IconEmoji: "${TAWNY_SLACK_ICON_EMOJI:-:rotating_light:}"
-      Tawny__Slack__TimeoutSeconds: "${TAWNY_SLACK_TIMEOUT_SECONDS:-5}"
-      Tawny__Reputation__CacheTtlHours: "${TAWNY_REPUTATION_CACHE_TTL_HOURS:-24}"
-      Tawny__TawnySoc__Enabled: "${TAWNY_SOC_ENABLED:-false}"
-      Tawny__TawnySoc__AlertsEnabled: "${TAWNY_SOC_ALERTS_ENABLED:-true}"
-      Tawny__TawnySoc__TelemetryEnabled: "${TAWNY_SOC_TELEMETRY_ENABLED:-false}"
-      Tawny__TawnySoc__EndpointUrl: "${TAWNY_SOC_ENDPOINT_URL:-http://localhost:3001/api/ingest/tawny}"
-      Tawny__TawnySoc__AllowInsecureHttp: "${TAWNY_SOC_ALLOW_INSECURE_HTTP:-false}"
-      Tawny__TawnySoc__ApiToken: "${TAWNY_SOC_API_TOKEN:-}"
-      Tawny__TawnySoc__BatchSize: "${TAWNY_SOC_BATCH_SIZE:-100}"
-      Tawny__TawnySoc__TimeoutSeconds: "${TAWNY_SOC_TIMEOUT_SECONDS:-10}"
-      Tawny__Sentinel__Enabled: "${TAWNY_SENTINEL_ENABLED:-false}"
-      Tawny__Sentinel__AlertsEnabled: "${TAWNY_SENTINEL_ALERTS_ENABLED:-true}"
-      Tawny__Sentinel__TelemetryEnabled: "${TAWNY_SENTINEL_TELEMETRY_ENABLED:-false}"
-      Tawny__Sentinel__AuthenticationMode: "${TAWNY_SENTINEL_AUTHENTICATION_MODE:-client_secret}"
-      Tawny__Sentinel__TenantId: "${TAWNY_SENTINEL_TENANT_ID:-}"
-      Tawny__Sentinel__ClientId: "${TAWNY_SENTINEL_CLIENT_ID:-}"
-      Tawny__Sentinel__ClientSecret: "${TAWNY_SENTINEL_CLIENT_SECRET:-}"
-      Tawny__Sentinel__EndpointUrl: "${TAWNY_SENTINEL_ENDPOINT_URL:-}"
-      Tawny__Sentinel__DcrImmutableId: "${TAWNY_SENTINEL_DCR_IMMUTABLE_ID:-}"
-      Tawny__Sentinel__AlertStreamName: "${TAWNY_SENTINEL_ALERT_STREAM_NAME:-Custom-TawnyAlert_CL}"
-      Tawny__Sentinel__TelemetryStreamName: "${TAWNY_SENTINEL_TELEMETRY_STREAM_NAME:-Custom-TawnyTelemetry_CL}"
-      Tawny__Sentinel__BatchSize: "${TAWNY_SENTINEL_BATCH_SIZE:-100}"
-      Tawny__Sentinel__MaxRetries: "${TAWNY_SENTINEL_MAX_RETRIES:-3}"
-      Tawny__Sentinel__RetryBaseDelayMilliseconds: "${TAWNY_SENTINEL_RETRY_BASE_DELAY_MS:-250}"
-      Tawny__Sentinel__TimeoutSeconds: "${TAWNY_SENTINEL_TIMEOUT_SECONDS:-15}"
-    ports:
-      - "${TAWNY_API_PORT:-5080}:5080"
-    volumes:
-      - ./secrets:/run/secrets:ro
+      TAWNY_DATABASE_URL: postgres://tawny:${POSTGRES_PASSWORD}@postgres:5432/tawny
+      TAWNY_HTTP_HOST: 0.0.0.0
+      TAWNY_HTTP_PORT: "8080"
+      TAWNY_APPLY_MIGRATIONS_ON_STARTUP: "true"
+      TAWNY_UI_DIR: /srv/tawny/ui
+      TAWNY_PUBLIC_URL: ${TAWNY_PUBLIC_URL:-https://localhost:8443}
+      TAWNY_BOOTSTRAP_ADMIN_EMAIL: ${TAWNY_BOOTSTRAP_ADMIN_EMAIL:-}
+      TAWNY_BOOTSTRAP_ADMIN_PASSWORD: ${TAWNY_BOOTSTRAP_ADMIN_PASSWORD:-}
+      TAWNY_INTEGRATION_ENCRYPTION_KEY: ${TAWNY_INTEGRATION_ENCRYPTION_KEY:?set TAWNY_INTEGRATION_ENCRYPTION_KEY}
+      TAWNY_AGENT_JWT_SIGNING_KEY_PEM: /run/secrets/tawny-jwt-key
+      TAWNY_AGENT_JWT_SEED: ${TAWNY_AGENT_JWT_SEED:?set TAWNY_AGENT_JWT_SEED}
+      TAWNY_GITHUB_CLIENT_ID: ${TAWNY_GITHUB_CLIENT_ID:-}
+      TAWNY_GITHUB_CLIENT_SECRET: ${TAWNY_GITHUB_CLIENT_SECRET:-}
+      TAWNY_SLACK_WEBHOOK_URL: ${TAWNY_SLACK_WEBHOOK_URL:-}
+      TAWNY_WAZUH_HOST: ${TAWNY_WAZUH_HOST:-}
+      TAWNY_WAZUH_PORT: ${TAWNY_WAZUH_PORT:-514}
+      TAWNY_WAZUH_PROTOCOL: ${TAWNY_WAZUH_PROTOCOL:-udp}
+      TAWNY_VIRUSTOTAL_API_KEY: ${TAWNY_VIRUSTOTAL_API_KEY:-}
+      TAWNY_ABUSEIPDB_API_KEY: ${TAWNY_ABUSEIPDB_API_KEY:-}
+      TAWNY_GREYNOISE_API_KEY: ${TAWNY_GREYNOISE_API_KEY:-}
+      TAWNY_BACKUP_S3_BUCKET: ${TAWNY_BACKUP_S3_BUCKET:-}
+      TAWNY_BACKUP_LOCAL_PATH: ${TAWNY_BACKUP_LOCAL_PATH:-off}
+      TAWNY_ALLOW_PRIVATE_EGRESS: ${TAWNY_ALLOW_PRIVATE_EGRESS:-}
+    secrets:
+      - source: tawny_jwt_key
+        target: tawny-jwt-key
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"
+    healthcheck:
+      test: ["CMD", "/tawny-server", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
 
-  web:
-    build:
-      context: ../web
-      dockerfile: Dockerfile
-    container_name: tawny-web
+  caddy:
+    image: caddy:2
     depends_on:
-      - api
+      tawny-server:
+        condition: service_healthy
     environment:
-      NODE_ENV: "production"
-      TAWNY_API_URL: "http://api:5080"
-      TAWNY_WEB_HMAC_SECRET: "${TAWNY_WEB_HMAC_SECRET:-dev-only-not-secret}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-dev-only-not-secret}"
-      BETTER_AUTH_URL: "${TAWNY_PUBLIC_WEB_URL:-http://localhost:${TAWNY_WEB_PORT:-3000}}"
-      DATABASE_URL: "sqlserver://db:1433;database=Tawny;user=sa;password=${MSSQL_SA_PASSWORD:-DevPassw0rd!};encrypt=false;trustServerCertificate=true"
-      NEXT_PUBLIC_TAWNY_AGENT_BACKEND_URL: "${TAWNY_PUBLIC_API_URL:-http://localhost:${TAWNY_API_PORT:-5080}}"
+      TAWNY_DOMAIN: ${TAWNY_DOMAIN:-localhost}
     ports:
-      - "${TAWNY_WEB_PORT:-3000}:3000"
+      - "${TAWNY_HTTP_PORT:-8080}:80"
+      - "${TAWNY_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
 
   agent:
     build:
       context: ..
       dockerfile: docker/agent/Dockerfile
-    container_name: tawny-agent-linux
     profiles:
       - agent
     depends_on:
-      - api
+      tawny-server:
+        condition: service_healthy
     environment:
-      TAWNY_CONFIG: "/etc/tawny/config.toml"
-      TAWNY_AGENT_BACKEND_URL: "http://api:5080"
-      TAWNY_AGENT_ENROLLMENT_TOKEN: "${TAWNY_AGENT_ENROLLMENT_TOKEN:-}"
-      TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS: "${TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS:-15}"
-      TAWNY_AGENT_PROCESS_INTERVAL_SECONDS: "${TAWNY_AGENT_PROCESS_INTERVAL_SECONDS:-15}"
-      TAWNY_AGENT_NETWORK_INTERVAL_SECONDS: "${TAWNY_AGENT_NETWORK_INTERVAL_SECONDS:-15}"
-      TAWNY_AGENT_USERS_INTERVAL_SECONDS: "${TAWNY_AGENT_USERS_INTERVAL_SECONDS:-60}"
-      TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS: "${TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS:-60}"
-      TAWNY_AGENT_FIM_INTERVAL_SECONDS: "${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-30}"
-      TAWNY_AGENT_FIM_PATHS: "${TAWNY_AGENT_FIM_PATHS:-/etc/hosts,/var/lib/tawny/watch.txt}"
+      TAWNY_CONFIG: /etc/tawny/config.toml
+      TAWNY_AGENT_BACKEND_URL: http://tawny-server:8080
+      TAWNY_AGENT_ALLOW_INSECURE_HTTP: "true"
+      TAWNY_AGENT_ENROLLMENT_TOKEN: ${TAWNY_AGENT_ENROLLMENT_TOKEN:-}
+      TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS: ${TAWNY_AGENT_HEARTBEAT_INTERVAL_SECONDS:-15}
+      TAWNY_AGENT_PROCESS_INTERVAL_SECONDS: ${TAWNY_AGENT_PROCESS_INTERVAL_SECONDS:-15}
+      TAWNY_AGENT_NETWORK_INTERVAL_SECONDS: ${TAWNY_AGENT_NETWORK_INTERVAL_SECONDS:-15}
+      TAWNY_AGENT_USERS_INTERVAL_SECONDS: ${TAWNY_AGENT_USERS_INTERVAL_SECONDS:-60}
+      TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS: ${TAWNY_AGENT_SYSTEM_INTERVAL_SECONDS:-60}
+      TAWNY_AGENT_FIM_INTERVAL_SECONDS: ${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-30}
+      TAWNY_AGENT_FIM_PATHS: ${TAWNY_AGENT_FIM_PATHS:-/etc/hosts,/var/lib/tawny/watch.txt}
     volumes:
       - agent-state:/etc/tawny
+      - agent-data:/var/lib/tawny
     restart: unless-stopped
 
+secrets:
+  tawny_jwt_key:
+    file: ./secrets/tawny-jwt-key
+
 volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:
   agent-state:
+  agent-data:

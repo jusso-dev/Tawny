@@ -1,0 +1,8 @@
+# Caddy terminates TLS. tawny-server speaks HTTP on the compose network only.
+# localhost uses Caddy's internal CA. For a public name, set TAWNY_DOMAIN and
+# delete the `tls internal` line so Caddy can use automatic HTTPS.
+{$TAWNY_DOMAIN:localhost} {
+	tls internal
+	encode gzip
+	reverse_proxy tawny-server:8080
+}

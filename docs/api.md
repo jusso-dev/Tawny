@@ -1,6 +1,6 @@
 # API
 
-Base URL: `http://localhost:5080` for local dev, configurable in production.
+Base URL: the Caddy origin (`https://localhost:8443` in the compose default). tawny-server speaks HTTP only behind that proxy.
 
 All request and response bodies are JSON. Timestamps are RFC 3339 in UTC.
 
@@ -8,25 +8,9 @@ All request and response bodies are JSON. Timestamps are RFC 3339 in UTC.
 
 Three schemes:
 
-- **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. RS256, short-lived (default 60m). Claims include `agent_id`, tenant, `jti`, and credential version `cv`. Revoked agents and stale `cv` values are rejected. Telemetry batches may include Ed25519 `signature` when a device public key was registered at enroll.
-- **Web user.** Internal hop from Next.js. Headers: `X-User-Id`, `X-User-Role`, `X-Tenant-Id`, `X-Timestamp`, `X-Nonce`, `X-Signature`. Canonical string (HMAC-SHA256 hex):
-
-  ```
-  v2
-  <METHOD>
-  <path>
-  <canonical-query>
-  <sha256-hex(body)>
-  <content-type>
-  <userId>
-  <role>
-  <tenantId>
-  <unix-timestamp>
-  <nonce>
-  ```
-
-  Timestamp skew > 30s, reused nonces, and body/query/header mutations are rejected.
-- **API token.** `Authorization: Bearer twny_...` on automation endpoints. Tokens inherit one tenant and an Admin or Viewer role.
+- **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. New tokens are Ed25519 (EdDSA). Tokens signed with the previous RSA key still verify until the next heartbeat rotates them. Lifetime is 60 minutes. Claims include `agent_id`, `tenant_id`, `cv`, `jti`, `iss`, `aud`, `exp`, and `iat`. Revoked agents and a stale `cv` are rejected. Telemetry batches may include an Ed25519 `signature` when a device public key was registered at enroll.
+- **Session.** HttpOnly, Secure, SameSite=Lax cookie `tawny_session`. Idle 8 hours, absolute 7 days. `GET /api/auth/session` returns the CSRF secret. State-changing session requests send `X-CSRF-Token`. There is no HMAC hop and no separate web process.
+- **API token.** `Authorization: Bearer twny_...` on automation endpoints. Tokens inherit one tenant and an Admin or Viewer role. They do not send the session cookie or the CSRF header.
 
 ## Agent endpoints
 
@@ -136,7 +120,12 @@ Auth: web user (Admin). Revokes.
 
 ### GET `/api/releases/latest?platform=windows-x64`
 
-Auth: public or agent JWT. Returns the current latest release for a platform.
+Auth: session cookie or `twny_` API token. Anonymous and agent JWT requests are
+401. Returns the current `is_latest` row for that platform
+(`version`, `platform`, `download_url`, `sha256`, `released_at`). Unknown
+platform is 404 `No release is published for that platform.` A missing
+`platform` query is 400 `platform is required.` Enrolled agents still receive
+`latest_agent_version`, `download_url`, and `sha256` on heartbeat.
 
 ### GET `/api/dashboard/summary`
 

@@ -66,12 +66,14 @@ jobs:
           path: agent/zig-out/bin/tawny-agent-*
           if-no-files-found: error
 
-  build-api-image:
-    name: publish api image
+  build-server-image:
+    name: publish tawny-server image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
@@ -83,42 +85,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: push
         with:
-          context: backend
-          file: backend/src/Tawny.Api/Dockerfile
+          context: .
+          file: docker/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           tags: |
-            ghcr.io/jusso-dev/tawny-api:${{ github.ref_name }}
-            ghcr.io/jusso-dev/tawny-api:latest
-
-  build-web-image:
-    name: publish web image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          persist-credentials: false
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: web
-          file: web/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/jusso-dev/tawny-web:${{ github.ref_name }}
-            ghcr.io/jusso-dev/tawny-web:latest
+            ghcr.io/jusso-dev/tawny-server:${{ github.ref_name }}
+            ghcr.io/jusso-dev/tawny-server:latest
+      - uses: sigstore/cosign-installer@v3
+      - name: sign image
+        run: cosign sign --yes "ghcr.io/jusso-dev/tawny-server@${{ steps.push.outputs.digest }}"
 
   release:
     name: publish release
-    needs: [build-agent, build-api-image, build-web-image]
+    needs: [build-agent, build-server-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
