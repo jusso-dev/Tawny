@@ -130,8 +130,23 @@ function Install-TawnyAgent {
     $backupPath = Join-Path $InstallDir "tawny-agent.previous.exe"
     $configDir = Split-Path -Parent $ConfigPath
     $candidatePath = Join-Path $InstallDir ".$([Guid]::NewGuid().ToString('N')).download"
-    $serviceIdentity = "NT SERVICE\$ServiceName"
+    # LocalSystem is required for ETW kernel sessions and Security event log
+    # access. Earlier installs used the NT SERVICE\<name> virtual account.
+    $serviceIdentity = "LocalSystem"
+    $legacyServiceIdentity = "NT SERVICE\$ServiceName"
     $installState = @{ ReplacedBinary = $false; InstalledBinary = $false }
+
+    function Remove-LegacyServiceAce([string]$Path) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return
+        }
+        # Best effort: the virtual account only resolves if a previous install
+        # registered the service; icacls failing here is not an error.
+        try {
+            & icacls.exe $Path /remove:g $legacyServiceIdentity /T /C 2>&1 | Out-Null
+        } catch {
+        }
+    }
 
     Invoke-Step "Creating protected install, config, and state directories" {
         New-Item -ItemType Directory -Force -Path $InstallDir, $configDir, $StateDir | Out-Null
@@ -141,6 +156,11 @@ function Install-TawnyAgent {
             "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" | Out-Null
         & icacls.exe $StateDir /inheritance:r /grant:r `
             "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" | Out-Null
+        # SYSTEM + Administrators only: strip grants left by the legacy
+        # virtual-account service identity on upgrade.
+        Remove-LegacyServiceAce $InstallDir
+        Remove-LegacyServiceAce $configDir
+        Remove-LegacyServiceAce $StateDir
     }
 
     try {
@@ -209,6 +229,8 @@ fim_paths = []
         } else {
             Write-Step "Preserving existing config $ConfigPath"
             if (-not $DryRun) {
+                & icacls.exe $ConfigPath /inheritance:r /grant:r `
+                    "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
                 $existingConfig = [IO.File]::ReadAllText($ConfigPath)
                 $legacySpill = ConvertTo-TomlString "$ConfigPath.spool"
                 $newSpill = ConvertTo-TomlString (Join-Path $StateDir "events.spool")
@@ -241,7 +263,7 @@ fim_paths = []
             $installState.InstalledBinary = $true
         }
 
-        Invoke-Step "Registering least-privilege Windows service $ServiceName" {
+        Invoke-Step "Registering Windows service $ServiceName as LocalSystem" {
             $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
             if ($existing) {
                 & sc.exe config $ServiceName binPath= "`"$binaryPath`"" start= delayed-auto obj= $serviceIdentity | Out-Null
@@ -255,7 +277,9 @@ fim_paths = []
             if ($LASTEXITCODE -ne 0) {
                 throw "Failed to configure Windows service $ServiceName."
             }
-            & sc.exe sidtype $ServiceName restricted | Out-Null
+            # A restricted SID would make SYSTEM writes also require an ACE for
+            # the service SID; LocalSystem relies on the SYSTEM-only ACLs above.
+            & sc.exe sidtype $ServiceName unrestricted | Out-Null
             & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
             & sc.exe failureflag $ServiceName 1 | Out-Null
             $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
@@ -267,10 +291,6 @@ fim_paths = []
                     "TAWNY_STATE_PATH=$(Join-Path $StateDir 'state.toml')"
                 ) `
                 -Force | Out-Null
-            & icacls.exe $InstallDir /grant "${serviceIdentity}:(OI)(CI)(RX)" | Out-Null
-            & icacls.exe $configDir /grant "${serviceIdentity}:(OI)(CI)(RX)" | Out-Null
-            & icacls.exe $ConfigPath /grant "${serviceIdentity}:(R)" | Out-Null
-            & icacls.exe $StateDir /grant "${serviceIdentity}:(OI)(CI)(M)" | Out-Null
             Start-Service -Name $ServiceName
             (Get-Service -Name $ServiceName).WaitForStatus(
                 [System.ServiceProcess.ServiceControllerStatus]::Running,

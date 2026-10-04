@@ -45,6 +45,11 @@ identity state is stored separately at `/var/lib/tawny/state.toml`; `/etc/tawny`
 remains read-only to agent. Existing configuration survives upgrades. Previous binary remains at
 `/usr/local/tawny/tawny-agent.previous`.
 
+Because `/etc/tawny` is read-only to the agent, it cannot delete the spent
+`enrollment_token` itself; after enrollment it never resends the token and logs
+a warning on each start until an operator removes the line:
+`sudo sed -i '/^[[:space:]]*enrollment_token[[:space:]]*=/d' /etc/tawny/config.toml`.
+
 Before broad rollout, validate on each AMI family:
 
 ```bash
@@ -78,19 +83,47 @@ Install-TawnyAgent `
   -EnrollmentToken $env:TAWNY_ENROLLMENT_TOKEN
 ```
 
-Service uses restricted virtual service account `NT SERVICE\TawnyAgent`, delayed
-automatic start, service-SID isolation, bounded restart policy, protected config,
-and separate writable state directory. Validate:
+Service runs as `LocalSystem` (required for ETW kernel trace sessions and
+Security event log access), with delayed automatic start, an unrestricted
+service SID, a bounded restart policy (`restart/5s`, `restart/15s`,
+`restart/60s`, reset after 24h, `failureflag 1` so a non-zero service exit also
+triggers restart), and the `TAWNY_CONFIG`/`TAWNY_STATE_PATH` service
+environment. The binary registers with the Service Control Manager via
+`StartServiceCtrlDispatcherW`, reports `SERVICE_RUNNING`, and exits cleanly on
+stop, shutdown, and pre-shutdown controls. Run interactively (not via the SCM)
+it falls back to console mode.
+
+Because LocalSystem is fully privileged, filesystem hardening carries the
+isolation:
+
+- `%ProgramFiles%\Tawny`, `%ProgramData%\Tawny` (config) and the state
+  directory have inheritance removed and grant Full Control only to `SYSTEM`
+  and `Administrators`. No other principal can write, and config/state
+  (enrollment token, agent JWT, device key, spool) are readable only by those
+  two principals.
+- Upgrades from the earlier `NT SERVICE\TawnyAgent` virtual-account install
+  switch the service to LocalSystem, set the SID type to `unrestricted`, and
+  strip the legacy virtual-account ACEs from the install, config, and state
+  trees.
+- After successful enrollment the agent atomically rewrites `config.toml`
+  (temp file + rename, inheriting the protected directory ACL) to delete the
+  spent `enrollment_token` line. If the rewrite fails, the agent logs a warning;
+  remove the line manually.
+
+Validate:
 
 ```powershell
 Get-Service TawnyAgent
-sc.exe qc TawnyAgent
-sc.exe qsidtype TawnyAgent
-Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-15)}
+sc.exe qc TawnyAgent            # SERVICE_START_NAME : LocalSystem
+sc.exe qsidtype TawnyAgent      # SERVICE_SID_TYPE: UNRESTRICTED
+sc.exe qfailure TawnyAgent
+icacls "$env:ProgramData\Tawny"  # only NT AUTHORITY\SYSTEM and BUILTIN\Administrators
+Select-String -Path "$env:ProgramData\Tawny\config.toml" -Pattern enrollment_token  # no match after enrollment
+Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; StartTime=(Get-Date).AddMinutes(-15)}
 ```
 
-Confirm EDR policy does not quarantine approved binary and that service account
-can read each intended FIM path. Add narrow ACL entries per path when needed.
+Confirm EDR policy does not quarantine approved binary. LocalSystem can read
+all local FIM paths, so no per-path ACL grants are needed.
 
 ## macOS
 

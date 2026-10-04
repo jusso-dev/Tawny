@@ -17,7 +17,12 @@ fim_interval="${TAWNY_AGENT_FIM_INTERVAL_SECONDS:-30}"
 mkdir -p "$(dirname "$config_path")" /var/lib/tawny
 touch /var/lib/tawny/watch.txt
 
-if ! grep -q '^agent_jwt = ' "$config_path" 2>/dev/null; then
+# Enrollment credentials live in the state file (legacy configs stored them
+# inline). Once enrolled, leave config.toml alone: the agent scrubs the spent
+# enrollment_token from it and must not have it re-added on restart.
+state_path="${TAWNY_STATE_PATH:-/var/lib/tawny/state.toml}"
+if ! grep -q '^agent_jwt = ' "$state_path" 2>/dev/null \
+  && ! grep -q '^agent_jwt = ' "$config_path" 2>/dev/null; then
   if [ -z "$enrollment_token" ]; then
     echo "TAWNY_AGENT_ENROLLMENT_TOKEN is required for first container start." >&2
     echo "Create one in Tawny Enrollment, set it in docker/.env, then restart tawny-agent-linux." >&2
