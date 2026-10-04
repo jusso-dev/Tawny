@@ -979,13 +979,14 @@ level: high
             bearer=viewer,
         )
         self.assertEqual(denied, 403, denied_raw[:500])
+        idem_key = uniq("iso")
         created, action, created_raw = call(
             "POST",
             f"/api/agents/{agent['agent_id']}/actions",
             {
                 "action_type": "isolate_host",
                 "payload": {"reason": "synthetic test"},
-                "idempotency_key": uniq("iso"),
+                "idempotency_key": idem_key,
             },
             auth="api",
             bearer=admin,
@@ -994,6 +995,22 @@ level: high
         assert isinstance(action, dict)
         self.assertIn("id", action)
         self.assertEqual(action.get("action_type"), "isolate_host")
+        replayed, replay, replay_raw = call(
+            "POST",
+            f"/api/agents/{agent['agent_id']}/actions",
+            {
+                "action_type": "isolate_host",
+                "payload": {"reason": "synthetic test"},
+                "idempotency_key": idem_key,
+            },
+            auth="api",
+            bearer=admin,
+        )
+        self.assertEqual(replayed, 200, replay_raw[:800])
+        assert isinstance(replay, dict)
+        self.assertEqual(replay.get("id"), action["id"])
+        self.assertEqual(replay.get("status"), "pending")
+        self.assertEqual(replay.get("action_type"), "isolate_host")
         listed, actions, list_raw = call(
             "GET",
             f"/api/agents/{agent['agent_id']}/actions",
