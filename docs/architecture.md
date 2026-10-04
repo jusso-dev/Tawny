@@ -6,7 +6,7 @@
 
 A single static binary (~hundreds of KB) per platform. Cross-compiled from one machine via `zig build -Dtarget=...`. The agent has three responsibilities:
 
-1. **Enroll** once on first run by exchanging an enrollment token for an agent ID and a long-lived JWT.
+1. **Enroll** once on first run by exchanging an enrollment token for an agent ID and a short-lived JWT (60 minutes by default) that is rotated on heartbeat.
 2. **Collect** snapshots at fixed intervals from a small set of OS sources (processes, network connections, DNS and host mappings, logged-in users, system info, file integrity).
 3. **Ship** batches over HTTPS, buffering locally when the backend is unreachable.
 
@@ -23,7 +23,7 @@ ASP.NET Core Web API split into four projects:
 
 Two auth schemes coexist:
 
-- `AgentJwt` — RS256 bearer tokens issued at enrollment, validated by a custom authentication handler. Rotated on heartbeat once they enter the last week of their lifetime.
+- `AgentJwt` — RS256 bearer tokens issued at enrollment, validated by a custom authentication handler. Rotated on heartbeat as they near expiry. Revocation and credential version are checked on every agent request.
 - `WebUser` — Better Auth runs in Next.js and sets a session cookie. Server-side calls from Next.js to the API use HMAC request signing **v2** (method, path, query, body digest, content-type, user, role, tenant, timestamp, single-use nonce). A `WebUserAuthHandler` validates the signature in constant time. Longer-term preference remains service JWT or mTLS.
 
 ### Next.js 16 dashboard
@@ -72,7 +72,7 @@ Hangfire is configured with SQL Server storage in the same database. The dashboa
 | Job | Schedule | Purpose |
 | --- | --- | --- |
 | `MarkStaleAgentsJob` | Every minute | Flip agents to `stale` after 3 min and `offline` after 15 min without a heartbeat. |
-| `PurgeOldEventsJob` | Daily 02:00 | Delete telemetry older than the retention window (default 30 days). |
+| `PurgeOldEventsJob` | Daily 02:00 | Delete alerts older than `AlertRetentionDays` (default 365), then telemetry older than `EventRetentionDays` (default 30) that no surviving alert references. |
 | `BackupTelemetryJob` | Daily 03:00 | Gzip the last 24h of events to a configured path or S3 bucket. |
 | `CheckAgentReleasesJob` | Hourly | Poll GitHub releases; insert a new `AgentReleases` row when a newer version exists. |
 

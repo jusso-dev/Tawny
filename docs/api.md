@@ -76,7 +76,7 @@ Response `200`:
 }
 ```
 
-If the JWT has fewer than 7 days left, the response also includes `rotated_jwt` and `jwt_expires_at` and the agent should persist them.
+If the JWT is close to expiry (within the rotation window, 15 minutes by default), the response also includes `rotated_jwt` and `jwt_expires_at` and the agent should persist them.
 
 ### POST `/api/agents/events`
 

@@ -235,7 +235,7 @@ docker compose -p tawny --env-file .env --profile agent logs -f agent
 
 The container runs the same Zig agent binary used on hosts. Its first start consumes `TAWNY_AGENT_ENROLLMENT_TOKEN`, writes a persistent config into the `agent-state` volume, and then heartbeats and posts Linux process, network, system, session, and FIM telemetry through the normal agent APIs.
 
-Agent detail event tabs poll for fresh telemetry every two seconds by default. Use Pause to freeze the table while inspecting payloads. SSE streaming is intentionally deferred to v0.2; the current polling route is marked with `X-Tawny-Event-Feed: polling`.
+Agent detail event tabs load the latest telemetry, then stream new events live over Server-Sent Events (proxied and signed by the web server at `/api/agents/[id]/events/stream`). Use Pause to freeze the table while inspecting payloads.
 
 EF migrations live in `backend/src/Tawny.Infrastructure/Migrations`. Automatic migration application is opt-in with `Tawny__ApplyMigrationsOnStartup=true` or `TAWNY_APPLY_MIGRATIONS_ON_STARTUP=true` in `docker/.env`. For production, leave that flag off and run:
 
@@ -256,7 +256,6 @@ Zig produces small, static binaries and cross-compiles to Windows, macOS, and Li
 
 This is still a portfolio MVP. These areas are intentionally limited or deferred:
 
-- Real-time streaming (polling for now; SSE in v0.2)
 - Kernel-level collection (ETW, EndpointSecurity)
 - Code signing and notarisation (ship SHA256 in releases, sign later)
 - Enterprise OIDC SSO and SCIM provisioning
@@ -401,8 +400,10 @@ Requests use JSON and an optional bearer token. Raw telemetry is off by default 
 - Integration credentials are encrypted with `TAWNY_INTEGRATION_ENCRYPTION_KEY`.
   Back up this key with the database; rotating or losing it makes stored
   integration secrets unreadable.
-- Linux uses a locked `tawny` service account and Windows uses a restricted
-  virtual service account. macOS currently runs the launch daemon as root.
+- Linux uses a locked `tawny` service account. Windows runs the service as
+  `LocalSystem` (required for ETW kernel sessions and the Security event log)
+  with install folders restricted to SYSTEM and Administrators. macOS currently
+  runs the launch daemon as root.
   Protected process and file data may require narrowly scoped ACLs.
 - Response actions are queued through the API and dispatched on heartbeat.
   `kill_process` requires a positive `pid`; host isolation remains unsupported.

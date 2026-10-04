@@ -10,7 +10,7 @@ Tawny is for technical operators, security-minded engineers, homelab builders, a
 
 ## Product Purpose
 
-Tawny is a self-hosted, lightweight EDR system. A compact Windows and macOS agent enrolls with a .NET API, ships telemetry, and presents endpoint state in a Next.js dashboard. The product succeeds when a user can bootstrap the stack, enroll an endpoint or synthetic test agent, confirm telemetry is flowing, and inspect event details without friction.
+Tawny is a self-hosted, lightweight EDR system. A compact Windows, macOS, and Linux agent enrolls with a .NET API, ships telemetry, and presents endpoint state in a Next.js dashboard. The product succeeds when a user can bootstrap the stack, enroll an endpoint or synthetic test agent, confirm telemetry is flowing, and inspect event details without friction.
 
 ## Brand Personality
 

@@ -11,8 +11,11 @@ Production (and any process with `Tawny:Security:EnforceSecureDefaults=true`) **
 | `ConnectionStrings:Default` | Present |
 | `Tawny:Security:PublicApiUrl` | `https://…` public agent/API URL |
 | `Tawny:Security:PublicWebUrl` | `https://…` dashboard URL |
+| `Tawny:IntegrationEncryptionKey` / `TAWNY_INTEGRATION_ENCRYPTION_KEY` | ≥ 32 random characters, not the `dev-only…` default |
 
 Escape hatch (dangerous): `Tawny:Security:AllowInsecurePublicHttp=true` permits non-HTTPS public URLs. Prefer fixing TLS instead.
+
+Dashboard accounts are not self-service: email/password and GitHub sign-up are disabled. The first admin comes from `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD`; users created any other way default to `Viewer`. Deployments that ran an earlier build with open sign-up should review the `user` table for unexpected `Admin` accounts.
 
 Generate secrets offline; never commit them. Rotate HMAC secret and agent signing key after compromise; revoke all agents after signing-key rotation if needed.
 
@@ -146,7 +149,7 @@ Agents may send optional `batch_id` and per-event `sequence`. Server:
 
 `POST /api/agents/events` is rate limited with a per-agent token bucket. The API returns `429` and a JSON error body when an agent exceeds the ingest budget.
 
-State-changing endpoints write to `AuditLog`, including enrollment token creation/revocation, agent enrollment, heartbeat updates, and telemetry ingest batches. Ship this table to your operational log store if database access is tightly restricted.
+State-changing endpoints write to `AuditLog`, including enrollment token creation/revocation, agent enrollment, credential issue/rotation/revocation, agent auth failures, agent status or version changes, telemetry integrity anomalies, and response actions. Routine heartbeats and ingest batches are not audited. Ship this table to your operational log store if database access is tightly restricted.
 
 ## Wazuh SIEM sink
 
@@ -292,7 +295,7 @@ Only new alerts generated after Slack is enabled are posted. Tawny records Slack
 
 ## Threat intelligence (default feeds)
 
-Tawny seeds Kelpie-parity public starter feeds for every tenant on API startup
+Tawny seeds public starter feeds for every tenant on API startup
 and before each Hangfire TI poll (idempotent by URL). Feodo Tracker and
 OpenPhish are **enabled** by default; PhishTank, Emerging Threats, and
 blocklist.de ship disabled. Imported indicators become IoC alert rules and
@@ -302,29 +305,6 @@ Operators can disable feeds, change intervals, or add OTX/MISP/TAXII/CSV feeds
 from the **Threat Intel** dashboard. No environment variable is required for
 the default seed. See the README “Threat intelligence feeds” section for the
 full source table.
-
-## Kelpie case sink
-
-Kelpie delivery is disabled by default. Configure a Kelpie API token with
-`cases:write` and the base URL visible from the Tawny API container:
-
-```bash
-Tawny__Kelpie__Enabled=true
-Tawny__Kelpie__BaseUrl=https://kelpie.example.com
-Tawny__Kelpie__ApiToken=...
-Tawny__Kelpie__IncludeTelemetryPayload=true
-Tawny__Kelpie__MaxSummaryCharacters=24000
-Tawny__Kelpie__TimeoutSeconds=10
-```
-
-Docker deployments use matching `TAWNY_KELPIE_*` environment variables. Each
-new alert creates one case with endpoint facts, rule identifiers, timestamps,
-matched telemetry, optional enrichment, and a `tawny-alert-<id>` tag. Tawny
-stores returned case ID/number and delivery status on the alert row.
-
-Telemetry can contain sensitive paths, commands, usernames, IPs, and domains.
-Set `IncludeTelemetryPayload=false` when Kelpie is outside the same trust
-boundary.
 
 ## Microsoft Sentinel / Azure Monitor sink
 

@@ -9,7 +9,7 @@ Honest threat model for Tawny as a self-hosted EDR. Not a substitute for a forma
 - **Enrollment tokens.** One-shot credentials that register a new agent into a tenant.
 - **Web→API HMAC secret.** Shared secret between Next.js and the .NET API; possession forges dashboard identity claims.
 - **Dashboard user credentials.** Email/password and OAuth identities (Better Auth).
-- **Integration secrets.** UniFi, cloud, Slack, Kelpie, Sentinel, TI feeds.
+- **Integration secrets.** Slack, Sentinel, Tawny-SOC, reputation providers, TI feed auth headers (AES-GCM at rest).
 - **Response-action authority.** Ability to kill processes / future isolate on enrolled endpoints.
 - **SQL Server.** Holds tenants, agents, telemetry, Hangfire state, audit log.
 
@@ -27,7 +27,7 @@ Honest threat model for Tawny as a self-hosted EDR. Not a substitute for a forma
 | --- | --- | --- |
 | Enrollment token theft | Single-use, hashed at rest, short TTL | Bind to expected host / CIDR |
 | Agent JWT theft from disk | Short-lived JWT (minutes), `jti`, `cv` credential version, admin revoke bumps version | Platform keystores (DPAPI/Keychain/TPM), device-bound keys |
-| Stolen JWT after revoke | Heartbeat rejects revoked agents and credential-version mismatch | Global denylist of `jti` |
+| Stolen JWT after revoke | Every agent endpoint (JWT validation hook) rejects revoked agents and credential-version mismatch, and audits the rejection | Global denylist of `jti` |
 | Replay of signed web→API request | Timestamp window + single-use nonce; body/query bound into signature | mTLS or short-lived service JWT |
 | Body/query swap on captured signature | Canonical v2 includes body digest and sorted query | — |
 | Weak HMAC secret | Startup validation fails production on short/missing secret | Secret rotation runbook |
