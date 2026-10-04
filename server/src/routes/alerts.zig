@@ -760,7 +760,9 @@ pub fn listAlerts(
     const lim = try std.fmt.allocPrint(allocator, "{d}", .{limit});
     defer allocator.free(lim);
     const after_id = util.queryParam(target, "after_id");
-    const since = util.queryParam(target, "since");
+    const since_raw = util.queryParam(target, "since");
+    const since: ?[]u8 = if (since_raw) |raw| try util.percentDecode(allocator, raw) else null;
+    defer if (since) |s| allocator.free(s);
 
     const rows = if (after_id != null or since != null) blk: {
         if (after_id) |aid| {
