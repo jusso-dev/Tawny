@@ -54,11 +54,7 @@ public class TelemetryController(
             return NotFound();
         }
 
-        if (agent.RevokedAt is not null || agent.Status == AgentStatus.Revoked)
-        {
-            return Unauthorized();
-        }
-
+        // Revocation and credential version are enforced by AgentCredentialValidator.
         var validation = await validator.ValidateAsync(req, ct);
         if (!validation.IsValid)
         {

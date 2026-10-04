@@ -254,6 +254,12 @@ builder.Services
                 ValidateIssuerSigningKey = true,
                 ClockSkew = TimeSpan.FromSeconds(30),
             };
+            options.Events = new JwtBearerEvents
+            {
+                // Signature and lifetime alone are not enough: a revoked agent, or a token
+                // issued before a credential-version bump, must be refused on every endpoint.
+                OnTokenValidated = AgentCredentialValidator.ValidateAsync,
+            };
         });
 
 builder.Services.AddAuthorization();

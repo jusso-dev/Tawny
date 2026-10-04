@@ -142,28 +142,7 @@ public class AgentsController(
             return NotFound();
         }
 
-        if (agent.RevokedAt is not null || agent.Status == AgentStatus.Revoked)
-        {
-            audit.Add((Guid?)null, tenantId, "agent.auth_failed", agent.Id.ToString(), new
-            {
-                reason = "revoked",
-            });
-            await db.SaveChangesAsync(ct);
-            return Unauthorized();
-        }
-
-        if (!TryGetCredentialVersion(out var tokenCv) || tokenCv != agent.CredentialVersion)
-        {
-            audit.Add((Guid?)null, tenantId, "agent.auth_failed", agent.Id.ToString(), new
-            {
-                reason = "credential_version_mismatch",
-                token_cv = tokenCv,
-                agent_cv = agent.CredentialVersion,
-            });
-            await db.SaveChangesAsync(ct);
-            return Unauthorized();
-        }
-
+        // Revocation and credential version are enforced by AgentCredentialValidator.
         var previousStatus = agent.Status;
         agent.LastHeartbeatAt = DateTimeOffset.UtcNow;
         agent.Status = AgentStatus.Online;
@@ -332,12 +311,6 @@ public class AgentsController(
     {
         var claim = User.FindFirst("agent_id")?.Value;
         return Guid.TryParse(claim, out id);
-    }
-
-    private bool TryGetCredentialVersion(out int version)
-    {
-        var claim = User.FindFirst(AgentJwtService.CredentialVersionClaim)?.Value;
-        return int.TryParse(claim, out version);
     }
 
     private static AgentPlatform ParseOs(string os) => os.ToLowerInvariant() switch
