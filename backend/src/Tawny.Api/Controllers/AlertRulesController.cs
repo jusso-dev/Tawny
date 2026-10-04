@@ -200,17 +200,30 @@ public class AlertRulesController(
             return NotFound();
         }
 
+        if (rule.Format != AlertRuleFormat.TawnyPredicate)
+        {
+            // Imported rules (Sigma, IoC, sequence, YARA, exposure) carry their logic in
+            // SourceDefinition/CompiledExpressionJson. Overwriting the predicate fields here
+            // would silently replace that logic, so only metadata may change.
+            if (rule.EventType != req.EventType
+                || rule.Operator != req.Operator
+                || rule.PayloadPath != Normalize(req.PayloadPath)
+                || rule.MatchValue != Normalize(req.MatchValue))
+            {
+                return Problem(statusCode: 409,
+                    title: $"{rule.Format} rules cannot have their match logic edited. Re-import the rule to change it.");
+            }
+        }
+        else
+        {
+            rule.EventType = req.EventType;
+            rule.Operator = req.Operator;
+            rule.PayloadPath = Normalize(req.PayloadPath);
+            rule.MatchValue = Normalize(req.MatchValue);
+        }
+
         rule.Name = req.Name.Trim();
-        rule.Format = AlertRuleFormat.TawnyPredicate;
-        rule.ExternalId = null;
-        rule.Description = null;
-        rule.EventType = req.EventType;
         rule.Severity = req.Severity;
-        rule.Operator = req.Operator;
-        rule.PayloadPath = Normalize(req.PayloadPath);
-        rule.MatchValue = Normalize(req.MatchValue);
-        rule.SourceDefinition = null;
-        rule.CompiledExpressionJson = null;
         rule.IsEnabled = req.IsEnabled;
         rule.MitreTechniquesJson = SerializeTechniques(req.MitreTechniques);
         rule.UpdatedAt = DateTimeOffset.UtcNow;
