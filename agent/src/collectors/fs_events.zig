@@ -282,11 +282,17 @@ test "macOS FSEvents reports create, modify, rename and delete" {
         f.close(io);
     }
     iox.sleep(1500 * std.time.ns_per_ms); // separate latency windows so flags do not coalesce
+    {
+        var f = try tmp.dir.openFile(io, "a.txt", .{ .mode = .read_write });
+        try f.writePositionalAll(io, " world", 5);
+        f.close(io);
+    }
+    iox.sleep(1500 * std.time.ns_per_ms);
     try tmp.dir.rename("a.txt", tmp.dir, "b.txt", io);
     iox.sleep(1500 * std.time.ns_per_ms);
     try tmp.dir.deleteFile(io, "b.txt");
 
-    var seen = std.StringHashMap(void).init(alloc);
+    var seen = std.StringHashMap(usize).init(alloc);
     defer seen.deinit();
     var all: std.array_list.Managed(u8) = .init(alloc);
     defer all.deinit();
@@ -307,13 +313,22 @@ test "macOS FSEvents reports create, modify, rename and delete" {
             const path = o.get("path").?.string;
             try std.testing.expect(std.mem.startsWith(u8, path, abs));
             try std.testing.expectEqualStrings(abs, o.get("watch").?.string);
+            // The freshly made root directory itself may report created; count files only.
+            if (std.mem.eql(u8, path, abs)) continue;
             const action = o.get("action").?.string;
-            const key = if (std.mem.eql(u8, action, "create")) "create" else if (std.mem.eql(u8, action, "moved_from")) "moved_from" else if (std.mem.eql(u8, action, "moved_to")) "moved_to" else if (std.mem.eql(u8, action, "delete")) "delete" else "other";
-            try seen.put(key, {});
+            const keys = [_][]const u8{ "create", "modify", "moved_from", "moved_to", "delete" };
+            var key: []const u8 = "other";
+            for (keys) |k| if (std.mem.eql(u8, action, k)) {
+                key = k;
+            };
+            const gop = try seen.getOrPut(key);
+            gop.value_ptr.* = if (gop.found_existing) gop.value_ptr.* + 1 else 1;
         }
     }
     errdefer std.debug.print("fs events seen:\n{s}\n", .{all.items});
-    try std.testing.expect(seen.contains("create"));
+    // The sticky created bit on the later write must not yield a second create.
+    try std.testing.expectEqual(@as(?usize, 1), seen.get("create"));
+    try std.testing.expect(seen.contains("modify"));
     try std.testing.expect(seen.contains("moved_from"));
     try std.testing.expect(seen.contains("moved_to"));
     try std.testing.expect(seen.contains("delete"));

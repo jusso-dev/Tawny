@@ -9,9 +9,11 @@
 //!
 //! Differences from Linux inotify (documented in fs_events.zig as well):
 //! - FSEvents is recursive: a watched directory reports its whole subtree.
-//! - Flags are coalesced per path within the latency window, so one event can
-//!   be e.g. created+modified. `action` is the best single label; `flags`
-//!   carries every flag FSEvents reported.
+//! - Flags are coalesced per path and stay set on later events for the same
+//!   path (a modify of a fresh file arrives as created+modified). `action` is
+//!   the best single label, using a bounded set of paths already reported as
+//!   existing to treat stale created/renamed bits as history; `flags` carries
+//!   every flag FSEvents reported.
 //! - Renames arrive as unpaired per-path events. We label the side that no
 //!   longer exists `moved_from` and the side that exists `moved_to`; there
 //!   is no cookie to pair them.
@@ -150,18 +152,43 @@ pub fn writeFlagNames(w: *std.Io.Writer, flags: u32) !void {
     }
 }
 
-/// Map coalesced FSEvents flags plus "does the path exist now" to the
-/// action vocabulary Linux inotify events use.
-pub fn classify(flags: u32, present: bool) []const u8 {
+const attrib_flags = Flag.inode_meta_mod | Flag.change_owner | Flag.xattr_mod | Flag.finder_info_mod;
+
+/// Map coalesced FSEvents flags to the action vocabulary Linux inotify uses.
+/// `present`: the path exists now. `known`: we already reported it as
+/// existing (create/moved_to/modify/attrib) and have not seen it go away.
+/// FSEvents keeps Created/Renamed set on later events for the same path, so
+/// for a known path those flags are history and Modified/attrib decide.
+pub fn classify(flags: u32, present: bool, known: bool) []const u8 {
     if ((flags & (Flag.must_scan_subdirs | Flag.user_dropped | Flag.kernel_dropped)) != 0) return "overflow";
-    if ((flags & Flag.removed) != 0 and !present) return "delete";
-    if ((flags & Flag.renamed) != 0) return if (present) "moved_to" else "moved_from";
-    if ((flags & Flag.created) != 0 and present) return "create";
-    if ((flags & Flag.modified) != 0) return "modify";
-    if ((flags & (Flag.inode_meta_mod | Flag.change_owner | Flag.xattr_mod | Flag.finder_info_mod)) != 0) return "attrib";
-    if ((flags & Flag.removed) != 0) return "delete";
+    if (!present) {
+        if ((flags & Flag.removed) != 0) return "delete";
+        if ((flags & Flag.renamed) != 0) return "moved_from";
+        if ((flags & Flag.created) != 0) return "delete"; // created and gone within one window
+        if ((flags & Flag.modified) != 0) return "modify";
+        if ((flags & attrib_flags) != 0) return "attrib";
+        return "other";
+    }
+    if (known) {
+        if ((flags & Flag.removed) != 0 and (flags & Flag.created) != 0) return "create"; // replaced
+        if ((flags & Flag.modified) != 0) return "modify";
+        if ((flags & attrib_flags) != 0) return "attrib";
+        if ((flags & Flag.renamed) != 0) return "moved_to";
+        if ((flags & Flag.created) != 0) return "create";
+        return "other";
+    }
+    if ((flags & Flag.renamed) != 0) return "moved_to";
     if ((flags & Flag.created) != 0) return "create";
+    if ((flags & Flag.modified) != 0) return "modify";
+    if ((flags & attrib_flags) != 0) return "attrib";
     return "other";
+}
+
+/// Whether an action leaves the path in the "known to exist" set.
+fn marksKnown(action: []const u8) ?bool {
+    if (std.mem.eql(u8, action, "delete") or std.mem.eql(u8, action, "moved_from")) return false;
+    if (std.mem.eql(u8, action, "overflow") or std.mem.eql(u8, action, "other")) return null;
+    return true;
 }
 
 pub const Root = struct {
@@ -200,6 +227,27 @@ const Shared = struct {
     head: usize = 0,
     len: usize = 0,
     dropped: u64 = 0,
+    /// Path hashes we reported as existing. Touched only by the FSEvents
+    /// callback (one serial queue), so it needs no lock. Bounded: cleared at
+    /// `max_known_paths`, which at worst re-labels one sticky flag.
+    known: std.AutoHashMap(u64, void),
+
+    const max_known_paths: usize = 16384;
+
+    fn isKnown(self: *Shared, path: []const u8) bool {
+        return self.known.contains(std.hash.Wyhash.hash(0, path));
+    }
+
+    fn update(self: *Shared, path: []const u8, action: []const u8) void {
+        const key = std.hash.Wyhash.hash(0, path);
+        const mark = marksKnown(action) orelse return;
+        if (!mark) {
+            _ = self.known.remove(key);
+            return;
+        }
+        if (self.known.count() >= max_known_paths) self.known.clearRetainingCapacity();
+        self.known.put(key, {}) catch {};
+    }
 
     fn push(self: *Shared, ev: Event) bool {
         std.c.os_unfair_lock_lock(&self.lock);
@@ -265,7 +313,8 @@ pub const Stream = struct {
 
         const shared = try alloc.create(Shared);
         errdefer alloc.destroy(shared);
-        shared.* = .{ .roots = roots };
+        shared.* = .{ .roots = roots, .known = std.AutoHashMap(u64, void).init(std.heap.c_allocator) };
+        errdefer shared.known.deinit();
 
         const self = try alloc.create(Stream);
         errdefer alloc.destroy(self);
@@ -308,6 +357,7 @@ pub const Stream = struct {
         const alloc = self.allocator;
         for (self.roots) |r| freeRoot(alloc, r);
         alloc.free(self.roots);
+        self.shared.known.deinit();
         alloc.destroy(self.shared);
         alloc.destroy(self);
     }
@@ -394,28 +444,36 @@ fn onEvents(
             shared.countDrop();
             continue;
         };
+        const action = classify(flags, exists(paths[i]), shared.isKnown(path));
+        shared.update(path, action);
         const ev = Event{
             .path = owned,
             .root_index = @intCast(idx),
             .flags = flags,
-            .action = classify(flags, exists(paths[i])),
+            .action = action,
         };
         if (!shared.push(ev)) c_alloc.free(owned);
     }
 }
 
 test "flag classification matches inotify vocabulary" {
-    try std.testing.expectEqualStrings("create", classify(Flag.created, true));
-    try std.testing.expectEqualStrings("delete", classify(Flag.created | Flag.removed, false));
-    try std.testing.expectEqualStrings("delete", classify(Flag.removed, false));
-    try std.testing.expectEqualStrings("moved_from", classify(Flag.renamed, false));
-    try std.testing.expectEqualStrings("moved_to", classify(Flag.renamed, true));
-    try std.testing.expectEqualStrings("modify", classify(Flag.modified, true));
-    try std.testing.expectEqualStrings("attrib", classify(Flag.change_owner, true));
-    try std.testing.expectEqualStrings("attrib", classify(Flag.xattr_mod | Flag.inode_meta_mod, true));
-    try std.testing.expectEqualStrings("overflow", classify(Flag.kernel_dropped, false));
-    try std.testing.expectEqualStrings("overflow", classify(Flag.must_scan_subdirs | Flag.modified, true));
-    try std.testing.expectEqualStrings("other", classify(0, true));
+    try std.testing.expectEqualStrings("create", classify(Flag.created, true, false));
+    try std.testing.expectEqualStrings("delete", classify(Flag.created | Flag.removed, false, false));
+    try std.testing.expectEqualStrings("delete", classify(Flag.removed, false, true));
+    try std.testing.expectEqualStrings("moved_from", classify(Flag.renamed, false, true));
+    try std.testing.expectEqualStrings("moved_to", classify(Flag.renamed, true, false));
+    try std.testing.expectEqualStrings("modify", classify(Flag.modified, true, false));
+    try std.testing.expectEqualStrings("attrib", classify(Flag.change_owner, true, false));
+    try std.testing.expectEqualStrings("attrib", classify(Flag.xattr_mod | Flag.inode_meta_mod, true, false));
+    try std.testing.expectEqualStrings("overflow", classify(Flag.kernel_dropped, false, false));
+    try std.testing.expectEqualStrings("overflow", classify(Flag.must_scan_subdirs | Flag.modified, true, true));
+    try std.testing.expectEqualStrings("other", classify(0, true, false));
+    // Sticky history flags on a path we already reported.
+    try std.testing.expectEqualStrings("modify", classify(Flag.created | Flag.modified, true, true));
+    try std.testing.expectEqualStrings("modify", classify(Flag.renamed | Flag.modified, true, true));
+    try std.testing.expectEqualStrings("attrib", classify(Flag.created | Flag.change_owner, true, true));
+    try std.testing.expectEqualStrings("create", classify(Flag.created | Flag.removed, true, true));
+    try std.testing.expectEqualStrings("delete", classify(Flag.created | Flag.renamed | Flag.removed, false, true));
 
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
