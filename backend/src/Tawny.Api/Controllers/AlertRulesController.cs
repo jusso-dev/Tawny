@@ -185,7 +185,7 @@ public class AlertRulesController(
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<ActionResult<AlertRuleResponse>> Update(Guid id, UpdateAlertRuleRequest req, CancellationToken ct)
     {
         var validation = ValidateRule(req.Name, req.Operator, req.PayloadPath, req.MatchValue);
@@ -243,7 +243,7 @@ public class AlertRulesController(
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser, Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = TawnyAuthSchemes.WebUser + "," + TawnyAuthSchemes.ApiToken, Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tenantId = User.GetTenantId();

@@ -212,7 +212,7 @@ Single alert, same shape as the list. Web user or `twny_` API token.
 
 ### GET `/api/alert-rules`, POST `/api/alert-rules/sigma`
 
-Listing accepts any `twny_` token; Sigma import needs an Admin web user or
+Listing accepts any `twny_` token. Sigma import, `PUT /api/alert-rules/{id}` (metadata such as `is_enabled` for imported rules) and `DELETE /api/alert-rules/{id}` need an Admin web user or
 Admin `twny_` token (used by BlakSoc detection deployment).
 
 ## Errors

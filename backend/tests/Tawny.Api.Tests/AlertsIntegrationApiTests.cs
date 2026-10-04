@@ -159,6 +159,19 @@ level: high
 """,
         });
         sigma.EnsureSuccessStatusCode();
+        var imported = await sigma.Content.ReadFromJsonAsync<RuleBody>();
+        var disable = await client.PutAsJsonAsync($"/api/alert-rules/{imported!.Id}", new
+        {
+            name = imported.Name,
+            event_type = imported.EventType,
+            severity = "high",
+            @operator = imported.Operator,
+            payload_path = imported.PayloadPath,
+            match_value = imported.MatchValue,
+            is_enabled = false,
+        });
+        disable.StatusCode.Should().Be(HttpStatusCode.OK, "Admin tokens can pause a deployed rule");
+        (await client.DeleteAsync($"/api/alert-rules/{imported.Id}")).StatusCode.Should().Be(HttpStatusCode.NoContent);
 
         var created = await client.PostAsJsonAsync($"/api/agents/{agentId}/actions", new
         {
@@ -175,6 +188,14 @@ level: high
         agent!.PublicIp.Should().Be("198.51.100.7");
         agent.Tags.Should().Equal("finance");
     }
+
+    private sealed record RuleBody(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("name")] string Name,
+        [property: JsonPropertyName("event_type")] string? EventType,
+        [property: JsonPropertyName("operator")] string Operator,
+        [property: JsonPropertyName("payload_path")] string? PayloadPath,
+        [property: JsonPropertyName("match_value")] string? MatchValue);
 
     private sealed record ActionBody([property: JsonPropertyName("id")] Guid Id);
 
