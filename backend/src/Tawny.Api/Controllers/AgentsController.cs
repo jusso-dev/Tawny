@@ -144,15 +144,20 @@ public class AgentsController(
 
         // Revocation and credential version are enforced by AgentCredentialValidator.
         var previousStatus = agent.Status;
+        var previousVersion = agent.AgentVersion;
         agent.LastHeartbeatAt = DateTimeOffset.UtcNow;
         agent.Status = AgentStatus.Online;
         agent.AgentVersion = req.AgentVersion;
-        audit.Add((Guid?)null, tenantId, "agent.heartbeat", agent.Id.ToString(), new
+        // Routine heartbeats are not audit events; only record changes.
+        if (previousStatus != AgentStatus.Online || previousVersion != req.AgentVersion)
         {
-            req.AgentVersion,
-            req.BufferDepth,
-            previous_status = previousStatus,
-        });
+            audit.Add((Guid?)null, tenantId, "agent.heartbeat_change", agent.Id.ToString(), new
+            {
+                previous_status = previousStatus,
+                previous_version = previousVersion,
+                agent_version = req.AgentVersion,
+            });
+        }
         await db.SaveChangesAsync(ct);
 
         var latest = await db.AgentReleases

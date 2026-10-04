@@ -44,6 +44,28 @@ public class AgentCredentialValidationTests(TawnyWebApplicationFactory factory)
     }
 
     [Fact]
+    public async Task RoutineHeartbeatsAndIngest_DoNotWriteAuditRows()
+    {
+        await factory.ResetDatabaseAsync();
+        var (client, agentId) = await EnrollAsync();
+
+        (await PostHeartbeatAsync(client)).EnsureSuccessStatusCode();
+        (await PostHeartbeatAsync(client)).EnsureSuccessStatusCode();
+        (await PostHeartbeatAsync(client)).EnsureSuccessStatusCode();
+        (await PostEventsAsync(client)).StatusCode.Should().Be(HttpStatusCode.Accepted);
+        (await PostEventsAsync(client)).StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TawnyDbContext>();
+        var actions = await db.AuditLog
+            .Where(a => a.Target == agentId.ToString())
+            .Select(a => a.Action)
+            .ToListAsync();
+        actions.Should().NotContain("telemetry.ingest");
+        actions.Should().NotContain("agent.heartbeat_change", "the agent is already online at enrollment");
+    }
+
+    [Fact]
     public async Task RevokedAgent_CannotIngest()
     {
         await factory.ResetDatabaseAsync();

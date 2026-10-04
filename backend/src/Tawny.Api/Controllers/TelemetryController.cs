@@ -232,15 +232,9 @@ public class TelemetryController(
         agent.LastTelemetryBatchId = batchId;
         agent.LastIngestEventCount = events.Count;
 
+        // Routine ingest is not audited (the events and Agent.LastTelemetryBatchId are the
+        // record); integrity anomalies above are.
         db.TelemetryEvents.AddRange(events);
-        audit.Add((Guid?)null, tenantId, "telemetry.ingest", agentId.ToString(), new
-        {
-            event_count = req.Events.Count,
-            accepted_count = events.Count,
-            received_at = receivedAt,
-            batch_id = batchId,
-            confidence = EvidenceConfidence.AgentReported.ToString(),
-        });
         try
         {
             await db.SaveChangesAsync(ct);
