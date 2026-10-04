@@ -7,10 +7,9 @@ const max_neighbors: usize = 1024;
 const max_dns_values: usize = 64;
 const max_host_mappings: usize = 2048;
 const max_names_per_mapping: usize = 32;
-const command_timeout: std.Io.Timeout = .{ .duration = .{
-    .clock = .awake,
-    .raw = .fromSeconds(5),
-} };
+// Shared state-code table and pure socket parsers (no syscalls; any OS).
+const macos_parse = @import("../platform/macos/parse.zig");
+const macos = if (builtin.target.os.tag == .macos) @import("../platform/macos.zig") else struct {};
 
 pub fn collect(alloc: std.mem.Allocator) ![]u8 {
     return switch (builtin.target.os.tag) {
@@ -39,7 +38,18 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
         defer alloc.free(raw);
         try appendArpRows(w, raw);
     }
-    try w.writeAll("],\"dns_servers\":[");
+    try w.writeByte(']');
+    try appendResolverContext(alloc, w);
+    try w.writeByte('}');
+
+    return out.toOwnedSlice();
+}
+
+/// `,"dns_servers":[..],"search_domains":[..],"host_mappings":[..]` from
+/// /etc/resolv.conf and /etc/hosts. macOS keeps /etc/resolv.conf in sync with
+/// the SystemConfiguration primary resolver, so both platforms share this.
+fn appendResolverContext(alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+    try w.writeAll(",\"dns_servers\":[");
     const resolv_conf = readFileAbsoluteAlloc(alloc, "/etc/resolv.conf", 64 * 1024) catch null;
     defer if (resolv_conf) |raw| alloc.free(raw);
     if (resolv_conf) |raw| try appendResolvValues(w, raw, "nameserver");
@@ -51,9 +61,7 @@ fn collectLinux(alloc: std.mem.Allocator) ![]u8 {
         defer alloc.free(raw);
         try appendHostMappings(w, raw);
     }
-    try w.writeAll("]}");
-
-    return out.toOwnedSlice();
+    try w.writeByte(']');
 }
 
 fn appendProcNetRows(
@@ -99,6 +107,10 @@ fn appendProcNetRows(
         try writer.print(",\"remote_port\":{d}", .{remote_endpoint.port});
         try writer.writeAll(",\"state\":");
         try std.json.Stringify.value(state, .{}, writer);
+        if (macos_parse.linuxStateName(state)) |name| {
+            try writer.writeAll(",\"state_name\":");
+            try std.json.Stringify.value(name, .{}, writer);
+        }
         try writer.writeByte('}');
     }
 }
@@ -285,50 +297,124 @@ fn isValidDomain(value: []const u8) bool {
     return label_len > 0 and label_len <= 63;
 }
 
+/// macOS: walk every process's descriptors with libproc and decode the
+/// TCP/UDP sockets (proc_pidinfo(PROC_PIDLISTFDS) -> proc_pidfdinfo(
+/// PROC_PIDFDSOCKETINFO)). Rows carry the Linux fields plus the owning pid
+/// and process name. Without root only the agent user's sockets are visible.
 fn collectMacos(alloc: std.mem.Allocator) ![]u8 {
-    const result = try std.process.run(alloc, iox.current(), .{
-        .argv = &.{ "lsof", "-i", "-P", "-n" },
-        .stdout_limit = .limited(512 * 1024),
-        .stderr_limit = .limited(512 * 1024),
-        .timeout = command_timeout,
-    });
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-    if (!termSucceeded(result.term)) {
-        return alloc.dupe(u8, "{\"source\":\"lsof\",\"connections\":[]}");
-    }
-
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
     const w = &out.writer;
 
-    try w.writeAll("{\"source\":\"lsof\",\"connections\":[");
-    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
-    var first = true;
-    var skipped_header = false;
-    while (lines.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0) continue;
-        if (!skipped_header) {
-            skipped_header = true;
-            continue;
-        }
-        if (!first) try w.writeByte(',');
-        first = false;
-        try w.writeAll("{\"raw\":");
-        try std.json.Stringify.value(line, .{}, w);
-        try w.writeByte('}');
-    }
-    try w.writeAll("]}");
+    try w.writeAll("{\"source\":\"libproc\",\"connections\":[");
+    const truncated = try appendMacosConnections(alloc, w);
+    try w.writeAll("],\"neighbors\":[");
+    try appendMacosNeighbors(alloc, w);
+    try w.writeByte(']');
+    try appendResolverContext(alloc, w);
+    try w.print(",\"truncated\":{any}}}", .{truncated});
 
     return out.toOwnedSlice();
 }
 
-fn termSucceeded(term: std.process.Child.Term) bool {
-    return switch (term) {
-        .exited => |code| code == 0,
-        else => false,
-    };
+fn appendMacosConnections(alloc: std.mem.Allocator, w: *std.Io.Writer) !bool {
+    if (comptime builtin.target.os.tag != .macos) return false;
+    const libproc = macos.libproc;
+
+    const pids = try libproc.listAllPids(alloc);
+    defer alloc.free(pids);
+
+    var fds = std.array_list.Managed(libproc.FdInfo).init(alloc);
+    defer fds.deinit();
+    // The same socket shows up once per descriptor (dup, inherited fds);
+    // keep one row per (pid, socket tuple).
+    var emitted = std.AutoHashMap(u64, void).init(alloc);
+    defer emitted.deinit();
+
+    var sock_buf: [libproc.socket_fdinfo_size]u8 = undefined;
+    var path_buf: [libproc.path_max]u8 = undefined;
+    var count: usize = 0;
+
+    for (pids) |pid| {
+        if (pid < 0) continue;
+        const fd_list = (libproc.listFds(pid, &fds) catch null) orelse continue; // EPERM / exited
+        var process_name: ?[]const u8 = null;
+        var name_buf: [64]u8 = undefined;
+
+        for (fd_list) |fd| {
+            if (fd.proc_fdtype != libproc.PROX_FDTYPE_SOCKET) continue;
+            if (!libproc.socketInfo(pid, fd.proc_fd, &sock_buf)) continue;
+            const s = macos_parse.parseSocketFdInfo(&sock_buf) orelse continue;
+
+            var h = std.hash.Wyhash.init(@intCast(pid));
+            h.update(s.protocol);
+            h.update(&s.local);
+            h.update(std.mem.asBytes(&s.local_port));
+            h.update(&s.remote);
+            h.update(std.mem.asBytes(&s.remote_port));
+            const gop = try emitted.getOrPut(h.final());
+            if (gop.found_existing) continue;
+
+            if (count >= max_connections) return true;
+            if (process_name == null) process_name = macosProcessName(pid, &path_buf, &name_buf);
+
+            if (count > 0) try w.writeByte(',');
+            count += 1;
+            try writeMacosConnection(w, s, @intCast(pid), process_name.?);
+        }
+    }
+    return false;
+}
+
+fn macosProcessName(pid: i32, path_buf: *[macos.libproc.path_max]u8, name_buf: *[64]u8) []const u8 {
+    if (macos.libproc.pidPath(pid, path_buf)) |path| {
+        const base = std.fs.path.basename(path);
+        if (base.len > 0) return base;
+    }
+    const id = macos.libproc.identity(pid) orelse return "unknown";
+    const n = @min(id.name().len, name_buf.len);
+    @memcpy(name_buf[0..n], id.name()[0..n]);
+    return if (n > 0) name_buf[0..n] else "unknown";
+}
+
+fn writeMacosConnection(w: *std.Io.Writer, s: macos_parse.Socket, pid: u32, process_name: []const u8) !void {
+    var local_buf: [64]u8 = undefined;
+    var remote_buf: [64]u8 = undefined;
+    try w.writeAll("{\"protocol\":");
+    try std.json.Stringify.value(s.protocol, .{}, w);
+    try w.writeAll(",\"local_address\":");
+    try std.json.Stringify.value(macos_parse.formatAddress(s.local, s.ipv6, &local_buf), .{}, w);
+    try w.print(",\"local_port\":{d}", .{s.local_port});
+    try w.writeAll(",\"remote_address\":");
+    try std.json.Stringify.value(macos_parse.formatAddress(s.remote, s.ipv6, &remote_buf), .{}, w);
+    try w.print(",\"remote_port\":{d}", .{s.remote_port});
+    try w.writeAll(",\"state\":");
+    try std.json.Stringify.value(s.state.hex, .{}, w);
+    try w.writeAll(",\"state_name\":");
+    try std.json.Stringify.value(s.state.name, .{}, w);
+    try w.print(",\"pid\":{d},\"process_name\":", .{pid});
+    try std.json.Stringify.value(process_name, .{}, w);
+    try w.writeByte('}');
+}
+
+fn appendMacosNeighbors(alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
+    if (comptime builtin.target.os.tag != .macos) return;
+    const raw = macos.libproc.arpTable(alloc) catch return; // no route socket access: no neighbors
+    defer alloc.free(raw);
+
+    var it = macos_parse.NeighborIterator{ .raw = raw };
+    var count: usize = 0;
+    var if_buf: [16]u8 = undefined;
+    while (it.next()) |n| {
+        if (count >= max_neighbors) break;
+        if (count > 0) try w.writeByte(',');
+        count += 1;
+        try w.print("{{\"address\":\"{d}.{d}.{d}.{d}\"", .{ n.address[0], n.address[1], n.address[2], n.address[3] });
+        try w.print(",\"mac\":\"{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}:{x:0>2}\"", .{ n.mac[0], n.mac[1], n.mac[2], n.mac[3], n.mac[4], n.mac[5] });
+        try w.writeAll(",\"device\":");
+        try std.json.Stringify.value(macos.libproc.interfaceName(n.if_index, &if_buf), .{}, w);
+        try w.writeByte('}');
+    }
 }
 
 const NO_ERROR: u32 = 0;
@@ -461,4 +547,54 @@ test "malformed network values are skipped" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "not-an-ip") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "bad/name") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "valid.example") != null);
+}
+
+test "macOS connection rows carry the owning pid" {
+    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
+    const c = std.c;
+    const alloc = std.testing.allocator;
+
+    const listener = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+    try std.testing.expect(listener >= 0);
+    defer _ = c.close(listener);
+    var addr = c.sockaddr.in{ .port = 0, .addr = std.mem.nativeToBig(u32, 0x7f000001) };
+    try std.testing.expectEqual(@as(c_int, 0), c.bind(listener, @ptrCast(&addr), @sizeOf(c.sockaddr.in)));
+    try std.testing.expectEqual(@as(c_int, 0), c.listen(listener, 1));
+    var addr_len: c.socklen_t = @sizeOf(c.sockaddr.in);
+    try std.testing.expectEqual(@as(c_int, 0), c.getsockname(listener, @ptrCast(&addr), &addr_len));
+    const port = std.mem.bigToNative(u16, addr.port);
+
+    const client = c.socket(c.AF.INET, c.SOCK.STREAM, 0);
+    try std.testing.expect(client >= 0);
+    defer _ = c.close(client);
+    try std.testing.expectEqual(@as(c_int, 0), c.connect(client, @ptrCast(&addr), @sizeOf(c.sockaddr.in)));
+
+    const out = try collect(alloc);
+    defer alloc.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("libproc", root.get("source").?.string);
+    try std.testing.expect(root.get("dns_servers").? == .array);
+
+    const me: i64 = c.getpid();
+    var saw_client = false;
+    var saw_listener = false;
+    for (root.get("connections").?.array.items) |row| {
+        const o = row.object;
+        if (o.get("pid").?.integer != me) continue;
+        try std.testing.expect(o.get("process_name").?.string.len > 0);
+        if (o.get("remote_port").?.integer == port) {
+            try std.testing.expectEqualStrings("tcp", o.get("protocol").?.string);
+            try std.testing.expectEqualStrings("127.0.0.1", o.get("remote_address").?.string);
+            try std.testing.expectEqualStrings("01", o.get("state").?.string);
+            try std.testing.expectEqualStrings("ESTABLISHED", o.get("state_name").?.string);
+            saw_client = true;
+        }
+        if (o.get("local_port").?.integer == port and std.mem.eql(u8, o.get("state").?.string, "0A")) {
+            saw_listener = true;
+        }
+    }
+    try std.testing.expect(saw_client);
+    try std.testing.expect(saw_listener);
 }
