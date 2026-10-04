@@ -101,6 +101,8 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     defer fs_watcher.deinit();
 
     var dns = dns_collector.Collector.init(alloc);
+    defer dns.deinit();
+    dns.start();
 
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
@@ -322,7 +324,10 @@ test "main module loads" {
     _ = lifecycle;
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
-    if (builtin.target.os.tag == .macos) _ = @import("platform/macos/fsevents.zig");
+    if (builtin.target.os.tag == .macos) {
+        _ = @import("platform/macos/fsevents.zig");
+        _ = @import("platform/macos/dnslog.zig");
+    }
     if (builtin.target.os.tag == .windows) _ = windows_service;
 }
 

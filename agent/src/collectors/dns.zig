@@ -2,6 +2,42 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 
+const dnslog = if (builtin.target.os.tag == .macos) @import("../platform/macos/dnslog.zig") else struct {};
+const libproc = if (builtin.target.os.tag == .macos) @import("../platform/macos/libproc.zig") else struct {};
+const mac_retry_seconds: i64 = 3600;
+/// Redacted querier lines (with no readable ones) before we conclude the
+/// host has no private-data override and stop the stream.
+const mac_redacted_threshold: u64 = 20;
+
+const MacState = struct {
+    stream: ?*dnslog.Stream = null,
+    buf: ?*[dnslog.queue_capacity]dnslog.Resolved = null,
+    retry_at: i64 = 0,
+    redacted_total: u64 = 0,
+    plaintext_total: u64 = 0,
+};
+
+fn buildMacosPayload(alloc: std.mem.Allocator, r: *const dnslog.Resolved) ![]u8 {
+    var payload: std.Io.Writer.Allocating = .init(alloc);
+    errdefer payload.deinit();
+    const w = &payload.writer;
+    try w.writeAll("{\"qname\":");
+    try std.json.Stringify.value(r.query.name(), .{}, w);
+    try w.writeAll(",\"qtype\":");
+    try std.json.Stringify.value(r.query.typeName(), .{}, w);
+    // Answers are logged mask.hash'ed even with the override.
+    try w.writeAll(",\"response_ips\":[],\"resolver\":\"mDNSResponder\"");
+    if (r.client) |c| {
+        // The log carries a 15-char comm; prefer the live image name.
+        var path_buf: [libproc.path_max]u8 = undefined;
+        const live = if (libproc.pidPath(@intCast(c.pid), &path_buf)) |p| std.fs.path.basename(p) else "";
+        try w.print(",\"pid\":{d},\"process_name\":", .{c.pid});
+        try std.json.Stringify.value(if (live.len > 0) live else c.processName(), .{}, w);
+    }
+    try w.writeByte('}');
+    return payload.toOwnedSlice();
+}
+
 const max_dns_events: usize = 4096;
 const max_journal_line_bytes: usize = 64 * 1024;
 const journal_timeout: std.Io.Timeout = .{ .duration = .{
@@ -19,13 +55,40 @@ const journal_timeout: std.Io.Timeout = .{ .duration = .{
 /// running systemd-resolved emit nothing, and operators must enable resolved
 /// query logging (`resolvectl log-level debug`) to see every lookup. That's
 /// flagged in the README + the Detections page.
+///
+/// macOS: a `log stream` child filtered to mDNSResponder, read by a
+/// background thread into a bounded queue (platform/macos/dnslog.zig). Query
+/// names are private in the unified log unless the host has an
+/// Enable-Private-Data override for com.apple.mDNSResponder; redacted names
+/// are never emitted, and a stream that only ever yields `<private>` is shut
+/// down and retried hourly. /etc/hosts entries are emitted as on Linux.
 pub const Collector = struct {
     allocator: std.mem.Allocator,
     last_run_unix: i64 = 0,
     last_hosts_hash: ?u64 = null,
+    mac: if (builtin.target.os.tag == .macos) MacState else void = if (builtin.target.os.tag == .macos) .{} else {},
 
     pub fn init(alloc: std.mem.Allocator) Collector {
         return .{ .allocator = alloc };
+    }
+
+    /// Start background capture now (macOS `log stream` takes a few seconds
+    /// to attach) instead of on the first collection tick.
+    pub fn start(self: *Collector) void {
+        if (comptime builtin.target.os.tag != .macos) return;
+        var scratch = std.array_list.Managed([]u8).init(self.allocator);
+        defer scratch.deinit();
+        self.collectMacos(&scratch, iox.timestamp()) catch |err| {
+            std.debug.print("dns: start failed: {s}\n", .{@errorName(err)});
+        };
+    }
+
+    pub fn deinit(self: *Collector) void {
+        if (comptime builtin.target.os.tag == .macos) {
+            if (self.mac.stream) |s| s.stop();
+            if (self.mac.buf) |b| self.allocator.destroy(b);
+            self.mac = .{};
+        }
     }
 
     /// Returns one JSON payload per detected DNS query since the last call.
@@ -45,11 +108,68 @@ pub const Collector = struct {
                     self.last_run_unix = collection_started;
                 }
             },
-            else => {}, // Win/macOS DNS capture needs ETW / NetworkExtension; not in this collector.
+            .macos => {
+                try self.collectStaticHosts(&payloads);
+                try self.collectMacos(&payloads, collection_started);
+            },
+            else => {}, // Windows DNS capture needs ETW; not in this collector.
         }
 
         try dedupePayloads(self.allocator, &payloads);
         return payloads.toOwnedSlice();
+    }
+
+    fn collectMacos(self: *Collector, payloads: *std.array_list.Managed([]u8), now: i64) !void {
+        if (comptime builtin.target.os.tag != .macos) return;
+        const m = &self.mac;
+
+        if (m.stream == null) {
+            if (now < m.retry_at) return;
+            if (m.buf == null) m.buf = try self.allocator.create([dnslog.queue_capacity]dnslog.Resolved);
+            m.stream = dnslog.Stream.start(self.allocator) catch |err| {
+                std.debug.print("dns: cannot start mDNSResponder log stream: {s}\n", .{@errorName(err)});
+                m.retry_at = now + mac_retry_seconds;
+                return;
+            };
+            m.redacted_total = 0;
+            m.plaintext_total = 0;
+            return; // first drain on the next tick
+        }
+
+        const stream = m.stream.?;
+        const drained = stream.drain(m.buf.?);
+        m.redacted_total += drained.redacted;
+        m.plaintext_total += drained.plaintext;
+        if (drained.dropped > 0) {
+            std.debug.print("dns: dropped {d} mDNSResponder queries (queue full)\n", .{drained.dropped});
+        }
+
+        for (m.buf.?[0..drained.count]) |*r| {
+            if (payloads.items.len >= max_dns_events) break;
+            const payload = try buildMacosPayload(self.allocator, r);
+            payloads.append(payload) catch |err| {
+                self.allocator.free(payload);
+                return err;
+            };
+        }
+
+        if (m.plaintext_total == 0 and m.redacted_total >= mac_redacted_threshold) {
+            std.debug.print(
+                "dns: mDNSResponder query names are redacted (<private>); macOS dns_query needs an Enable-Private-Data logging override for com.apple.mDNSResponder. Retrying in {d}s.\n",
+                .{mac_retry_seconds},
+            );
+            self.stopMacStream(now);
+        } else if (stream.finished()) {
+            std.debug.print("dns: `log stream` exited (agent must run as root/admin); retrying in {d}s\n", .{mac_retry_seconds});
+            self.stopMacStream(now);
+        }
+    }
+
+    fn stopMacStream(self: *Collector, now: i64) void {
+        if (comptime builtin.target.os.tag != .macos) return;
+        if (self.mac.stream) |s| s.stop();
+        self.mac.stream = null;
+        self.mac.retry_at = now + mac_retry_seconds;
     }
 
     fn collectLinux(self: *Collector, payloads: *std.array_list.Managed([]u8)) !bool {
@@ -390,4 +510,50 @@ test "malformed DNS values are rejected and duplicates are stable" {
 
     try std.testing.expectEqual(@as(usize, 1), payloads.items.len);
     try std.testing.expect(std.mem.indexOf(u8, payloads.items[0], "valid.example") != null);
+}
+
+test "macOS dns_query from mDNSResponder log when the host allows it" {
+    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
+    // Needs the per-subsystem private-data override and an admin/root user.
+    const io = std.testing.io;
+    std.Io.Dir.accessAbsolute(io, "/Library/Preferences/Logging/Subsystems/com.apple.mDNSResponder.plist", .{}) catch return error.SkipZigTest;
+    iox.initialize(io);
+    const alloc = std.testing.allocator;
+
+    var c = Collector.init(alloc);
+    defer c.deinit();
+    const first = try c.collectQueries(); // starts the stream
+    for (first) |p| alloc.free(p);
+    alloc.free(first);
+    if (c.mac.stream == null) return error.SkipZigTest;
+    iox.sleep(2 * std.time.ns_per_s); // let `log stream` attach
+
+    var name_buf: [64]u8 = undefined;
+    const qname = try std.fmt.bufPrint(&name_buf, "tawny-dns-probe-{d}.example.net", .{std.c.getpid()});
+    const lookup = try std.process.run(alloc, io, .{ .argv = &.{ "/usr/bin/dscacheutil", "-q", "host", "-a", "name", qname } });
+    alloc.free(lookup.stdout);
+    alloc.free(lookup.stderr);
+
+    var found = false;
+    var attempt: usize = 0;
+    while (!found and attempt < 10) : (attempt += 1) {
+        iox.sleep(1 * std.time.ns_per_s);
+        if (c.mac.stream) |s| if (s.finished()) return error.SkipZigTest; // not admin
+        const got = try c.collectQueries();
+        defer {
+            for (got) |p| alloc.free(p);
+            alloc.free(got);
+        }
+        for (got) |payload| {
+            try std.testing.expect(std.mem.indexOf(u8, payload, "<private>") == null);
+            if (std.mem.indexOf(u8, payload, qname) == null) continue;
+            var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+            defer parsed.deinit();
+            const o = parsed.value.object;
+            try std.testing.expectEqualStrings("mDNSResponder", o.get("resolver").?.string);
+            if (o.get("process_name")) |pn| try std.testing.expectEqualStrings("dscacheutil", pn.string);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
 }
