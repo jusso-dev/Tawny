@@ -15,6 +15,7 @@ const hunts_http = @import("../routes/hunts.zig");
 const feeds_http = @import("../routes/feeds.zig");
 const suppressions = @import("../routes/suppressions.zig");
 const lookup_http = @import("../routes/lookup.zig");
+const ai_http = @import("../routes/ai.zig");
 const state = @import("state.zig");
 
 pub fn handle(
@@ -338,6 +339,49 @@ fn route(
     if (parts.len == 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "audit-logs") and method == .GET) {
         const web = try needWeb(request, resolved) orelse return;
         return tokens.listAuditLogs(allocator, conn, request, web, target);
+    }
+
+    if (parts.len >= 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "ai")) {
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "config") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            return ai_http.getConfig(allocator, conn, request, web);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "config") and method == .PUT) {
+            const web = try needAdmin(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_admin_mutate)) return;
+            return ai_http.updateConfig(allocator, conn, request, web);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "findings") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return ai_http.listFindings(allocator, conn, request, web);
+        }
+        if (parts.len == 4 and std.mem.eql(u8, parts[2], "findings") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return ai_http.getFinding(allocator, conn, request, web, parts[3]);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "investigations") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return ai_http.listInvestigations(allocator, conn, request, web);
+        }
+        if (parts.len == 4 and std.mem.eql(u8, parts[2], "investigations") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return ai_http.getInvestigation(allocator, conn, request, web, parts[3]);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "metrics") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return ai_http.getMetrics(allocator, conn, request, web);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "observations") and method == .POST) {
+            const web = try needAdmin(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_admin_mutate)) return;
+            return ai_http.submitObservation(allocator, io, conn, request, web);
+        }
+        return notFound(request);
     }
 
     return notFound(request);

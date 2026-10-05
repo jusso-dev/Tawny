@@ -13,6 +13,7 @@ const reputation = @import("jobs/reputation.zig");
 const backup = @import("jobs/backup.zig");
 const releases = @import("jobs/releases.zig");
 const http_get = @import("jobs/http_get.zig");
+const ai_reasoning = @import("jobs/ai_reasoning.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -78,6 +79,7 @@ pub fn main(init: std.process.Init) !void {
     var last_reputation: i64 = 0;
     var last_backup: i64 = 0;
     var last_release: i64 = 0;
+    var last_ai: i64 = 0;
     // Live SSE clients outlive the accept that started them. Reaped when phase hits 2.
     var parked: [32]*Client = undefined;
     var parked_n: usize = 0;
@@ -106,7 +108,7 @@ pub fn main(init: std.process.Init) !void {
             };
             stream.close(io);
             allocator.destroy(client);
-            runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release);
+            runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release, &last_ai);
             continue;
         };
         thread.detach();
@@ -130,7 +132,7 @@ pub fn main(init: std.process.Init) !void {
             parked[parked_n] = client;
             parked_n += 1;
         }
-        runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release);
+        runJobs(allocator, io, conn, sink_targets, &last_stale, &last_purge, &last_hunt, &last_ti, &last_reputation, &last_backup, &last_release, &last_ai);
     }
 }
 
@@ -183,6 +185,7 @@ fn runJobs(
     last_reputation: *i64,
     last_backup: *i64,
     last_release: *i64,
+    last_ai: *i64,
 ) void {
     if (detect.drain(allocator, io, conn)) |_| {} else |err| {
         std.debug.print("detect drain failed: {s}\n", .{@errorName(err)});
@@ -262,6 +265,19 @@ fn runJobs(
             std.debug.print("stale job failed: {s}\n", .{@errorName(err)});
         };
     }
+    if (now - last_ai.* >= 30) {
+        last_ai.* = now;
+        if (ai_reasoning.drain(allocator, io, conn, .{
+            .enabled = envFlag("TAWNY_AI_ENABLED"),
+            .model_endpoint = envSpan("TAWNY_AI_MODEL_ENDPOINT"),
+            .model_name = envSpan("TAWNY_AI_MODEL_NAME"),
+            .model_api_key = envSpan("TAWNY_AI_MODEL_API_KEY"),
+            .confidence_threshold = envFloat("TAWNY_AI_CONFIDENCE_THRESHOLD", 0.70),
+            .allow_private_egress = envFlag("TAWNY_AI_ALLOW_PRIVATE_EGRESS"),
+        })) |_| {} else |err| {
+            std.debug.print("ai_reasoning job failed: {s}\n", .{@errorName(err)});
+        }
+    }
 }
 
 fn runHealthcheck(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
@@ -292,6 +308,12 @@ fn envPort(key: [*:0]const u8, fallback: u16) u16 {
 fn envFlag(key: [*:0]const u8) bool {
     const value = envSpan(key);
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
+}
+
+fn envFloat(key: [*:0]const u8, fallback: f32) f32 {
+    const value = envSpan(key);
+    if (value.len == 0) return fallback;
+    return std.fmt.parseFloat(f32, value) catch fallback;
 }
 
 fn enrichOn() bool {
@@ -424,5 +446,8 @@ comptime {
     _ = @import("sinks/slack.zig");
     _ = @import("sinks/tawny_soc.zig");
     _ = @import("sinks/egress.zig");
+    _ = @import("ai/reasoning.zig");
+    _ = @import("jobs/ai_reasoning.zig");
+    _ = @import("routes/ai.zig");
     _ = @import("fuzz.zig");
 }
