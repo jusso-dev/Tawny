@@ -20,7 +20,7 @@ pub const routes = [_]@import("../http/permissions.zig").Route{
     .{ .method = .POST, .path = "/api/agents/enroll", .perm = .public },
     .{ .method = .POST, .path = "/api/agents/heartbeat", .perm = .agent },
     .{ .method = .POST, .path = "/api/agents/events", .perm = .agent },
-    .{ .method = .POST, .path = "/api/agents/:id/actions/:action/result", .perm = .agent },
+    .{ .method = .POST, .path = "/api/agents/actions/:action/result", .perm = .agent },
     .{ .method = .GET, .path = "/api/agents", .perm = .read },
     .{ .method = .GET, .path = "/api/agents/:id", .perm = .read },
     .{ .method = .POST, .path = "/api/agents/:id/revoke", .perm = .admin },

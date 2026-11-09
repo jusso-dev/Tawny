@@ -526,8 +526,8 @@ pub fn bootstrapAdminIfEmpty(
     var tbuf: [32]u8 = undefined;
     const created = util.formatRfc3339(&tbuf, util.nowUnix(io));
     try conn.execNoRows(
-        \\INSERT INTO users (id, tenant_id, email, name, role, password_hash, created_at)
-        \\VALUES ($1::uuid, $2::uuid, $3, 'Admin', 'admin', $4, $5::timestamptz)
+        \\INSERT INTO users (id, tenant_id, email, name, role, password_hash, created_at, break_glass)
+        \\VALUES ($1::uuid, $2::uuid, $3, 'Admin', 'admin', $4, $5::timestamptz, true)
         \\ON CONFLICT DO NOTHING
     , &.{
         .{ .text = uid },

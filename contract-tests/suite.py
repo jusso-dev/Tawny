@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 BASE = os.environ.get("TAWNY_BASE_URL", "http://127.0.0.1:5080").rstrip("/")
 AUTH = os.environ.get("TAWNY_CONTRACT_AUTH", "hmac").strip().lower()
 HMAC_SECRET = os.environ.get("TAWNY_HMAC_SECRET", "test-hmac-secret")
@@ -1959,6 +1960,323 @@ class AuthContractTests(unittest.TestCase):
         self.assertEqual(denied, 401, denied_raw[:400])
 
 
+
+def make_user(role: str, prefix: str) -> tuple[str, str, str]:
+    """Create a password user with `role`; return (user_id, cookie, csrf)."""
+    email = f"{uniq(prefix)}@tawny.local"
+    code, created, raw = admin_call("POST", "/api/users", {"email": email, "password": "role-password1", "role": role})
+    if code != 201 or not isinstance(created, dict):
+        raise AssertionError(f"create {role} user: {code} {raw[:400]}")
+    cookie, csrf, who = login_session(email, "role-password1")
+    if who.get("role") != role:
+        raise AssertionError(f"login role {who.get('role')} != {role}")
+    return str(created["id"]), cookie, csrf
+
+
+def admin_call(method: str, path: str, body: dict) -> tuple[int, object | None, str]:
+    """Admin write that waits out the 30 per minute web-admin-mutate limit
+    the rest of the suite may have used up."""
+    for _ in range(3):
+        code, parsed, raw = call(method, path, body)
+        if code != 429:
+            return code, parsed, raw
+        time.sleep(21)
+    return code, parsed, raw
+
+
+class RoleAndIncidentContractTests(unittest.TestCase):
+    """#60: analyst role on real routes, incidents, ATT&CK coverage, Entra ID."""
+
+    def setUp(self) -> None:
+        if AUTH != "session":
+            self.skipTest("session auth routes run against tawny-server")
+
+    def as_role(self, method: str, path: str, cookie: str, csrf: str, body: dict | None = None) -> tuple[int, object | None, str]:
+        return call(method, path, body if body is not None else ({} if method != "GET" else None), session_cookie=cookie, csrf_token=csrf)
+
+    def test_analyst_matrix_on_live_routes(self) -> None:
+        _aid, a_cookie, a_csrf = make_user("analyst", "analyst")
+        _vid, v_cookie, v_csrf = make_user("viewer", "viewer60")
+        agent = windows_agent()
+        # (method, path, body, analyst, viewer). 403 means the gate refused;
+        # anything else means the handler ran.
+        checks = [
+            ("GET", "/api/users", None, 403, 403),
+            ("POST", "/api/users", {"email": "x@y.z", "password": "longpassword"}, 403, 403),
+            ("POST", "/api/api-tokens", {"name": "t"}, 403, 403),
+            ("POST", "/api/enrollment-tokens", {}, 403, 403),
+            ("POST", "/api/alert-rules", {"name": "n"}, 403, 403),
+            ("POST", "/api/alert-rules/sigma", {"rule_yaml": "title: x"}, 403, 403),
+            ("POST", "/api/threat-intel-feeds", {"name": "n"}, 403, 403),
+            ("PUT", "/api/ai/config", {}, 403, 403),
+            ("GET", "/api/settings/tenant", None, 403, 403),
+            ("PUT", "/api/settings/oidc", {}, 403, 403),
+            ("GET", "/api/admin/jobs", None, 403, 403),
+            ("POST", f"/api/agents/{agent['agent_id']}/revoke", {}, 403, 403),
+            ("GET", "/api/agents", None, 200, 200),
+            ("GET", "/api/alerts", None, 200, 200),
+            ("GET", "/api/incidents", None, 200, 200),
+            ("GET", "/api/attack/coverage", None, 200, 200),
+            ("POST", "/api/hunts/run", {"query": "event_type:process_start"}, None, 403),
+            ("POST", f"/api/agents/{agent['agent_id']}/actions", {"action_type": "kill_process", "payload": {"pid": 1}}, 201, 403),
+            ("POST", "/api/suppression-rules", {"name": "no reason", "scope": "all_rules", "operator": "equals", "payload_path": "contract.never", "match_value": "x"}, 400, 403),
+            ("POST", "/api/suppression-rules", {"name": uniq("why"), "reason": "known admin script", "scope": "all_rules", "operator": "equals", "payload_path": "contract.never", "match_value": uniq("x")}, 201, 403),
+            ("POST", "/api/alerts/999999999/acknowledge", {}, 404, 403),
+            ("POST", "/api/incidents/00000000-0000-0000-0000-000000000000/status", {"status": "resolved"}, 404, 403),
+        ]
+        for method, path, body, want_analyst, want_viewer in checks:
+            code, made, raw = self.as_role(method, path, a_cookie, a_csrf, body)
+            if path == "/api/suppression-rules" and code == 201 and isinstance(made, dict):
+                call("DELETE", f"/api/suppression-rules/{made['id']}", {})
+            if want_analyst is None:
+                self.assertNotIn(code, (401, 403), f"analyst {method} {path}: {raw[:300]}")
+            else:
+                self.assertEqual(code, want_analyst, f"analyst {method} {path}: {raw[:300]}")
+            code, _b, raw = self.as_role(method, path, v_cookie, v_csrf, body)
+            self.assertEqual(code, want_viewer, f"viewer {method} {path}: {raw[:300]}")
+        anon, _b, _raw = call("GET", "/api/incidents", auth="none")
+        self.assertEqual(anon, 401)
+
+    def test_analyst_destructive_action_waits_for_admin(self) -> None:
+        analyst_id, a_cookie, a_csrf = make_user("analyst", "approve")
+        agent = windows_agent()
+        code, _s, raw = admin_call("PUT", "/api/settings/tenant", {"analyst_destructive_needs_approval": True})
+        self.assertEqual(code, 200, raw[:300])
+        try:
+            code, action, raw = self.as_role("POST", f"/api/agents/{agent['agent_id']}/actions", a_cookie, a_csrf,
+                                             {"action_type": "isolate_host", "payload": {"reason": "contract"}})
+            self.assertEqual(code, 201, raw[:400])
+            assert isinstance(action, dict)
+            self.assertEqual(action.get("status"), "awaiting_approval")
+            # Not killing a process: no approval needed.
+            code, kill, raw = self.as_role("POST", f"/api/agents/{agent['agent_id']}/actions", a_cookie, a_csrf,
+                                           {"action_type": "kill_process", "payload": {"pid": 4}})
+            self.assertEqual(code, 201, raw[:400])
+            assert isinstance(kill, dict)
+            self.assertEqual(kill.get("status"), "pending")
+            # The analyst cannot approve; an admin can.
+            code, _b, raw = self.as_role("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", a_cookie, a_csrf)
+            self.assertEqual(code, 403, raw[:300])
+            code, ok, raw = call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
+            self.assertEqual(code, 200, raw[:300])
+            assert isinstance(ok, dict)
+            self.assertEqual(ok.get("status"), "pending")
+            code, _b, raw = call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
+            self.assertEqual(code, 409, raw[:300])
+        finally:
+            admin_call("PUT", "/api/settings/tenant", {"analyst_destructive_needs_approval": False})
+        del analyst_id
+
+    def test_process_chain_becomes_one_incident(self) -> None:
+        agent = windows_agent()
+        marker = uniq("inc")
+        rules = []
+        for name, path, value, sev, tech in (
+            ("Office spawns PowerShell", "parent.image", "WINWORD.EXE", "high", ["T1204.002"]),
+            ("Encoded PowerShell", "process.command_line", "-enc", "medium", ["T1059.001"]),
+        ):
+            code, rule, raw = call("POST", "/api/alert-rules", {
+                "name": f"{marker} {name}", "event_type": "process_start", "severity": sev, "operator": "contains",
+                "payload_path": path, "match_value": value, "is_enabled": True, "mitre_techniques": tech,
+            })
+            self.assertEqual(code, 201, raw[:400])
+            assert isinstance(rule, dict)
+            rules.append(rule["id"])
+        try:
+            fixture_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server", "fixtures", "process-chain-office.v2.json")
+            with open(fixture_path, encoding="utf-8") as handle:
+                batch = json.load(handle)
+            batch["agent"]["agent_id"] = agent["agent_id"]
+            batch["batch_id"] = str(uuid.uuid4())
+            alphabet = "abcdefghijklmnopqrstuvwxyz234567"
+            suffix = "".join(alphabet[b % 32] for b in secrets.token_bytes(4))
+            for ev in batch["events"]:
+                ev["event_id"] = str(uuid.uuid4())
+                ev["seq"] = 3000 + ev["seq"]
+                ev["ts"] = iso_now()
+                for key in ("process", "parent"):
+                    obj = ev["data"].get(key, {})
+                    if obj.get("entity_id"):
+                        obj["entity_id"] = obj["entity_id"][:22] + suffix
+            code, _p, raw = call("POST", "/api/agents/events", batch, auth="agent", bearer=agent["jwt"])
+            self.assertEqual(code, 202, raw[:400])
+            deadline = time.time() + 10
+            mine: list[dict] = []
+            while time.time() < deadline:
+                code, rows, raw = call("GET", "/api/incidents?status=open&limit=500")
+                self.assertEqual(code, 200, raw[:400])
+                assert isinstance(rows, list)
+                mine = [r for r in rows if any(i["label"].startswith(marker) for i in r.get("risk_items") or [])]
+                labels = [i["label"] for r in mine for i in r["risk_items"] if i["label"].startswith(marker)]
+                if len(labels) >= 2:
+                    break
+                time.sleep(0.5)
+            # Both rules fired on the chain; the alerts share one lineage
+            # root (WINWORD below explorer), so they are one incident.
+            self.assertEqual(len(mine), 1, json.dumps(mine)[:800])
+            inc = mine[0]
+            self.assertEqual(inc["grouping"], "lineage")
+            self.assertGreaterEqual(inc["alert_count"], 2)
+            ours = sorted(i["points"] for i in inc["risk_items"] if i["label"].startswith(marker))
+            self.assertEqual(ours, [20, 30])
+            # The score is the noisy-OR of exactly the listed items.
+            prod = 1.0
+            for item in inc["risk_items"]:
+                prod *= 1 - item["points"] / 100
+            self.assertEqual(inc["risk"], round(100 * (1 - prod)), json.dumps(inc["risk_items"]))
+            self.assertIn("T1059.001", inc["techniques"])
+            self.assertIn("T1204.002", inc["techniques"])
+            code, full, raw = call("GET", f"/api/incidents/{inc['id']}")
+            self.assertEqual(code, 200, raw[:400])
+            assert isinstance(full, dict)
+            self.assertEqual(len(full["alerts"]), inc["alert_count"])
+
+            _aid, a_cookie, a_csrf = make_user("analyst", "owner")
+            code, assigned, raw = self.as_role("POST", f"/api/incidents/{inc['id']}/assign", a_cookie, a_csrf, {"owner_user_id": _aid})
+            self.assertEqual(code, 200, raw[:400])
+            assert isinstance(assigned, dict)
+            self.assertEqual(assigned["status"], "investigating")
+            code, _b, raw = self.as_role("POST", f"/api/incidents/{inc['id']}/status", a_cookie, a_csrf, {"status": "closed"})
+            self.assertEqual(code, 400, raw[:300])
+            alert_id = full["alerts"][0]["id"]
+            code, acked, raw = self.as_role("POST", f"/api/alerts/{alert_id}/acknowledge", a_cookie, a_csrf)
+            self.assertEqual(code, 200, raw[:300])
+            assert isinstance(acked, dict)
+            self.assertEqual(acked["status"], "acknowledged")
+            code, done, raw = self.as_role("POST", f"/api/incidents/{inc['id']}/status", a_cookie, a_csrf, {"status": "false_positive"})
+            self.assertEqual(code, 200, raw[:300])
+            assert isinstance(done, dict)
+            self.assertTrue(all(a["status"] == "resolved" for a in done["alerts"]))
+        finally:
+            for rid in rules:
+                call("DELETE", f"/api/alert-rules/{rid}", {})
+
+    def test_attack_coverage_three_states(self) -> None:
+        name = uniq("cov")
+        code, rule, raw = call("POST", "/api/alert-rules", {
+            "name": name, "event_type": "registry_set", "severity": "low", "operator": "exists",
+            "payload_path": "registry.key", "is_enabled": True, "mitre_techniques": ["T1112"],
+        })
+        self.assertEqual(code, 201, raw[:400])
+        assert isinstance(rule, dict)
+        try:
+            code, cov, raw = call("GET", "/api/attack/coverage?platform=windows")
+            self.assertEqual(code, 200, raw[:400])
+            assert isinstance(cov, dict)
+            self.assertEqual(cov["attack_version"], "20.1")
+            self.assertIn("stealth", [t["shortname"] for t in cov["tactics"]])
+            by_id = {t["id"]: t for t in cov["techniques"]}
+            t1112 = by_id["T1112"]
+            # A rule, no registry telemetry from a healthy agent, no action:
+            # three different answers.
+            self.assertTrue(t1112["detection"]["available"])
+            self.assertIn(name, t1112["detection"]["rules"])
+            self.assertFalse(t1112["telemetry"]["available"], json.dumps(t1112))
+            self.assertFalse(t1112["response"]["available"])
+            self.assertEqual(by_id["T1059.001"]["name"], "Command and Scripting Interpreter: PowerShell")
+            self.assertIn("isolate_host", by_id["T1110"]["response"]["actions"])
+            code, lin, raw = call("GET", "/api/attack/coverage?platform=linux")
+            self.assertEqual(code, 200, raw[:300])
+            assert isinstance(lin, dict)
+            lin_ids = {t["id"]: t for t in lin["techniques"]}
+            self.assertNotIn("T1112", lin_ids)
+            self.assertNotIn("isolate_host", lin_ids["T1110"]["response"]["actions"])
+            bad, _b, _raw = call("GET", "/api/attack/coverage?platform=solaris")
+            self.assertEqual(bad, 400)
+        finally:
+            call("DELETE", f"/api/alert-rules/{rule['id']}", {})
+
+    def test_zz_entra_sign_in_with_mock_provider(self) -> None:
+        if os.environ.get("TAWNY_OIDC_ALLOW_LOOPBACK", "") not in ("1", "true"):
+            self.skipTest("TAWNY_OIDC_ALLOW_LOOPBACK is off on the server")
+        from mock_oidc import MockOidc
+
+        mock = MockOidc().start()
+        g_admin, g_analyst, g_other = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+        try:
+            code, cfg, raw = admin_call("PUT", "/api/settings/oidc", {
+                "enabled": True,
+                "entra_tenant_id": mock.tid,
+                "authority": mock.issuer,
+                "client_id": mock.client_id,
+                "client_secret": mock.client_secret,
+                "allowed_domains": ["contoso.example"],
+                "group_roles": {g_admin: "admin", g_analyst: "analyst"},
+            })
+            self.assertEqual(code, 200, raw[:400])
+            assert isinstance(cfg, dict)
+            self.assertTrue(cfg["client_secret_set"])
+            self.assertNotIn(mock.client_secret, raw)
+            code, methods, _raw = call("GET", "/api/auth/methods", auth="none")
+            assert isinstance(methods, dict)
+            self.assertTrue(methods["entra"])
+
+            def sign_in(oid: str, groups: list[str], email: str = "", overrides: dict | None = None, tamper_state: bool = False) -> tuple[int, str, str]:
+                status, location, _c, body = open_no_redirect("GET", f"/api/auth/oidc/start?tenant={TENANT}")
+                self.assertEqual(status, 302, body[:300])
+                self.assertTrue(location.startswith(f"{mock.base}/{mock.tid}/oauth2/v2.0/authorize?"), location)
+                q = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(location).query).items()}
+                self.assertEqual(q["code_challenge_method"], "S256")
+                self.assertEqual(q["client_id"], mock.client_id)
+                code_ = mock.issue_code(oid=oid, email=email or f"{oid[:8]}@contoso.example", groups=groups,
+                                        nonce=q["nonce"], challenge=q["code_challenge"], overrides=overrides)
+                state = "forged" + q["state"][6:] if tamper_state else q["state"]
+                st, _loc, cookie, body = open_no_redirect("GET", f"/api/auth/oidc/callback?code={urllib.parse.quote(code_)}&state={state}")
+                return st, cookie.split(";", 1)[0], body
+
+            oid = str(uuid.uuid4())
+            st, cookie, body = sign_in(oid, [g_analyst, g_other])
+            self.assertEqual(st, 302, body[:400])
+            code, who, raw = call("GET", "/api/auth/session", session_cookie=cookie)
+            self.assertEqual(code, 200, raw[:300])
+            assert isinstance(who, dict)
+            self.assertEqual(who["role"], "analyst")
+            # Same oid and tid again: same user, role follows the groups.
+            st, cookie2, body = sign_in(oid, [g_admin], email="renamed@contoso.example")
+            self.assertEqual(st, 302, body[:400])
+            code, who2, _raw = call("GET", "/api/auth/session", session_cookie=cookie2)
+            assert isinstance(who2, dict)
+            self.assertEqual(who2["id"], who["id"])
+            self.assertEqual(who2["role"], "admin")
+
+            # Refusals: no mapped group, wrong domain, bad nonce, wrong audience,
+            # expired, replayed state.
+            st, _c, body = sign_in(str(uuid.uuid4()), [g_other])
+            self.assertEqual(st, 403, body[:300])
+            self.assertIn("groups do not grant access", body)
+            st, _c, body = sign_in(str(uuid.uuid4()), [g_analyst], email="eve@evil.example")
+            self.assertEqual(st, 403, body[:300])
+            for override in ({"nonce": "wrong"}, {"aud": "someone-else"}, {"exp": int(time.time()) - 3600}, {"iss": "https://evil.example/v2.0"}):
+                st, _c, body = sign_in(str(uuid.uuid4()), [g_analyst], overrides=override)
+                self.assertEqual(st, 401, f"{override}: {body[:300]}")
+            st, _c, body = sign_in(str(uuid.uuid4()), [g_analyst], tamper_state=True)
+            self.assertEqual(st, 400, body[:300])
+
+            # Password sign-in limited to break-glass admins.
+            _vid, _vc, _vx = make_user("viewer", "glass")
+            email = f"{uniq('glassuser')}@tawny.local"
+            code, _u, raw = admin_call("POST", "/api/users", {"email": email, "password": "glass-password1", "role": "analyst"})
+            self.assertEqual(code, 201, raw[:300])
+            code, _s, raw = admin_call("PUT", "/api/settings/tenant", {"password_login": "break_glass"})
+            self.assertEqual(code, 200, raw[:300])
+            try:
+                with self.assertRaises(AssertionError) as ctx:
+                    login_session(email, "glass-password1")
+                self.assertIn("403", str(ctx.exception))
+                # The bootstrap admin is break-glass and still signs in.
+                login_session(os.environ.get("TAWNY_CONTRACT_EMAIL", "admin@tawny.local"),
+                              os.environ.get("TAWNY_CONTRACT_PASSWORD", "contract-password"))
+                code, m2, _raw = call("GET", "/api/auth/methods", auth="none")
+                assert isinstance(m2, dict)
+                self.assertEqual(m2["password"], "break_glass")
+            finally:
+                admin_call("PUT", "/api/settings/tenant", {"password_login": "all"})
+            login_session(email, "glass-password1")
+        finally:
+            admin_call("PUT", "/api/settings/oidc", {"enabled": False, "entra_tenant_id": mock.tid, "client_id": mock.client_id})
+            mock.stop()
+
+
 def load_tests(loader: unittest.TestLoader, standard_tests: list, pattern: str | None):
     del loader, pattern
     rest: list[unittest.TestCase] = []
@@ -1983,6 +2301,7 @@ if __name__ == "__main__":
         [
             loader.loadTestsFromTestCase(AuthContractTests),
             loader.loadTestsFromTestCase(ContractTests),
+            loader.loadTestsFromTestCase(RoleAndIncidentContractTests),
         ],
         None,
     )

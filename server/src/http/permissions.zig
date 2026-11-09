@@ -136,7 +136,7 @@ const expected = [_]Expect{
     .{ .method = .POST, .path = "/api/agents/enroll", .admin = 'p', .analyst = 'p', .viewer = 'p' },
     .{ .method = .POST, .path = "/api/agents/heartbeat", .admin = 'g', .analyst = 'g', .viewer = 'g' },
     .{ .method = .POST, .path = "/api/agents/events", .admin = 'g', .analyst = 'g', .viewer = 'g' },
-    .{ .method = .POST, .path = "/api/agents/x/actions/y/result", .admin = 'g', .analyst = 'g', .viewer = 'g' },
+    .{ .method = .POST, .path = "/api/agents/actions/y/result", .admin = 'g', .analyst = 'g', .viewer = 'g' },
     .{ .method = .POST, .path = "/api/agent/yara-rules", .admin = 'g', .analyst = 'g', .viewer = 'g' },
     .{ .method = .POST, .path = "/api/agent/update-check", .admin = 'g', .analyst = 'g', .viewer = 'g' },
     .{ .method = .GET, .path = "/api/agents", .admin = 'a', .analyst = 'a', .viewer = 'a' },

@@ -178,7 +178,7 @@ pub fn putOidc(
         return util.problem(request, allocator, .bad_request, "entra_tenant_id and client_id are required.");
     }
     if (v.authority) |a| {
-        if (!std.mem.startsWith(u8, a, "https://") and !std.mem.startsWith(u8, a, "http://127.0.0.1")) {
+        if (!std.mem.startsWith(u8, a, "https://") and !std.mem.startsWith(u8, a, "http://127.0.0.1:")) {
             return util.problem(request, allocator, .bad_request, "authority must be an https URL.");
         }
     }

@@ -41,6 +41,9 @@ jobs:
       # The contract suite posts unsigned batches from keyless test agents.
       # Signed batches are checked there and in agent-e2e with this on.
       TAWNY_REQUIRE_SIGNED_BATCHES: "off"
+      # Lets the server reach the contract suite's mock OIDC provider on
+      # http://127.0.0.1. Never set in production.
+      TAWNY_OIDC_ALLOW_LOOPBACK: "1"
     defaults:
       run:
         working-directory: server

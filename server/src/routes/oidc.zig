@@ -133,24 +133,26 @@ pub const Discovery = struct {
     jwks_uri: []const u8,
 };
 
-/// Endpoints must be https, except loopback for the contract test's mock
-/// provider when TAWNY_ALLOW_PRIVATE_EGRESS is on.
-fn endpointAllowed(url: []const u8) bool {
-    const private = std.mem.eql(u8, envSpan("TAWNY_ALLOW_PRIVATE_EGRESS") orelse "", "true") or
-        std.mem.eql(u8, envSpan("TAWNY_ALLOW_PRIVATE_EGRESS") orelse "", "1");
+/// Endpoints must be https to a public host. TAWNY_OIDC_ALLOW_LOOPBACK=1
+/// also allows http://127.0.0.1, for the contract suite's mock provider only.
+pub fn endpointAllowed(url: []const u8, loopback_ok: bool) bool {
     if (std.mem.startsWith(u8, url, "https://")) {
         const rest = url["https://".len..];
-        const end = std.mem.indexOfAny(u8, rest, ":/") orelse rest.len;
-        return egress.allowed(rest[0..end], private);
+        const end = std.mem.indexOfAny(u8, rest, ":/?#") orelse rest.len;
+        return egress.allowed(rest[0..end], false);
     }
-    if (private and std.mem.startsWith(u8, url, "http://127.0.0.1:")) return true;
-    return false;
+    return loopback_ok and std.mem.startsWith(u8, url, "http://127.0.0.1:");
+}
+
+fn loopbackOk() bool {
+    const v = envSpan("TAWNY_OIDC_ALLOW_LOOPBACK") orelse return false;
+    return std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "true");
 }
 
 fn discovery(arena: std.mem.Allocator, io: std.Io, conn: *pg.Conn, cfg: Config) !Discovery {
     const text = cfg.discovery orelse blk: {
         const url = try std.fmt.allocPrint(arena, "{s}/.well-known/openid-configuration", .{cfg.authority});
-        if (!endpointAllowed(url)) return error.EgressRefused;
+        if (!endpointAllowed(url, loopbackOk())) return error.EgressRefused;
         const body = try fetch(arena, io, .GET, url, null, null);
         _ = try std.json.parseFromSliceLeaky(Discovery, arena, body, .{ .ignore_unknown_fields = true });
         try conn.execNoRows("UPDATE tenant_oidc SET discovery_json = $2::jsonb WHERE tenant_id = $1::uuid", &.{
@@ -159,7 +161,8 @@ fn discovery(arena: std.mem.Allocator, io: std.Io, conn: *pg.Conn, cfg: Config) 
         break :blk body;
     };
     const d = try std.json.parseFromSliceLeaky(Discovery, arena, text, .{ .ignore_unknown_fields = true });
-    if (!endpointAllowed(d.authorization_endpoint) or !endpointAllowed(d.token_endpoint) or !endpointAllowed(d.jwks_uri)) return error.EgressRefused;
+    const lo = loopbackOk();
+    if (!endpointAllowed(d.authorization_endpoint, lo) or !endpointAllowed(d.token_endpoint, lo) or !endpointAllowed(d.jwks_uri, lo)) return error.EgressRefused;
     return d;
 }
 
@@ -626,4 +629,14 @@ test "id token: iss, aud, exp, nbf, nonce and tid are each enforced" {
     const dot = std.mem.indexOfScalar(u8, forged, '.').?;
     forged[dot + 5] = if (forged[dot + 5] == 'A') 'B' else 'A';
     try std.testing.expectError(error.InvalidSignature, verifyIdToken(arena, forged, jwks, want));
+}
+
+test "provider endpoints must be https to a public host" {
+    try std.testing.expect(endpointAllowed("https://login.microsoftonline.com/x/v2.0", false));
+    try std.testing.expect(!endpointAllowed("http://login.microsoftonline.com/x", false));
+    try std.testing.expect(!endpointAllowed("https://169.254.169.254/latest", false));
+    try std.testing.expect(!endpointAllowed("https://localhost/x", false));
+    try std.testing.expect(!endpointAllowed("http://127.0.0.1:9999/x", false));
+    try std.testing.expect(endpointAllowed("http://127.0.0.1:9999/x", true));
+    try std.testing.expect(!endpointAllowed("http://127.0.0.1.evil.example/x", true));
 }

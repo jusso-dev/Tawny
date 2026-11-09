@@ -202,6 +202,7 @@ pub fn update(
         role: ?[]const u8 = null,
         password: ?[]const u8 = null,
         disabled: ?bool = null,
+        break_glass: ?bool = null,
     };
     var parsed = std.json.parseFromSlice(Req, allocator, body, .{ .ignore_unknown_fields = true }) catch {
         return util.problem(request, allocator, .bad_request, "invalid user update.");
@@ -257,6 +258,16 @@ pub fn update(
         } else {
             try conn.execNoRows("UPDATE users SET disabled_at = NULL WHERE id = $1::uuid", &.{.{ .text = user_id }});
         }
+    }
+    if (parsed.value.break_glass) |glass| {
+        // Break-glass keeps password sign-in when the tenant limits it. Only
+        // admins with a password can hold it.
+        const rows = try conn.exec(allocator,
+            \\UPDATE users SET break_glass = $2::boolean WHERE id = $1::uuid
+            \\  AND (NOT $2::boolean OR (role = 'admin' AND password_hash IS NOT NULL)) RETURNING id::text
+        , &.{ .{ .text = user_id }, .{ .text = if (glass) "true" else "false" } });
+        defer freeRows(allocator, rows);
+        if (rows.len == 0) return util.problem(request, allocator, .bad_request, "break_glass needs an admin with a password.");
     }
     try audit.add(allocator, io, conn, web.tenant_id, web.user_id, "user.update", user_id, null);
     return getOne(allocator, conn, request, web, user_id);
