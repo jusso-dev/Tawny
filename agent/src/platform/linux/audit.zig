@@ -487,16 +487,44 @@ pub fn map(alloc: std.mem.Allocator, ev: *const Event, ctx: MapContext) !?Mapped
     return null;
 }
 
+/// Audit records always carry Linux paths, so join and split with '/' even
+/// when these tests run on Windows.
+fn joinPosix(alloc: std.mem.Allocator, dir: []const u8, name: []const u8) ![]u8 {
+    const d = std.mem.trimEnd(u8, dir, "/");
+    const n = std.mem.trimStart(u8, name, "/");
+    if (d.len == 0) return std.fmt.allocPrint(alloc, "/{s}", .{n});
+    return std.fmt.allocPrint(alloc, "{s}/{s}", .{ d, n });
+}
+
+fn extensionPosix(name: []const u8) []const u8 {
+    const base = std.fs.path.basenamePosix(name);
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse return "";
+    if (dot == 0) return "";
+    return base[dot..];
+}
+
+test "posix path helpers ignore the host separator" {
+    const a = testing.allocator;
+    const p1 = try joinPosix(a, "/etc/cron.d/", "backdoor");
+    defer a.free(p1);
+    try testing.expectEqualStrings("/etc/cron.d/backdoor", p1);
+    const p2 = try joinPosix(a, "/", "x");
+    defer a.free(p2);
+    try testing.expectEqualStrings("/x", p2);
+    try testing.expectEqualStrings(".sh", extensionPosix("/var/tmp/payload.sh"));
+    try testing.expectEqualStrings("", extensionPosix(".bashrc"));
+}
+
 /// Absolute path of a created file: as given, else under the PARENT item, else
 /// under the CWD record.
 fn createdPath(alloc: std.mem.Allocator, ev: *const Event, name: []const u8) ![]u8 {
     if (name.len > 0 and name[0] == '/') return alloc.dupe(u8, name);
     for (ev.paths.items) |p| {
         if (p.parent and p.name.items.len > 0 and p.name.items[0] == '/') {
-            return std.fs.path.join(alloc, &.{ p.name.items, std.fs.path.basename(name) });
+            return joinPosix(alloc, p.name.items, std.fs.path.basenamePosix(name));
         }
     }
-    if (ev.cwd.items.len > 0) return std.fs.path.join(alloc, &.{ ev.cwd.items, name });
+    if (ev.cwd.items.len > 0) return joinPosix(alloc, ev.cwd.items, name);
     return alloc.dupe(u8, name);
 }
 
@@ -730,10 +758,10 @@ fn fileCreate(alloc: std.mem.Allocator, ev: *const Event, ctx: MapContext, path:
     try jw.beginObject();
     try jw.objectField("path");
     try jw.write(path);
-    const name = std.fs.path.basename(path);
+    const name = std.fs.path.basenamePosix(path);
     try jw.objectField("name");
     try jw.write(name);
-    const ext = std.fs.path.extension(name);
+    const ext = extensionPosix(name);
     if (ext.len > 1) {
         try jw.objectField("extension");
         try jw.write(ext[1..]);

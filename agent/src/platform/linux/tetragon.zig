@@ -141,7 +141,7 @@ fn processStart(alloc: std.mem.Allocator, ev: V, p: V, pid: u32, ctx: MapContext
         try jw.write(entity.formatIso(&buf, s));
     }
     try jw.objectField("name");
-    try jw.write(std.fs.path.basename(binary));
+    try jw.write(std.fs.path.basenamePosix(binary));
     if (binary.len > 0) {
         try jw.objectField("image");
         try jw.write(binary);
@@ -177,7 +177,7 @@ fn processStart(alloc: std.mem.Allocator, ev: V, p: V, pid: u32, ctx: MapContext
             try jw.objectField("image");
             try jw.write(pbin);
             try jw.objectField("name");
-            try jw.write(std.fs.path.basename(pbin));
+            try jw.write(std.fs.path.basenamePosix(pbin));
         }
         try jw.endObject();
     }
@@ -234,7 +234,7 @@ fn networkConnect(alloc: std.mem.Allocator, p: V, pid: u32, sock: V, daddr: []co
         try jw.objectField("image");
         try jw.write(binary);
         try jw.objectField("name");
-        try jw.write(std.fs.path.basename(binary));
+        try jw.write(std.fs.path.basenamePosix(binary));
     }
     try jw.endObject();
     try jw.objectField("network");
