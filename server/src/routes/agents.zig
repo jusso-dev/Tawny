@@ -428,13 +428,15 @@ pub fn heartbeat(
             exp_owned = try allocator.dupe(u8, util.formatRfc3339(&tbuf, now + 15 * 60));
             exp_at = exp_owned;
         }
-        var ph = row.cols[4];
-        var ph_owned: ?[]u8 = null;
-        defer if (ph_owned) |p| allocator.free(p);
-        if (ph == null) {
-            ph_owned = try util.sha256Hex(allocator, row.cols[2] orelse "{}");
-            ph = ph_owned;
-        }
+        // Reserialize the payload to the compact form the agent reconstructs
+        // (parse then stringify), so the signed payload_hash matches the bytes
+        // the agent recomputes from the payload field it receives.
+        const payload_raw = row.cols[2] orelse "{}";
+        const payload_compact = reserializePayload(allocator, payload_raw) catch try allocator.dupe(u8, payload_raw);
+        defer allocator.free(payload_compact);
+        const ph_owned = try util.sha256Hex(allocator, payload_compact);
+        const ph: []const u8 = ph_owned;
+        defer allocator.free(ph_owned);
         try conn.execNoRows(
             \\UPDATE response_actions SET status = 'dispatched', dispatched_at = $2::timestamptz,
             \\  execution_token_hash = $3, expires_at = COALESCE(expires_at, $4::timestamptz),
@@ -445,7 +447,7 @@ pub fn heartbeat(
             .{ .text = now_s },
             .{ .text = exec_hash },
             .{ .text = exp_at.? },
-            .{ .text = ph.? },
+            .{ .text = ph },
         });
         const id_j = try util.escapeJson(allocator, row.cols[0].?);
         defer allocator.free(id_j);
@@ -455,9 +457,8 @@ pub fn heartbeat(
         defer allocator.free(tok_j);
         const exp_j = try util.escapeJson(allocator, exp_at.?);
         defer allocator.free(exp_j);
-        const ph_j = try util.escapeJson(allocator, ph.?);
+        const ph_j = try util.escapeJson(allocator, ph);
         defer allocator.free(ph_j);
-        const payload = row.cols[2] orelse "{}";
         // Sign the action so the agent can refuse anything the server did not
         // authorise. The signed string pins the id, agent, type, deadline and
         // the hash of the payload the agent receives.
@@ -468,13 +469,13 @@ pub fn heartbeat(
             agent.agent_id,
             row.cols[1] orelse "",
             exp_at.?,
-            ph.?,
+            ph,
         );
         defer allocator.free(sig_b64);
         {
             const __tmp = try std.fmt.allocPrint(allocator,
             "{{\"id\":{s},\"action_type\":{s},\"payload\":{s},\"execution_token\":{s},\"expires_at\":{s},\"payload_hash\":{s},\"signature\":\"{s}\"}}",
-            .{ id_j, at_j, payload, tok_j, exp_j, ph_j, sig_b64 },
+            .{ id_j, at_j, payload_compact, tok_j, exp_j, ph_j, sig_b64 },
         );
             defer allocator.free(__tmp);
             try actions_json.appendSlice(allocator, __tmp);
@@ -1016,6 +1017,23 @@ pub fn createAction(
     , .{ id_j, aid_j, at_j, req_j, exp_j, payload_buf.items, ph_j });
     defer allocator.free(json);
     try util.respondJson(request, .created, json);
+}
+
+/// Parse then compact-serialize a JSON payload, matching the bytes the agent
+/// reconstructs from the payload field. Caller frees.
+fn reserializePayload(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+}
+
+test "reserializePayload produces compact JSON the agent can match" {
+    const a = std.testing.allocator;
+    const out = try reserializePayload(a, "{\"pid\": 1234, \"image_path\": \"/bin/x\"}");
+    defer a.free(out);
+    // No spaces after the structural characters.
+    try std.testing.expect(std.mem.indexOf(u8, out, ": ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1234") != null);
 }
 
 fn idempotencyConflict(msg: []const u8) bool {

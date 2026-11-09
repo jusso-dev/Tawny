@@ -166,6 +166,7 @@
       view.main.appendChild(el("p", (res.body.hostname || id) + " · " + (res.body.status || ""), "muted"));
     });
     renderProcessTree(view, id);
+    renderActions(view, id);
     var live = el("div", null, "card");
     live.appendChild(el("p", "Live events", "muted"));
     var list = el("div");
@@ -188,6 +189,81 @@
     source.onerror = function () {
       if (!list.textContent) list.textContent = "Event stream reconnecting.";
     };
+  }
+
+  // Response actions. Lists recent actions and, for admins, lets one create
+  // a signed action. The server signs each action; the agent verifies it.
+  var ACTION_TYPES = [
+    "kill_process",
+    "suspend_process",
+    "resume_process",
+    "quarantine_file",
+    "restore_file",
+    "isolate_host",
+    "release",
+  ];
+
+  function renderActions(view, id) {
+    var card = el("div", null, "card");
+    card.appendChild(el("p", "Response actions", "muted"));
+    var listing = el("div");
+    card.appendChild(listing);
+
+    function reload() {
+      api("GET", "/api/agents/" + id + "/actions").then(function (res) {
+        listing.textContent = "";
+        var rows = (res.status === 200 && Array.isArray(res.body)) ? res.body : [];
+        if (!rows.length) {
+          listing.appendChild(el("p", "No actions yet.", "muted"));
+          return;
+        }
+        listing.appendChild(table(
+          ["Type", "Status", "Requested"],
+          rows.map(function (a) {
+            return [a.action_type || "", a.status || "", a.requested_at || ""];
+          })
+        ));
+      });
+    }
+
+    if (isAdmin()) {
+      var form = el("div");
+      var select = document.createElement("select");
+      ACTION_TYPES.forEach(function (t) {
+        var opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        select.appendChild(opt);
+      });
+      var payload = textInput("");
+      payload.placeholder = '{"pid":1234} or {"path":"...","sha256":"..."}';
+      var run = el("button", "Create");
+      run.addEventListener("click", function () {
+        var body = {};
+        var raw = (payload.value || "").trim();
+        if (raw.length) {
+          try { body = JSON.parse(raw); } catch (e) {
+            alert("Payload must be valid JSON.");
+            return;
+          }
+        }
+        api("POST", "/api/agents/" + id + "/actions", {
+          action_type: select.value,
+          payload: body,
+        }).then(function (res) {
+          if (res.status !== 201) return alert("Action failed: HTTP " + res.status);
+          payload.value = "";
+          reload();
+        });
+      });
+      form.appendChild(select);
+      form.appendChild(payload);
+      form.appendChild(run);
+      card.appendChild(form);
+    }
+
+    view.main.appendChild(card);
+    reload();
   }
 
   // Process tree from GET /api/agents/{id}/process-tree. Picking a process

@@ -280,6 +280,7 @@ def enroll_host(
         "agent_id": agent_id,
         "jwt": parsed["jwt"],
         "yara_rule_key": parsed.get("yara_rule_key"),
+        "action_public_key": parsed.get("action_public_key"),
         "hostname": hostname,
         "config": parsed["config"],
         "summary": summary,
@@ -1374,6 +1375,73 @@ level: high
         self.assertIsNotNone(fetched.get("dispatched_at"))
         self.assertIsNotNone(fetched.get("completed_at"))
         self.assertIn("process terminated", got_raw)
+
+    def test_response_action_is_signed(self) -> None:
+        # The server signs every dispatched action with the action key. The
+        # agent verifies this before running anything. Check the signature with
+        # openssl against the public key, and that tampering breaks it.
+        agent = windows_agent()
+        self.assertEqual(agent.get("action_public_key"), agent.get("yara_rule_key"))
+        pid = 40000 + secrets.randbelow(10000)
+        created, action, created_raw = call(
+            "POST",
+            f"/api/agents/{agent['agent_id']}/actions",
+            {"action_type": "kill_process", "payload": {"pid": pid}},
+        )
+        self.assertIn(created, (200, 201), created_raw[:800])
+        hb_code, hb, hb_raw = call(
+            "POST",
+            "/api/agents/heartbeat",
+            {"agent_version": "0.1.1", "uptime_seconds": 7, "buffer_depth": 0},
+            auth="agent",
+            bearer=agent["jwt"],
+        )
+        self.assertEqual(hb_code, 200, hb_raw[:800])
+        assert isinstance(hb, dict)
+        self.assertEqual(hb.get("action_public_key"), agent.get("action_public_key"))
+        match = next(
+            (
+                row
+                for row in hb.get("actions", [])
+                if isinstance(row, dict) and row.get("id") == action["id"]
+            ),
+            None,
+        )
+        self.assertIsNotNone(match, hb_raw[:800])
+        assert isinstance(match, dict)
+        self.assertTrue(match.get("signature"))
+        self.assertTrue(match.get("payload_hash"))
+        canonical = (
+            "tawny-action-v1\n"
+            f"{match['id']}\n{agent['agent_id']}\n{match['action_type']}\n"
+            f"{match['expires_at']}\n{match['payload_hash']}"
+        ).encode()
+        import tempfile
+
+        raw_pub = base64.b64decode(agent["action_public_key"])
+        der = bytes.fromhex("302a300506032b6570032100") + raw_pub
+        with tempfile.TemporaryDirectory(prefix="tawny-ct-action-") as tmp:
+            pub = os.path.join(tmp, "pub.der")
+            msg = os.path.join(tmp, "msg")
+            sig = os.path.join(tmp, "sig")
+            with open(pub, "wb") as h:
+                h.write(der)
+            with open(msg, "wb") as h:
+                h.write(canonical)
+            with open(sig, "wb") as h:
+                h.write(base64.b64decode(match["signature"]))
+            ok = subprocess.run(
+                ["openssl", "pkeyutl", "-verify", "-pubin", "-keyform", "DER", "-inkey", pub, "-rawin", "-in", msg, "-sigfile", sig],
+                capture_output=True,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            with open(msg, "wb") as h:
+                h.write(canonical.replace(b"kill_process", b"quarantine_file"))
+            bad = subprocess.run(
+                ["openssl", "pkeyutl", "-verify", "-pubin", "-keyform", "DER", "-inkey", pub, "-rawin", "-in", msg, "-sigfile", sig],
+                capture_output=True,
+            )
+            self.assertNotEqual(bad.returncode, 0)
 
     def test_other_agent_cannot_complete_action(self) -> None:
         owner = enroll_host("own", "windows", "11", "x64")
