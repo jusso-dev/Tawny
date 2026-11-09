@@ -39,6 +39,11 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--eventlog-dump")) {
         return windows_events.dumpCommand(alloc, args[2..]);
     }
+    if (args.len >= 2 and @import("response_debug.zig").isDebugCommand(args[1])) {
+        const code = @import("response_debug.zig").run(alloc, args[1..]);
+        if (code != 0) std.process.exit(code);
+        return;
+    }
 
     if (builtin.target.os.tag == .windows) {
         // Under the SCM this blocks until the service stops; ServiceMain runs
@@ -489,6 +494,7 @@ test "main module loads" {
     _ = @import("quarantine.zig");
     _ = @import("platform/windows/wfp.zig");
     _ = @import("platform/windows/process_control.zig");
+    _ = @import("response_debug.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Windows event log parsing and mapping are pure too.

@@ -499,9 +499,10 @@ server. Files stay on the host unless an analyst collects them.
   `yara_rule_key` in config) and refuses unsigned, tampered, wrong-key or
   older packs, keeping the rules it has. The heartbeat reply carries
   `yara_pack_version` so agents fetch only on change.
-- **Key.** `TAWNY_RULE_SIGNING_KEY`, or derived from the agent JWT seed. A
-  separate key from the JWT key. Issue #57 adds a server action key; that
-  work can merge the two behind `state.rulePackKey`.
+- **Key.** The server action key (#57) signs both response actions and YARA
+  rule packs. `TAWNY_ACTION_SIGNING_KEY`, or derived from the agent JWT seed
+  with its own label, separate from the JWT key. `TAWNY_RULE_SIGNING_KEY` is a
+  deprecated alias. `state.rulePackKey` forwards to `state.actionKey`.
 - **Alerts.** A `yara_match` raises an alert through the `yara` rule that
   declares the matched rule name, so suppressions and sinks work as usual.
 
@@ -615,6 +616,17 @@ XOR-obfuscated/encrypted so AV and execution can't touch it, with sidecar
 metadata (original path, ACL SDDL, owner, timestamps, hashes, source action).
 Restore re-creates path + ACL. Original deleted only after the quarantine
 copy is fsynced and its hash verified.
+
+**Status (#57).** The server signs every action with the action key and the
+agent verifies it before acting, with a local journal for dedupe and restart
+replay. Windows kill, suspend and resume work with the identity guard and the
+critical-process refusal list. Quarantine and restore work on Windows, Linux
+and macOS (XOR obfuscation, SDDL on Windows, owner-only elsewhere). WFP
+isolation has the filter-building plan, the auto-release deadline, the
+reconcile-on-start design and the break-glass release code as pure, tested
+logic; the live FwpmEngine integration and the `tawny-agent release --code`
+CLI are not wired yet, and `isolate_host`/`release` report `failed` until then.
+Linux nftables isolation lands in #59.
 
 ## 10. Agent identity, protection, updates, health
 

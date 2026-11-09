@@ -36,12 +36,23 @@ Response `200`:
   "agent_id": "8f3c1a2b-...",
   "jwt": "eyJhbGciOi...",
   "jwt_expires_at": "2026-08-11T00:00:00Z",
+  "action_public_key": "base64 Ed25519 public key",
   "yara_rule_key": "base64 Ed25519 public key",
   "config": { "heartbeat_interval_seconds": 60 }
 }
 ```
 
-`yara_rule_key` is the key that signs YARA rule packs. The agent pins it in `<state>.yarakey` the first time and refuses packs signed by any other key. A `yara_rule_key` in the agent's `config.toml` takes precedence.
+`action_public_key` is the server action key. One Ed25519 key signs both
+response actions and YARA rule packs, so `yara_rule_key` carries the same bytes
+(kept for compatibility). The agent pins it in `<state>.actionkey` (and
+`<state>.yarakey`) the first time and refuses actions or packs signed by any
+other key. A `yara_rule_key` in the agent's `config.toml` takes precedence.
+
+Trust on first use: an agent enrolled before the action key existed has no
+pinned key. Its first heartbeat that carries `action_public_key` pins it, over
+the same TLS channel the JWT already trusts, and the agent logs that it did.
+The window is that first heartbeat; after it a different key is refused, so
+changing the server key means re-enrolling agents or setting the key in config.
 
 Errors: `401` if token unknown or already used, `410` if token expired.
 
@@ -330,13 +341,27 @@ triggering telemetry `payload`, `severity` (`low|medium|high|critical`) and
 ### POST `/api/agents/{id}/actions`
 
 Admin web user or Admin `twny_` API token. Body:
-`{"action_type":"kill_process"|"isolate_host"|"release_host"|"yara_scan","payload":{...},"idempotency_key":"..."}`.
-`kill_process` requires `payload.pid` (positive integer). `yara_scan` takes `payload.path`, a file or a folder (not recursive); matches arrive as `yara_match` events. Re-posting the same
-`idempotency_key` for the same agent returns the existing action. Poll
-`GET /api/agents/{id}/actions` for the outcome; actions are delivered on the
-agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
-`expired`. Host isolation and release are not yet implemented by the agent and
-currently complete as `failed`.
+`{"action_type":"kill_process"|"suspend_process"|"resume_process"|"quarantine_file"|"restore_file"|"isolate_host"|"release"|"release_host"|"yara_scan","payload":{...},"idempotency_key":"..."}`.
+`kill_process`, `suspend_process` and `resume_process` take `payload.pid`
+(positive integer) and optional `image_path` and `start_time_unix` for the PID
+reuse guard. `quarantine_file` takes `payload.path` and `payload.sha256`;
+`restore_file` takes `payload.sha256`. `yara_scan` takes `payload.path`, a file
+or a folder (not recursive); matches arrive as `yara_match` events. Re-posting
+the same `idempotency_key` for the same agent returns the existing action.
+
+Every dispatched action is signed by the server action key. The agent verifies
+the signature against its pinned key before it runs anything, and refuses
+unsigned, expired, tampered or wrong-key actions, reporting `failed` with a
+reason. The signed string is
+`tawny-action-v1\n<action_id>\n<agent_id>\n<action_type>\n<expires_at>\n<sha256 of payload>`;
+the heartbeat adds `signature` and `action_public_key` to its reply.
+
+Poll `GET /api/agents/{id}/actions` for the outcome; actions are delivered on
+the agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
+`expired`. Process control, quarantine and restore run on Windows; quarantine
+and restore also run on Linux and macOS. Host isolation (`isolate_host`,
+`isolate`) and `release` report `failed` with a clear reason until WFP and
+nftables isolation land.
 
 ### GET `/api/agents/{id}/actions` and `/api/agents/{id}/actions/{actionId}`
 
