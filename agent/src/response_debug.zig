@@ -105,9 +105,14 @@ fn wfpSelftest() u8 {
         std.debug.print("wfp addTestBlock failed: {s}\n", .{@errorName(err)});
         return 1;
     };
-    const count_after_add = wfp.countFilters() catch 0;
-    if (count_after_add < 1) {
-        std.debug.print("wfp filter not present after add\n", .{});
+    const exists = wfp.filterExists(id) catch false;
+    const count_after_add = wfp.countFilters() catch |err| blk: {
+        std.debug.print("wfp countFilters failed: {s} (status 0x{x})\n", .{ @errorName(err), wfp.lastError() });
+        break :blk 0;
+    };
+    std.debug.print("wfp added id={d} exists_by_id={} count_after_add={d}\n", .{ id, exists, count_after_add });
+    if (!exists or count_after_add < 1) {
+        std.debug.print("wfp filter not present after add (status 0x{x})\n", .{wfp.lastError()});
         _ = wfp.release() catch {};
         return 1;
     }

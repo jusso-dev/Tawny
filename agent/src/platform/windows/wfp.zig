@@ -255,6 +255,22 @@ pub fn countFilters() EngineError!usize {
     };
 }
 
+/// True when a filter with this id exists. Windows only.
+pub fn filterExists(id: u64) EngineError!bool {
+    return switch (builtin.target.os.tag) {
+        .windows => win.filterExists(id),
+        else => error.WfpUnavailable,
+    };
+}
+
+/// Last WFP status code from a failed call, for diagnostics.
+pub fn lastError() u32 {
+    return switch (builtin.target.os.tag) {
+        .windows => win.last_error,
+        else => 0,
+    };
+}
+
 /// CI self-test only: add a single block filter for one remote IPv4 address
 /// (no block-all), so it cannot cut the runner off. Returns the filter id.
 pub fn addTestBlock(ipv4: []const u8) EngineError!u64 {
@@ -391,6 +407,7 @@ const win = if (builtin.target.os.tag == .windows) struct {
     extern "fwpuclnt" fn FwpmFilterEnum0(engineHandle: HANDLE, enumHandle: HANDLE, numEntriesRequested: u32, entries: *[*]*FWPM_FILTER0, numEntriesReturned: *u32) callconv(WINAPI) DWORD;
     extern "fwpuclnt" fn FwpmFilterDestroyEnumHandle0(engineHandle: HANDLE, enumHandle: HANDLE) callconv(WINAPI) DWORD;
     extern "fwpuclnt" fn FwpmFreeMemory0(p: *?*anyopaque) callconv(WINAPI) void;
+    extern "fwpuclnt" fn FwpmFilterGetById0(engineHandle: HANDLE, id: u64, filter: *?*FWPM_FILTER0) callconv(WINAPI) DWORD;
 
     const layers = [_]G{
         FWPM_LAYER_ALE_AUTH_CONNECT_V4,
@@ -420,6 +437,7 @@ const win = if (builtin.target.os.tag == .windows) struct {
     }
 
     var prov_key: G = provider_guid;
+    pub var last_error: DWORD = 0;
     const tawny_name: [*:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("Tawny");
     const tawny_desc: [*:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral("Tawny EDR isolation");
 
@@ -559,28 +577,57 @@ const win = if (builtin.target.os.tag == .windows) struct {
         defer _ = FwpmEngineClose0(engine);
         var total: usize = 0;
         for (layers) |layer| {
+            // No provider key in the template: match on our sublayer below, so a
+            // provider mismatch can't hide filters. Page through every entry,
+            // because a busy layer can hold hundreds of system filters.
             var tmpl = FWPM_FILTER_ENUM_TEMPLATE0{
                 .layerKey = layer,
                 .enumType = FWP_FILTER_ENUM_OVERLAPPING,
                 .actionMask = 0xFFFFFFFF,
             };
-            tmpl.providerKey = @constCast(&prov_key);
             var enum_h: HANDLE = undefined;
-            if (FwpmFilterCreateEnumHandle0(engine, &tmpl, &enum_h) != 0) return error.EnumFailed;
-            defer _ = FwpmFilterDestroyEnumHandle0(engine, enum_h);
-            var entries: [*]*FWPM_FILTER0 = undefined;
-            var num: u32 = 0;
-            if (FwpmFilterEnum0(engine, enum_h, 256, &entries, &num) != 0) return error.EnumFailed;
-            var i: u32 = 0;
-            while (i < num) : (i += 1) {
-                if (std.meta.eql(entries[i].subLayerKey, sublayer_guid)) total += 1;
+            const rc = FwpmFilterCreateEnumHandle0(engine, &tmpl, &enum_h);
+            if (rc != 0) {
+                last_error = rc;
+                return error.EnumFailed;
             }
-            if (num > 0) {
+            defer _ = FwpmFilterDestroyEnumHandle0(engine, enum_h);
+            while (true) {
+                var entries: [*]*FWPM_FILTER0 = undefined;
+                var num: u32 = 0;
+                const erc = FwpmFilterEnum0(engine, enum_h, 256, &entries, &num);
+                if (erc != 0) {
+                    last_error = erc;
+                    return error.EnumFailed;
+                }
+                if (num == 0) break;
+                var i: u32 = 0;
+                while (i < num) : (i += 1) {
+                    if (std.meta.eql(entries[i].subLayerKey, sublayer_guid)) total += 1;
+                }
                 var mem: ?*anyopaque = @ptrCast(entries);
                 FwpmFreeMemory0(&mem);
+                if (num < 256) break;
             }
         }
         return total;
+    }
+
+    /// True when a filter with this id exists. A direct check that doesn't
+    /// depend on enumeration.
+    fn filterExists(id: u64) EngineError!bool {
+        var engine: HANDLE = undefined;
+        try open(&engine);
+        defer _ = FwpmEngineClose0(engine);
+        var out: ?*FWPM_FILTER0 = null;
+        const rc = FwpmFilterGetById0(engine, id, &out);
+        if (rc != 0) {
+            last_error = rc;
+            return false;
+        }
+        var mem: ?*anyopaque = @ptrCast(out);
+        FwpmFreeMemory0(&mem);
+        return true;
     }
 
     fn addTestBlock(ipv4: []const u8) EngineError!u64 {
