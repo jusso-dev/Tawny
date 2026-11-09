@@ -39,6 +39,8 @@ const routes = [
   "/enrollment",
   "/users",
   "/admin/jobs",
+  "/incidents",
+  "/attack",
 ];
 for (const route of routes) {
   if (!source.includes(`"${route}"`) && !source.includes(`'${route}'`)) {
