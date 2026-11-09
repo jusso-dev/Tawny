@@ -333,6 +333,12 @@ fn openReason(err: audit.OpenError) []const u8 {
         error.DaemonPresent => "another audit daemon owns the socket and the multicast group was refused",
         error.AuditUnavailable => "audit netlink unavailable (no kernel audit, or not in the initial namespaces)",
         error.UnsupportedArch => "audit rules not supported on this architecture",
+        error.ThreadStartFailed => switch (audit.last_spawn_errno) {
+            1 => "audit reader thread refused (pthread_create EPERM)",
+            11 => "audit reader thread refused (pthread_create EAGAIN, thread limit)",
+            22 => "audit reader thread refused (pthread_create EINVAL)",
+            else => "audit reader thread refused (pthread_create failed)",
+        },
         else => "audit netlink failed to start",
     };
 }

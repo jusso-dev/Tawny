@@ -865,7 +865,11 @@ pub fn nativeRules(alloc: std.mem.Allocator, watch_dirs: []const []const u8) ![]
 
 pub const Mode = enum { daemon, multicast };
 
+/// errno from the last failed reader thread start, for health reasons.
+pub var last_spawn_errno: u16 = 0;
+
 pub const OpenError = error{
+    ThreadStartFailed,
     /// No audit in this kernel, or not the initial namespaces (containers).
     AuditUnavailable,
     /// Neither CAP_AUDIT_CONTROL nor CAP_AUDIT_READ.
@@ -959,8 +963,9 @@ pub const Live = struct {
         var handle: c.pthread_t = undefined;
         const rc = c.pthread_create(&handle, &attr, readerEntry, @ptrCast(self));
         if (rc != .SUCCESS) {
+            last_spawn_errno = @intFromEnum(rc);
             std.log.warn("audit: reader thread not started: {s}", .{@tagName(rc)});
-            return error.SystemResources;
+            return error.ThreadStartFailed;
         }
         self.thread = handle;
     }
