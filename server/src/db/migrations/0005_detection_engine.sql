@@ -52,3 +52,8 @@ CREATE POLICY tenant_isolation ON threshold_counters
     WITH CHECK (tenant_id = tawny_current_tenant());
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON threshold_counters TO tawny_app, tawny_jobs;
+
+-- YARA (#56): the agent's on-demand yara_scan response action.
+ALTER TABLE response_actions DROP CONSTRAINT IF EXISTS response_actions_action_type_check;
+ALTER TABLE response_actions ADD CONSTRAINT response_actions_action_type_check
+    CHECK (action_type IN ('kill_process', 'isolate_host', 'release_host', 'yara_scan'));

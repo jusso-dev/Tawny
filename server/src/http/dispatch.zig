@@ -5,6 +5,7 @@ const util = @import("util.zig");
 const auth = @import("auth.zig");
 const agents = @import("../routes/agents.zig");
 const alerts = @import("../routes/alerts.zig");
+const yara_rules = @import("../routes/yara_rules.zig");
 const tokens = @import("../routes/tokens.zig");
 const session = @import("../routes/auth.zig");
 const users = @import("../routes/users.zig");
@@ -107,6 +108,15 @@ fn route(
         return agents.createEnrollmentToken(allocator, io, conn, request, web);
     }
 
+    if (parts.len == 3 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "agent") and std.mem.eql(u8, parts[2], "yara-rules") and method == .POST) {
+        const agent = try needAgent(request, resolved) orelse return;
+        return yara_rules.agentPack(allocator, io, conn, request, agent);
+    }
+    if (parts.len == 3 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "yara") and std.mem.eql(u8, parts[2], "rule-key") and method == .GET) {
+        _ = try needWeb(request, resolved) orelse return;
+        return yara_rules.ruleKey(allocator, io, request);
+    }
+
     if (parts.len >= 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "agents")) {
         if (parts.len == 3 and std.mem.eql(u8, parts[2], "enroll") and method == .POST) {
             return agents.enroll(allocator, io, conn, request);
@@ -180,6 +190,11 @@ fn route(
             const web = try needAdmin(request, resolved) orelse return;
             if (try stopLimited(request, io, web, policy_rule_imports)) return;
             return alerts.importExposures(allocator, io, conn, request, web);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "yara") and method == .POST) {
+            const web = try needAdmin(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_rule_imports)) return;
+            return yara_rules.createRule(allocator, io, conn, request, web);
         }
         if (parts.len == 3 and std.mem.eql(u8, parts[2], "sigma") and method == .POST) {
             const web = try needAdmin(request, resolved) orelse return;

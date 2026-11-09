@@ -36,9 +36,12 @@ Response `200`:
   "agent_id": "8f3c1a2b-...",
   "jwt": "eyJhbGciOi...",
   "jwt_expires_at": "2026-08-11T00:00:00Z",
+  "yara_rule_key": "base64 Ed25519 public key",
   "config": { "heartbeat_interval_seconds": 60 }
 }
 ```
+
+`yara_rule_key` is the key that signs YARA rule packs. The agent pins it in `<state>.yarakey` the first time and refuses packs signed by any other key. A `yara_rule_key` in the agent's `config.toml` takes precedence.
 
 Errors: `401` if token unknown or already used, `410` if token expired.
 
@@ -61,6 +64,35 @@ Response `200`:
 ```
 
 If the JWT is close to expiry (within the rotation window, 15 minutes by default), the response also includes `rotated_jwt` and `jwt_expires_at` and the agent should persist them.
+
+The response also has `yara_pack_version`, the version of the tenant's YARA rule pack (0 when there are no YARA rules). An agent with a lower version fetches the pack.
+
+### POST `/api/agent/yara-rules`
+
+Auth: Agent JWT. Body `{}`. Returns the tenant's enabled YARA rules as one signed pack:
+
+```json
+{
+  "format": "tawny-yara-pack-v1",
+  "tenant_id": "00000000-...",
+  "version": 1762732800000000,
+  "created_at": "2026-11-10T00:00:00Z",
+  "key_id": "first 16 bytes of SHA-256(public key), hex",
+  "rules_b64": "base64 of the rule source",
+  "sha256": "hex SHA-256 of the rule source",
+  "signature": "base64 Ed25519"
+}
+```
+
+The signature covers these lines, each ending in `\n`: `tawny-yara-pack-v1`, `tenant_id`, `version`, `created_at`, `sha256`. The agent checks the signature against its pinned key and the hash against the decoded source, and refuses the whole pack on any mismatch (`agent/src/rule_pack.zig`). It also refuses a pack older than the one it has.
+
+Matches come back as `yara_match` events:
+
+```json
+{"rule":"eicar_test_file","tags":["test"],"file":{"path":"C:\\Users\\a\\x.exe","name":"x.exe","size":68,"hashes":{"sha256":"..."}},"trigger":"file_event","pack_version":1}
+```
+
+`trigger` is `file_event`, `response_action` or `scheduled`. Agent settings: `yara_rule_key`, `yara_scan_interval_seconds` (default 3600, 0 turns the scheduled scan off), `yara_timeout_seconds` (default 10), `yara_max_file_bytes` (default 64 MiB). YARA needs an agent built with `-Dyara=true`.
 
 ### POST `/api/agents/events`
 
@@ -298,8 +330,8 @@ triggering telemetry `payload`, `severity` (`low|medium|high|critical`) and
 ### POST `/api/agents/{id}/actions`
 
 Admin web user or Admin `twny_` API token. Body:
-`{"action_type":"kill_process"|"isolate_host"|"release_host","payload":{...},"idempotency_key":"..."}`.
-`kill_process` requires `payload.pid` (positive integer). Re-posting the same
+`{"action_type":"kill_process"|"isolate_host"|"release_host"|"yara_scan","payload":{...},"idempotency_key":"..."}`.
+`kill_process` requires `payload.pid` (positive integer). `yara_scan` takes `payload.path`, a file or a folder (not recursive); matches arrive as `yara_match` events. Re-posting the same
 `idempotency_key` for the same agent returns the existing action. Poll
 `GET /api/agents/{id}/actions` for the outcome; actions are delivered on the
 agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
@@ -314,9 +346,9 @@ Web user or any `twny_` API token (Viewer can read action history and status).
 
 Single alert, same shape as the list. Web user or `twny_` API token.
 
-### GET `/api/alert-rules`, POST `/api/alert-rules/sigma`
+### GET `/api/alert-rules`, POST `/api/alert-rules/sigma`, POST `/api/alert-rules/yara`
 
-Listing accepts any `twny_` token. Sigma import, `PUT /api/alert-rules/{id}` (metadata such as `is_enabled` for imported rules) and `DELETE /api/alert-rules/{id}` need an Admin web user or
+Listing accepts any `twny_` token. Sigma import compiles the whole rule (see `docs/detections.md`) and answers `400` with the reason when any part is unsupported. `POST /api/alert-rules/yara` takes `{"rule_source":"rule x { ... }","name":"...","severity":"high","is_enabled":true}`; the server keeps the source and the rule names it declares, and the agent compiles the bundled pack. `GET /api/yara/rule-key` returns the pack signing public key for agent config. Sigma import, YARA rule creation, `PUT /api/alert-rules/{id}` (metadata such as `is_enabled` for imported rules) and `DELETE /api/alert-rules/{id}` need an Admin web user or
 Admin `twny_` token (used by BlakSoc detection deployment).
 
 ## Errors

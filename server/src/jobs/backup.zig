@@ -146,6 +146,7 @@ fn eventTypeNumber(kind: []const u8) ?u8 {
         "powershell_script_block",
         "sensor_health",
         "agent_health",
+        "yara_match",
     };
     for (names, 0..) |name, i| if (std.mem.eql(u8, name, kind)) return @intCast(i);
     return null;
@@ -158,6 +159,7 @@ test "event type numbers are stable and cover the Windows event log types" {
     try std.testing.expectEqual(@as(?u8, 29), eventTypeNumber("powershell_script_block"));
     try std.testing.expectEqual(@as(?u8, 30), eventTypeNumber("sensor_health"));
     try std.testing.expectEqual(@as(?u8, 31), eventTypeNumber("agent_health"));
+    try std.testing.expectEqual(@as(?u8, 32), eventTypeNumber("yara_match"));
     try std.testing.expectEqual(@as(?u8, null), eventTypeNumber("not_a_type"));
 }
 

@@ -67,6 +67,13 @@ pub fn main(init: std.process.Init) !void {
     if (seed_source == .dev_random) {
         std.debug.print("tawny-server: TAWNY_DEV is on and TAWNY_AGENT_JWT_SEED is unusable. Using a random agent JWT seed; agents must re-enrol after a restart.\n", .{});
     }
+    const rule_derived = state.configureRuleKey(init.environ_map.get("TAWNY_RULE_SIGNING_KEY")) catch |err| {
+        if (err == error.RuleSigningKeyMalformed) std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY must be exactly 64 hex characters.\n", .{});
+        return err;
+    };
+    if (rule_derived) {
+        std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY is not set. YARA rule packs are signed with a key derived from the agent JWT seed.\n", .{});
+    }
     state.require_signed_batches = state.flagOn(init.environ_map.get("TAWNY_REQUIRE_SIGNED_BATCHES"), true);
     if (!state.require_signed_batches) {
         std.debug.print("tawny-server: TAWNY_REQUIRE_SIGNED_BATCHES is off. Agents without a device key may send unsigned telemetry.\n", .{});
@@ -442,6 +449,7 @@ comptime {
     _ = @import("routes/admin_jobs.zig");
     _ = @import("routes/agent_releases.zig");
     _ = @import("routes/alerts.zig");
+    _ = @import("routes/yara_rules.zig");
     _ = @import("routes/agents.zig");
     _ = @import("routes/auth.zig");
     _ = @import("routes/users.zig");

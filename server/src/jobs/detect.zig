@@ -197,11 +197,12 @@ pub fn evaluateRules(
     // have no event_type (their steps name it), so they are always loaded.
     const rules = try conn.exec(allocator,
         \\SELECT id::text, name, severity, operator, payload_path, match_value, mitre_techniques::text,
-        \\       format, source_definition, compiled_expression_json::text, updated_at::text
+        \\       format, source_definition, compiled_expression_json::text, updated_at::text,
+        \\       compile_notes::text
         \\FROM alert_rules
         \\WHERE tenant_id = $1::uuid AND is_enabled
         \\AND (event_type IS NULL OR event_type = $2)
-        \\AND format IN ('tawny_predicate','sigma','ioc','package_exposure','atomic','sequence','threshold')
+        \\AND format IN ('tawny_predicate','sigma','ioc','package_exposure','atomic','sequence','threshold','yara')
         \\ORDER BY CASE WHEN format IN ('sequence','threshold') THEN 1 ELSE 0 END, id
     , &.{ .{ .text = e.tenant_id }, .{ .text = e.event_type } });
     defer {
@@ -236,6 +237,12 @@ pub fn evaluateRules(
         if (std.mem.eql(u8, format, "package_exposure")) {
             const definition = row.cols[8] orelse continue;
             if (!package_exposure.matches(allocator, definition, e.payload)) continue;
+        } else if (std.mem.eql(u8, format, "yara")) {
+            // A yara_match from the agent names the YARA rule that matched;
+            // the stored rule lists the names it declares.
+            if (!std.mem.eql(u8, e.event_type, "yara_match")) continue;
+            if (!yaraRuleMatches(allocator, row.cols[11], root)) continue;
+            description = yaraDescription(allocator, root) catch null;
         } else if (std.mem.eql(u8, format, "sequence") or std.mem.eql(u8, format, "threshold")) {
             const json_text = row.cols[9] orelse continue;
             const rule = (try cache.getRule(rule_id, row.cols[10] orelse "", json_text)) orelse {
@@ -294,6 +301,32 @@ pub fn evaluateRules(
         }
         try raiseAlert(allocator, conn, e, row.cols[0].?, row.cols[1] orelse "rule", row.cols[2] orelse "medium", description, created);
     }
+}
+
+fn yaraRuleMatches(allocator: std.mem.Allocator, names_text: ?[]const u8, root: std.json.Value) bool {
+    const text = names_text orelse return false;
+    if (root != .object) return false;
+    const rule = root.object.get("rule") orelse return false;
+    if (rule != .string) return false;
+    const names = util.parsePgTextArray(allocator, text) catch return false;
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+    for (names) |n| {
+        if (std.mem.eql(u8, n, rule.string)) return true;
+    }
+    return false;
+}
+
+fn yaraDescription(allocator: std.mem.Allocator, root: std.json.Value) ![]u8 {
+    var b1: [64]u8 = undefined;
+    var b2: [64]u8 = undefined;
+    var b3: [64]u8 = undefined;
+    const rule = ast.firstScalar(root, "rule", &b1) orelse "?";
+    const path = ast.firstScalar(root, "file.path", &b2) orelse "?";
+    const sha = ast.firstScalar(root, "file.hashes.sha256", &b3) orelse "?";
+    return std.fmt.allocPrint(allocator, "YARA rule {s} matched {s} (sha256 {s}).", .{ rule, path, sha });
 }
 
 fn raiseAlert(

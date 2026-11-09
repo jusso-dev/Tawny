@@ -472,6 +472,39 @@ above 1, aggregations and `timeframe` (use a Tawny threshold rule),
 correlation rules, `fieldref`. `wide` is only accepted with `base64` or
 `base64offset`.
 
+### YARA
+
+File scanning with YARA runs on the agent through libyara, never on the
+server. Files stay on the host unless an analyst collects them.
+
+- **Build.** libyara 4.6.0 (BSD-3-Clause) is a lazy, pinned source dependency
+  in `agent/build.zig.zon`, compiled with Zig's C compiler in
+  `agent/build.zig` behind `-Dyara=true`. The default build doesn't fetch or
+  link it. Modules that need other libraries (magic, cuckoo, hash, dotnet,
+  dex, macho, authenticode) and OpenSSL are off, so `pe.imphash()` and
+  signature checks are not available. Process memory scanning is off on
+  macOS (`proc/none.c`) because `mach_vm.h` needs the macOS SDK; the agent
+  only scans files and buffers.
+- **Agent.** `agent/src/yara.zig` (compile, scan buffer, scan file, timeout,
+  size cap; files are read into memory, not mapped). `yara_scanner.zig` runs
+  the triggers: a created or modified executable or script in a watched
+  folder (file events over `fim_paths`), the `yara_scan` response action
+  (`{"path": ...}`, a file or one folder), and a scheduled scan of startup and
+  temp folders (`yara_scan_interval_seconds`, default 3600). Each match is a
+  `yara_match` event with rule, tags, file path, size, SHA-256 and trigger.
+- **Rule packs.** The server bundles a tenant's enabled `format = 'yara'`
+  rules (`POST /api/agent/yara-rules`) and signs them with Ed25519
+  (`tawny-yara-pack-v1`: tenant, version, time and SHA-256 of the source).
+  The agent pins the public key from the enrolment reply (or
+  `yara_rule_key` in config) and refuses unsigned, tampered, wrong-key or
+  older packs, keeping the rules it has. The heartbeat reply carries
+  `yara_pack_version` so agents fetch only on change.
+- **Key.** `TAWNY_RULE_SIGNING_KEY`, or derived from the agent JWT seed. A
+  separate key from the JWT key. Issue #57 adds a server action key; that
+  work can merge the two behind `state.rulePackKey`.
+- **Alerts.** A `yara_match` raises an alert through the `yara` rule that
+  declares the matched rule name, so suppressions and sinks work as usual.
+
 ### IOC index
 
 Indicators move out of `AlertRules` into an `Indicators` table (type, value,

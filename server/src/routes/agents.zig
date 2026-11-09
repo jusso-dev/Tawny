@@ -170,9 +170,13 @@ pub fn enroll(
     defer allocator.free(jwt_j);
     const exp_j = try util.escapeJson(allocator, exp_s);
     defer allocator.free(exp_j);
+    // The agent pins this key and refuses YARA rule packs signed by any other.
+    const rule_kp = try state.rulePackKey(io);
+    var rk_buf: [44]u8 = undefined;
+    const rule_key = std.base64.standard.Encoder.encode(&rk_buf, &rule_kp.public_key.bytes);
     const json = try std.fmt.allocPrint(allocator,
-        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"config":{{"heartbeat_interval_seconds":60}}}}
-    , .{ aid_j, jwt_j, exp_j });
+        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"yara_rule_key":"{s}","config":{{"heartbeat_interval_seconds":60}}}}
+    , .{ aid_j, jwt_j, exp_j, rule_key });
     defer allocator.free(json);
     try util.respondJson(request, .ok, json);
 }
@@ -506,6 +510,12 @@ pub fn heartbeat(
         }
     } else {
         try out.appendSlice(allocator, "\"latest_agent_version\":null,\"download_url\":null,\"sha256\":null,");
+    }
+    {
+        const yv = @import("yara_rules.zig").packVersion(allocator, conn, agent.tenant_id) catch 0;
+        const __tmp = try std.fmt.allocPrint(allocator, "\"yara_pack_version\":{d},", .{yv});
+        defer allocator.free(__tmp);
+        try out.appendSlice(allocator, __tmp);
     }
     if (rotated) |r| {
         const rj = try util.escapeJson(allocator, r);

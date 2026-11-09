@@ -35,6 +35,7 @@ ensure_env() {
 ensure_env "POSTGRES_PASSWORD" "$(openssl rand -hex 24)"
 ensure_env "TAWNY_INTEGRATION_ENCRYPTION_KEY" "$(openssl rand -hex 32)"
 ensure_env "TAWNY_AGENT_JWT_SEED" "$(openssl rand -hex 32)"
+ensure_env "TAWNY_RULE_SIGNING_KEY" "$(openssl rand -hex 32)"
 ensure_env "TAWNY_DOMAIN" "localhost"
 ensure_env "TAWNY_HTTPS_PORT" "8443"
 ensure_env "TAWNY_HTTP_PORT" "8080"

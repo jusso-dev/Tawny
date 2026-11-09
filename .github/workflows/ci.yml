@@ -69,7 +69,9 @@ jobs:
       - name: throwaway agent JWT seed
         working-directory: ${{ github.workspace }}
         # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
-        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TAWNY_RULE_SIGNING_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: contract suite
         working-directory: ${{ github.workspace }}
         run: |
@@ -164,6 +166,13 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe
       - name: test
         run: zig build test
+      # YARA through libyara (#56). Fetches the pinned libyara source from
+      # build.zig.zon and runs the tests again with it built in, including the
+      # EICAR-in-a-watched-folder test on Linux and macOS.
+      - name: build with -Dyara=true
+        run: zig build -Dyara=true -Doptimize=ReleaseSafe -p zig-out-yara
+      - name: test with -Dyara=true
+        run: zig build test -Dyara=true
       - name: smoke-run binary
         timeout-minutes: 1
         run: |
@@ -323,6 +332,8 @@ jobs:
           "$zig_dir/zig" version
       - name: build
         run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
+      - name: build with -Dyara=true
+        run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall -Dyara=true -p zig-out-yara
       - name: package CI artifact
         run: |
           set -euo pipefail
@@ -481,7 +492,9 @@ jobs:
       - name: throwaway agent JWT seed
         working-directory: ${{ github.workspace }}
         # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
-        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TAWNY_RULE_SIGNING_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: enroll, heartbeat, telemetry, isolate
         run: |
           set -euo pipefail

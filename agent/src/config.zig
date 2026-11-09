@@ -27,6 +27,13 @@ pub const Config = struct {
     http_timeout_seconds: u32 = 30,
     max_retry_backoff_seconds: u32 = 300,
     fim_paths: [][]u8 = &.{},
+    /// Server rule-pack signing key (base64 Ed25519 public key). YARA rule
+    /// packs signed by any other key are refused. Empty: no YARA scanning.
+    yara_rule_key: ?[]u8 = null,
+    /// Scheduled YARA scan of startup and temp folders. 0 turns it off.
+    yara_scan_interval_seconds: u32 = 3600,
+    yara_timeout_seconds: u32 = 10,
+    yara_max_file_bytes: u64 = 64 * 1024 * 1024,
     spill_path: []u8,
     config_path: []u8,
     state_path: []u8,
@@ -43,6 +50,7 @@ pub const Config = struct {
         self.allocator.free(self.state_path);
         if (self.enrollment_token) |t| self.allocator.free(t);
         if (self.agent_id) |t| self.allocator.free(t);
+        if (self.yara_rule_key) |k| self.allocator.free(k);
         if (self.agent_jwt) |t| self.allocator.free(t);
         for (self.fim_paths) |p| self.allocator.free(p);
         if (self.fim_paths.len > 0) self.allocator.free(self.fim_paths);
@@ -153,6 +161,15 @@ pub fn loadWith(alloc: std.mem.Allocator, options: LoadOptions) !Config {
         } else if (std.mem.eql(u8, key, "spill_path")) {
             alloc.free(cfg.spill_path);
             cfg.spill_path = try alloc.dupe(u8, val);
+        } else if (std.mem.eql(u8, key, "yara_rule_key")) {
+            if (cfg.yara_rule_key) |old| alloc.free(old);
+            cfg.yara_rule_key = if (val.len == 0) null else try alloc.dupe(u8, val);
+        } else if (std.mem.eql(u8, key, "yara_scan_interval_seconds")) {
+            cfg.yara_scan_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "yara_timeout_seconds")) {
+            cfg.yara_timeout_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "yara_max_file_bytes")) {
+            cfg.yara_max_file_bytes = try std.fmt.parseInt(u64, val, 10);
         } else if (std.mem.eql(u8, key, "fim_path")) {
             try appendFimPath(&cfg, val);
         } else if (std.mem.eql(u8, key, "fim_paths")) {

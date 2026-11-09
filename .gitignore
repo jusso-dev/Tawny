@@ -41,6 +41,7 @@ next-env.d.ts
 # --- Zig ---
 zig-cache/
 zig-out/
+zig-out-yara/
 .zig-cache/
 
 # --- Docker / runtime ---
@@ -53,3 +54,6 @@ docker/secrets/*
 # --- Misc ---
 coverage/
 *.pem
+
+# Zig 0.17 unpacks fetched packages into the project
+zig-pkg/

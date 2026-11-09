@@ -137,8 +137,17 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         agent_id: []const u8,
         jwt: []const u8,
         jwt_expires_at: []const u8,
+        yara_rule_key: ?[]const u8 = null,
     }, alloc, response_body.written(), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
+
+    // Pin the server's rule-pack key at enrolment (same TLS channel and
+    // enrolment token as the JWT). A key in config wins over this file.
+    if (parsed.value.yara_rule_key) |key| {
+        @import("yara_key.zig").pin(alloc, cfg.state_path, key) catch |err| {
+            std.log.warn("could not pin the YARA rule key: {s}", .{@errorName(err)});
+        };
+    }
 
     cfg.agent_id = try alloc.dupe(u8, parsed.value.agent_id);
     cfg.agent_jwt = try alloc.dupe(u8, parsed.value.jwt);
