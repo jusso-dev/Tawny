@@ -85,7 +85,6 @@ pub fn quarantine(
         try f.writePositionalAll(io, encoded, 0);
         f.sync(io) catch {};
     }
-    restrictPermissions(bin_path);
 
     // Verify the copy decodes back to the expected hash before deleting.
     {
@@ -117,6 +116,10 @@ pub fn quarantine(
     }, .{});
     defer alloc.free(sidecar);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = sidecar_path, .data = sidecar });
+
+    // Lock down the copy and sidecar only after the read-back verification, so
+    // a SYSTEM-only ACL never blocks the agent's own verify.
+    restrictPermissions(bin_path);
     restrictPermissions(sidecar_path);
 
     // Only now remove the original.
@@ -178,8 +181,11 @@ fn restrictPermissions(path: []const u8) void {
     if (builtin.target.os.tag == .windows) {
         var buf: [1024]u8 = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&buf);
-        // D:PAI(A;;FA;;;SY) — SYSTEM full access, protected, no inheritance.
-        applySddl(fba.allocator(), path, "D:PAI(A;;FA;;;SY)") catch {};
+        // Protected DACL, no inheritance: SYSTEM and local Administrators full
+        // access, everyone else none. Admins are kept so an agent that is not
+        // running as SYSTEM (CI, or a service misconfiguration) can still read
+        // the copy back and restore it; normal users still cannot run it.
+        applySddl(fba.allocator(), path, "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)") catch {};
         return;
     }
     const io = iox.current();

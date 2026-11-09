@@ -205,7 +205,9 @@ jobs:
           # Kill by PID plus start time. Start a long-running ping we own.
           $ping = Start-Process -FilePath "ping.exe" -ArgumentList @("-t", "127.0.0.1") -PassThru
           Start-Sleep -Seconds 1
-          $start = [int][double]::Parse((Get-Date $ping.StartTime.ToUniversalTime() -UFormat %s))
+          # DateTimeOffset of a Local-kind DateTime uses the local offset, so
+          # this is the correct absolute instant with no locale parsing.
+          $start = [int]([DateTimeOffset]$ping.StartTime).ToUnixTimeSeconds()
           $image = (Get-Process -Id $ping.Id).Path
           & $agent --kill-pid $ping.Id $image $start | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "kill-pid exit $LASTEXITCODE" }
