@@ -462,7 +462,8 @@ jobs:
           if [[ "$source" == "audit_netlink" ]]; then
             # /bin/true may resolve elsewhere (gnutrue on Ubuntu 26.04), so match the real path.
             true_img="$(readlink -f /bin/true)"
-            n="$(grep -cF "\"image\":\"$true_img\"" "$out" || true)"
+            # Count process_start lines only; process_exit carries the same image.
+            n="$(grep $'^EVENT\tprocess_start\t' "$out" | grep -cF "\"image\":\"$true_img\"" || true)"
             echo "/bin/true resolves to $true_img"
             echo "process_start events for /bin/true: $n"
             test "$n" -ge 50
