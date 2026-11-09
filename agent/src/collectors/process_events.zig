@@ -466,8 +466,15 @@ test "launch diff sees a spawned /bin/sleep with full argv and start time" {
         found = true;
         try std.testing.expectEqualStrings("sleep", obj.get("name").?.string);
         try std.testing.expectEqualStrings("/bin/sleep 5", obj.get("command_line").?.string);
-        // macOS: /bin/sleep; Debian-style usrmerge resolves /proc/<pid>/exe to /usr/bin/sleep.
-        try std.testing.expect(std.mem.endsWith(u8, obj.get("image_path").?.string, "/bin/sleep"));
+        // Compare with wherever /bin/sleep really lives. usrmerge gives /usr/bin/sleep,
+        // and Ubuntu 26.04 links it into Rust coreutils under /usr/lib/cargo/bin/coreutils/.
+        var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const real_len = try std.Io.Dir.realPathFileAbsolute(std.testing.io, "/bin/sleep", &real_buf);
+        const image_path = obj.get("image_path").?.string;
+        if (!std.mem.eql(u8, image_path, real_buf[0..real_len]) and !std.mem.eql(u8, image_path, "/bin/sleep")) {
+            std.debug.print("image_path={s} realpath(/bin/sleep)={s}\n", .{ image_path, real_buf[0..real_len] });
+            return error.TestUnexpectedResult;
+        }
         try std.testing.expectEqual(@as(i64, @intCast(std.c.getpid())), obj.get("ppid").?.integer);
         try std.testing.expect(obj.get("image_sha256").? == .string);
         // Spawned a moment ago: start time must be close to the wall clock.
