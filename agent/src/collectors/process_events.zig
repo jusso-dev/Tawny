@@ -215,7 +215,7 @@ fn buildExitEvent(alloc: std.mem.Allocator, id: entity.Id, pid: u32, end_100ns: 
     return std.fmt.allocPrint(alloc, "{{\"process\":{{\"entity_id\":\"{s}\",\"pid\":{d}}},\"end_time\":\"{s}\"}}", .{ &id, pid, entity.formatIso(&buf, end_100ns) });
 }
 
-fn linuxStart100ns(boot_unix: u64, start_ticks: u64) ?u64 {
+pub fn linuxStart100ns(boot_unix: u64, start_ticks: u64) ?u64 {
     if (start_ticks == 0) return null;
     return boot_unix * entity.ticks_per_second + start_ticks * (entity.ticks_per_second / linux_user_hz);
 }
@@ -326,7 +326,7 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, table: ?*
 /// SHA-256 of executables keyed by path and invalidated on size/mtime change,
 /// so a burst of `git`/`zsh` launches hashes the binary once. Bounded: the
 /// cache is cleared when it reaches `max_hash_cache_entries`.
-const HashCache = struct {
+pub const HashCache = struct {
     allocator: std.mem.Allocator,
     map: std.StringHashMap(Entry),
 
@@ -336,11 +336,11 @@ const HashCache = struct {
         digest: [32]u8,
     };
 
-    fn init(alloc: std.mem.Allocator) HashCache {
+    pub fn init(alloc: std.mem.Allocator) HashCache {
         return .{ .allocator = alloc, .map = std.StringHashMap(Entry).init(alloc) };
     }
 
-    fn deinit(self: *HashCache) void {
+    pub fn deinit(self: *HashCache) void {
         self.clear();
         self.map.deinit();
     }
@@ -351,7 +351,7 @@ const HashCache = struct {
         self.map.clearRetainingCapacity();
     }
 
-    fn get(self: *HashCache, path: []const u8) ?[32]u8 {
+    pub fn get(self: *HashCache, path: []const u8) ?[32]u8 {
         const io = iox.current();
         var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
         defer file.close(io);
@@ -425,7 +425,7 @@ fn readParentPid(alloc: std.mem.Allocator, pid: u32) !u32 {
     return std.fmt.parseInt(u32, ppid, 10);
 }
 
-fn readProcessStartTime(alloc: std.mem.Allocator, pid: u32) !u64 {
+pub fn readProcessStartTime(alloc: std.mem.Allocator, pid: u32) !u64 {
     const stat = try readProcText(alloc, pid, "stat");
     defer alloc.free(stat);
     return parseProcessStartTime(stat);
@@ -442,7 +442,7 @@ fn parseProcessStartTime(stat: []const u8) !u64 {
     return error.BadProcStat;
 }
 
-fn readLinuxBootTime() !u64 {
+pub fn readLinuxBootTime() !u64 {
     const io = iox.current();
     var file = try std.Io.Dir.openFileAbsolute(io, "/proc/stat", .{});
     defer file.close(io);

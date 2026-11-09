@@ -4,6 +4,8 @@ const env = @import("env.zig");
 const iox = @import("io_compat.zig");
 const keystore = @import("keystore.zig");
 
+pub const LinuxSensor = enum { auto, audit, audit_log, tetragon, proc };
+
 pub const Config = struct {
     allocator: std.mem.Allocator,
     backend_url: []u8,
@@ -39,6 +41,12 @@ pub const Config = struct {
     state_path: []u8,
     /// Dangerous: permit non-loopback HTTP backends. Default false.
     allow_insecure_http: bool = false,
+    /// Linux kernel event source (#59): auto, audit, tetragon or proc.
+    linux_sensor: LinuxSensor = .auto,
+    /// auditd log read when another daemon owns the audit socket.
+    audit_log_path: ?[]u8 = null,
+    /// Tetragon JSON export file. Unset: the Tetragon default path.
+    tetragon_export_path: ?[]u8 = null,
     /// Where the JWT and device seed live. `load` picks the platform default;
     /// literal Configs (tests) keep the plaintext-file behaviour.
     secret_store: keystore.Store = .{},
@@ -51,6 +59,8 @@ pub const Config = struct {
         if (self.enrollment_token) |t| self.allocator.free(t);
         if (self.agent_id) |t| self.allocator.free(t);
         if (self.yara_rule_key) |k| self.allocator.free(k);
+        if (self.audit_log_path) |p| self.allocator.free(p);
+        if (self.tetragon_export_path) |p| self.allocator.free(p);
         if (self.agent_jwt) |t| self.allocator.free(t);
         for (self.fim_paths) |p| self.allocator.free(p);
         if (self.fim_paths.len > 0) self.allocator.free(self.fim_paths);
@@ -156,6 +166,14 @@ pub fn loadWith(alloc: std.mem.Allocator, options: LoadOptions) !Config {
             cfg.http_timeout_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_retry_backoff_seconds")) {
             cfg.max_retry_backoff_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "linux_sensor")) {
+            cfg.linux_sensor = std.meta.stringToEnum(LinuxSensor, val) orelse return error.InvalidLinuxSensor;
+        } else if (std.mem.eql(u8, key, "audit_log_path")) {
+            if (cfg.audit_log_path) |old| alloc.free(old);
+            cfg.audit_log_path = if (val.len == 0) null else try alloc.dupe(u8, val);
+        } else if (std.mem.eql(u8, key, "tetragon_export_path")) {
+            if (cfg.tetragon_export_path) |old| alloc.free(old);
+            cfg.tetragon_export_path = if (val.len == 0) null else try alloc.dupe(u8, val);
         } else if (std.mem.eql(u8, key, "allow_insecure_http")) {
             cfg.allow_insecure_http = std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "1");
         } else if (std.mem.eql(u8, key, "spill_path")) {
