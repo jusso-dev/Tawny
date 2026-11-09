@@ -894,7 +894,7 @@ pub const Live = struct {
     alloc: std.mem.Allocator,
     fd: i32,
     mode: Mode,
-    thread: ?std.Thread = null,
+    thread: ?std.c.pthread_t = null,
     stop_flag: std.atomic.Value(bool) = .init(false),
     lock: SpinLock = .{},
     queue: std.ArrayList(Raw) = .empty,
@@ -922,7 +922,12 @@ pub const Live = struct {
         var daemon_err: OpenError = error.AccessDenied;
         if (allow_daemon) {
             if (self.openDaemon(watch_dirs)) {
-                try self.spawn();
+                self.spawn() catch |err| {
+                    // Unload our rules and unregister before giving up. The
+                    // errdefer above frees self.
+                    self.shutdownNoFree();
+                    return err;
+                };
                 return self;
             } else |err| daemon_err = err;
             self.closeFd();
@@ -933,12 +938,37 @@ pub const Live = struct {
         };
         self.mode = .multicast;
         self.daemon_error = if (allow_daemon) daemon_err else null;
-        try self.spawn();
+        self.spawn() catch |err| {
+            self.shutdownNoFree();
+            return err;
+        };
         return self;
     }
 
+    /// Start the reader thread. Calls pthread_create directly because
+    /// std.Thread.spawn treats EPERM and EINVAL as unreachable, and on the
+    /// CI runner, under setpriv with only the audit capabilities, it got one
+    /// of them and aborted the agent. Any failure here is reported so the
+    /// sensor falls back to polling instead of crashing.
     fn spawn(self: *Live) OpenError!void {
-        self.thread = std.Thread.spawn(.{ .stack_size = 256 * 1024 }, readerMain, .{self}) catch return error.SystemResources;
+        const c = std.c;
+        var attr: c.pthread_attr_t = undefined;
+        if (c.pthread_attr_init(&attr) != .SUCCESS) return error.SystemResources;
+        defer _ = c.pthread_attr_destroy(&attr);
+        _ = c.pthread_attr_setstacksize(&attr, 256 * 1024);
+        var handle: c.pthread_t = undefined;
+        const rc = c.pthread_create(&handle, &attr, readerEntry, @ptrCast(self));
+        if (rc != .SUCCESS) {
+            std.log.warn("audit: reader thread not started: {s}", .{@tagName(rc)});
+            return error.SystemResources;
+        }
+        self.thread = handle;
+    }
+
+    fn readerEntry(arg: ?*anyopaque) callconv(.c) ?*anyopaque {
+        const self: *Live = @ptrCast(@alignCast(arg));
+        self.readerMain();
+        return null;
     }
 
     fn closeFd(self: *Live) void {
@@ -1191,8 +1221,15 @@ pub const Live = struct {
     }
 
     pub fn close(self: *Live) void {
+        self.shutdownNoFree();
+        self.alloc.destroy(self);
+    }
+
+    /// Stop the reader, unload rules, unregister and close the socket,
+    /// without freeing self.
+    fn shutdownNoFree(self: *Live) void {
         self.stop_flag.store(true, .release);
-        if (self.thread) |t| t.join();
+        if (self.thread) |t| _ = std.c.pthread_join(t, null);
         self.thread = null;
         if (self.mode == .daemon and self.fd >= 0) {
             self.unloadRules();
@@ -1208,7 +1245,7 @@ pub const Live = struct {
         self.closeFd();
         for (self.queue.items) |r| self.alloc.free(r.bytes);
         self.queue.deinit(self.alloc);
-        self.alloc.destroy(self);
+        self.queue = .empty;
     }
 };
 
