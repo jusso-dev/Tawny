@@ -165,6 +165,7 @@
       if (res.status !== 200) return showError(view.main, res);
       view.main.appendChild(el("p", (res.body.hostname || id) + " · " + (res.body.status || ""), "muted"));
     });
+    renderProcessTree(view, id);
     var live = el("div", null, "card");
     live.appendChild(el("p", "Live events", "muted"));
     var list = el("div");
@@ -187,6 +188,79 @@
     source.onerror = function () {
       if (!list.textContent) list.textContent = "Event stream reconnecting.";
     };
+  }
+
+  // Process tree from GET /api/agents/{id}/process-tree. Picking a process
+  // shows its ancestors (oldest first), the process, and its descendants,
+  // indented by depth.
+  function processLabel(p) {
+    var image = p.image || "";
+    var name = image.split(/[\\/]/).pop() || ("pid " + p.pid);
+    var text = name + "  (pid " + p.pid + ")";
+    if (p.start_time) text += "  " + p.start_time;
+    if (p.end_time) text += "  exited " + p.end_time;
+    return text;
+  }
+
+  function renderProcessTree(view, id) {
+    var card = el("div", null, "card");
+    card.appendChild(el("p", "Process tree", "muted"));
+    var picker = document.createElement("select");
+    picker.setAttribute("aria-label", "Process");
+    var tree = el("div", null, "process-tree");
+    card.appendChild(picker);
+    card.appendChild(tree);
+    view.main.appendChild(card);
+
+    function show(entityId) {
+      tree.textContent = "";
+      if (!entityId) return;
+      api("GET", "/api/agents/" + id + "/process-tree?entity_id=" + encodeURIComponent(entityId)).then(function (res) {
+        if (res.status !== 200 || !res.body) {
+          tree.appendChild(el("p", (res.body && res.body.title) || "Process not found.", "error"));
+          return;
+        }
+        var rows = [];
+        var ancestors = (res.body.ancestors || []).slice().reverse();
+        ancestors.forEach(function (p, i) { rows.push({ p: p, depth: i, kind: "ancestor" }); });
+        var base = ancestors.length;
+        rows.push({ p: res.body.process, depth: base, kind: "self" });
+        (res.body.children || []).forEach(function (p) { rows.push({ p: p, depth: base + (p.depth || 1), kind: "child" }); });
+        rows.forEach(function (row) {
+          var line = el("div", null, "process-node " + row.kind);
+          line.style.paddingLeft = (row.depth * 20) + "px";
+          var link = el("a", processLabel(row.p));
+          link.href = "#";
+          link.title = (row.p.command_line || "") + (row.p.user_name ? "  user " + row.p.user_name : "");
+          link.addEventListener("click", function (event) {
+            event.preventDefault();
+            picker.value = row.p.entity_id;
+            show(row.p.entity_id);
+          });
+          if (row.kind === "self") link.style.fontWeight = "600";
+          line.appendChild(el("span", row.depth > 0 ? "\u2514 " : "", "muted"));
+          line.appendChild(link);
+          tree.appendChild(line);
+        });
+      });
+    }
+
+    api("GET", "/api/agents/" + id + "/process-tree").then(function (res) {
+      var list = (res.status === 200 && res.body && res.body.processes) || [];
+      if (!list.length) {
+        tree.textContent = "No processes recorded yet.";
+        picker.hidden = true;
+        return;
+      }
+      list.forEach(function (p) {
+        var opt = document.createElement("option");
+        opt.value = p.entity_id;
+        opt.textContent = processLabel(p);
+        picker.appendChild(opt);
+      });
+      picker.addEventListener("change", function () { show(picker.value); });
+      show(list[0].entity_id);
+    });
   }
 
   function renderAlerts(view) {

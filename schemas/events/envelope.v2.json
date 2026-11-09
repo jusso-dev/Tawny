@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "envelope.v2.json",
+  "title": "Telemetry batch, schema 2 (target-edr section 2.1)",
+  "type": "object",
+  "required": [
+    "schema",
+    "batch_id",
+    "agent",
+    "events"
+  ],
+  "properties": {
+    "schema": {
+      "const": 2
+    },
+    "batch_id": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "agent": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "sensor_version",
+        "boot_id"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36
+        },
+        "sensor_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boot_id": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "event_type",
+          "v",
+          "ts",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36
+          },
+          "event_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9_.-]+$"
+          },
+          "v": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ts": {
+            "$ref": "common.v1.json#/$defs/timestamp",
+            "description": "Event time from the sensor, ISO 8601 UTC (`2026-11-09T01:12:44.548Z`). Signed as sent."
+          },
+          "mono": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sensor": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "string",
+      "description": "Base64 Ed25519 over the tawny-batch-v2 canonical string."
+    }
+  }
+}

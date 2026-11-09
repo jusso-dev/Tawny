@@ -1,0 +1,26 @@
+{
+  "sensor": "sysmon",
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "record_id": 1001,
+  "ts": "2026-11-09T01:00:05.2001234Z",
+  "event_id": 3,
+  "process": {
+    "entity_id": "wxjmbxyyq7eybnyac2lfc654ka",
+    "guid": "{6f2c1a4e-0000-0000-0000-000000000052}",
+    "pid": 5200,
+    "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "name": "powershell.exe",
+    "user": {
+      "name": "alice",
+      "domain": "CORP"
+    }
+  },
+  "network": {
+    "protocol": "tcp",
+    "direction": "outbound",
+    "src_ip": "10.0.0.5",
+    "src_port": 50123,
+    "dst_ip": "203.0.113.10",
+    "dst_port": 443
+  }
+}

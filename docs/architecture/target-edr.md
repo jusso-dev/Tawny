@@ -109,8 +109,32 @@ is the seam they attach to later.
   diagnostic. Old `schema: 1` (current) batches are accepted and mapped by a
   legacy normaliser for as long as v1 agents exist.
 - Each event type has a JSON Schema in `schemas/events/<type>.v<N>.json`,
-  generated into Zig structs and C# records, plus golden-file tests on both
-  sides.
+  plus golden-file tests on both sides. The backend is Zig on PostgreSQL
+  (`server/`); the agent is Zig. There is no code generation: both sides
+  check payloads against the schemas in tests (`agent/src/schema_check.zig`,
+  `server/src/ingest/schema_check.zig`).
+
+**Status (issue #55).** Built as above with these differences:
+
+- `ts` is an ISO 8601 UTC string. `seq` is durable: it is stored in each
+  spool record (`EVT2`) and in a `<spool>.seq` sidecar, so it keeps rising
+  across restarts. `mono`, `priority` and `sensor` are accepted but not
+  sent or stored yet.
+- `event_type` keeps the agent's snake_case names (`process_start`,
+  `dns_query`, ...), not the upper-case names in 2.3, so existing rules,
+  hunts and backup type numbers keep working.
+- `signature` is Ed25519 over the `tawny-batch-v2` canonical string, which
+  covers `agent_id`, `batch_id`, `agent.boot_id`, `agent.sensor_version` and
+  per event `event_id|seq|event_type|v|ts|sha256(data)`. See
+  `server/src/crypto/batch_sig.zig` and `docs/api.md`.
+- The server accepts schema 1 and schema 2 side by side. Schema 1 events are
+  stored as sent; the legacy normaliser (`server/src/ingest/legacy.zig`)
+  derives process identity for them (`process_launch` maps to
+  `process_start`).
+- Schemas exist for `process_start`, `process_exit`, `network_connect`,
+  `dns_query`, `file_create`, `registry_set`, `user_logon`,
+  `service_create`, `powershell_script_block`, `agent_health` and
+  `sensor_health`. Snapshot and inventory types keep their payloads (P3).
 
 ### 2.2 Common objects
 
@@ -150,6 +174,29 @@ entity_id = base32( SHA-256( agent_id || pid_le32 || start_time_100ns_le64 || bo
   snapshot) so it can fill `parent.entity_id` at creation time, before the
   parent can exit and its PID be reused.
 - The server never derives identity from PID.
+
+**Status (issue #55).** Implemented in `agent/src/entity.zig` and, for v1
+events only, `server/src/ingest/entity.zig`, with shared golden tests. Exact
+bytes:
+
+- `agent_id` and `boot_id`: the 36 ASCII bytes of the lower-case canonical
+  UUID text. Unknown boot id: the nil UUID text.
+- `pid_le32`: u32 little endian.
+- `start_time_100ns_le64`: u64 little endian, 100 ns ticks since
+  1970-01-01T00:00:00Z (Unix epoch, not 1601), truncated to whole
+  milliseconds so Sysmon `UtcTime` and `GetProcessTimes` agree.
+- base32: RFC 4648 alphabet, lower case, no padding (26 characters).
+- Boot id sources: Linux `/proc/sys/kernel/random/boot_id`; macOS
+  `kern.bootsessionuuid`; Windows a UUID derived from the registry `BootId`
+  counter (`PrefetchParameters`).
+- Start time sources: Windows Sysmon 1 `UtcTime`, Security 4688
+  `TimeCreated`, `GetProcessTimes` for the start-up snapshot; Linux
+  `/proc/<pid>/stat` starttime plus `btime`; macOS `pbi_start_tvsec/usec`.
+- Sysmon `ProcessGuid` stays as `process.guid`, not the id.
+- Schema 1 events have no boot id, so the server computes their ids with the
+  nil boot id and links parents by pid and start time.
+- Stored in `process_entities` (migration 0004, row-level security) and
+  served by `GET /api/agents/{id}/process-tree?entity_id=`.
 
 ## 3. Agent architecture
 
@@ -656,8 +703,9 @@ with current packages, agent on Zig 0.17.0, Windows service runs as
 
 ## 18. Open decisions
 
-1. **Scale target.** Design assumes ≤1,000 endpoints on SQL Server
-   (columnstore). Larger fleets would need a telemetry store change.
+1. **Scale target.** Design assumes ≤1,000 endpoints on PostgreSQL
+   (Zig `tawny-server`, telemetry partitioned by month). Larger fleets would
+   need a telemetry store change.
 2. **Windows service account.** Full sensor requires `LocalSystem`.
 3. **Kernel visibility gaps accepted for now.** User-mode ETW cannot block
    execution pre-launch and can be tampered with by an admin-level attacker;

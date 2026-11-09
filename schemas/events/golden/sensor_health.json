@@ -1,0 +1,9 @@
+{
+  "sensor": "windows_eventlog",
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "state": "missing",
+  "status": "degraded",
+  "counters": {
+    "emitted": 0
+  }
+}

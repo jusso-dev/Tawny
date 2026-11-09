@@ -7,6 +7,8 @@ const purge_sql = @embedFile("migrations/0002_purge.sql");
 const purge_version = "0002_purge";
 const ai_reasoning_sql = @embedFile("migrations/0003_ai_reasoning.sql");
 const ai_reasoning_version = "0003_ai_reasoning";
+const process_entities_sql = @embedFile("migrations/0004_process_entities.sql");
+const process_entities_version = "0004_process_entities";
 
 pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try conn.execSimple(
@@ -22,6 +24,7 @@ pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try ensureRoles(allocator, conn);
     try applyScript(allocator, conn, purge_version, purge_sql, false);
     try applyScript(allocator, conn, ai_reasoning_version, ai_reasoning_sql, true);
+    try applyScript(allocator, conn, process_entities_version, process_entities_sql, true);
     try conn.execSimple("GRANT EXECUTE ON FUNCTION tawny_purge_expired(timestamptz) TO tawny_jobs");
     try ensurePartitions(conn);
 }
@@ -157,7 +160,8 @@ fn civilMonth(unix_day: i64, year_out: *i32, month_out: *i32) void {
 pub fn migrationsCurrent(allocator: std.mem.Allocator, conn: *pg.Conn) !bool {
     return try migrationApplied(allocator, conn, migration_version) and
         try migrationApplied(allocator, conn, purge_version) and
-        try migrationApplied(allocator, conn, ai_reasoning_version);
+        try migrationApplied(allocator, conn, ai_reasoning_version) and
+        try migrationApplied(allocator, conn, process_entities_version);
 }
 
 test "civil month of the zig 0.17 release day" {

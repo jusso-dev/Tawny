@@ -80,6 +80,72 @@ Auth: Agent JWT. Max body 1 MB.
 
 Response: `202 Accepted`, empty body. `413` if payload exceeds 1 MB.
 
+The body above is schema 1 (older agents). Current agents send schema 2,
+described next. The server accepts both from the same agent.
+
+#### Schema 2 (`"schema": 2`)
+
+JSON Schema: `schemas/events/envelope.v2.json`; per-type `data` schemas in
+`schemas/events/<type>.v1.json`.
+
+```json
+{
+  "schema": 2,
+  "batch_id": "6b1c...-uuid",
+  "agent": {"agent_id": "uuid", "sensor_version": "0.1.0", "boot_id": "uuid"},
+  "events": [{
+    "event_id": "uuid",
+    "event_type": "process_start",
+    "v": 1,
+    "ts": "2026-11-09T01:00:05.200Z",
+    "seq": 9001,
+    "data": {
+      "process": {"entity_id": "wxjmbxyyq7eybnyac2lfc654ka", "pid": 5200, "start_time": "2026-11-09T01:00:05.200Z", "image": "C:\\...\\powershell.exe"},
+      "parent": {"entity_id": "7iyrf5zm6b5flyledskp3lodvm", "pid": 4100}
+    }
+  }],
+  "signature": "base64 Ed25519"
+}
+```
+
+- `agent.agent_id` must match the JWT. `batch_id`, `event_id` and
+  `agent.boot_id` are UUIDs. `ts` is ISO 8601 UTC. `seq` is the durable
+  per-agent sequence (it survives agent restarts) and is at least 1.
+- `event_type` uses the same names as schema 1 (`process_start`,
+  `dns_query`, `system_info`, ...). Schema 1 `process_launch` is treated as
+  `process_start` for process identity. `agent_health` is new in schema 2.
+- Per-type checks: `process_start` and `process_exit` need `process.pid`,
+  and any `entity_id` must be 26 base32 characters; `network_connect` needs
+  `network`; `dns_query` needs `dns.query` or `qname`; `file_create` needs
+  `file.path`; `registry_set` needs `registry.key`; `user_logon` needs
+  `user`; `service_create` needs `service.name`; `powershell_script_block`
+  needs `script_block.id` and `text`. Other types need `data` to be an
+  object. A failed check is `400` with `events[i]: <reason>` in the title.
+- `process.entity_id` is
+  `base32(SHA-256(agent_id || pid_le32 || start_time_100ns_le64 || boot_id)[0..16])`;
+  exact byte encoding in `docs/architecture/target-edr.md` section 2.4.
+
+**Signature.** With a device key registered at enrol, every batch must be
+signed. Schema 2 signs this string (UTF-8, `\n` line ends):
+
+```
+tawny-batch-v2
+<agent_id>
+<batch_id>
+<agent.boot_id>
+<agent.sensor_version>
+<event_id>|<seq>|<event_type>|<v>|<ts>|<sha256 hex of the exact data bytes>   (one line per event)
+```
+
+`agent_id` is the authenticated agent. `boot_id` is signed because it feeds
+every entity id; `sensor_version` so a version claim can't be changed in
+transit; `v` because it picks the payload schema. `mono`, `priority` and
+`sensor` are not signed because the server neither stores nor acts on them.
+Schema 1 batches still verify against `tawny-batch-v1`
+(`<client_event_id>|<sequence>|<type>|<occurred_at>|<sha256 of payload>`).
+With `TAWNY_REQUIRE_SIGNED_BATCHES` on (the default), an agent with no key
+is refused for either schema.
+
 Current agent event types:
 
 | Type | Payload |
@@ -89,6 +155,9 @@ Current agent event types:
 | `user_session` | Windows uses WTS sessions; macOS uses `utmpx`. Payload shape is `{ "source": "...", "sessions": [...] }`. |
 | `system_info` | Hostname, platform, OS/kernel version, architecture, CPU, and memory facts. Emitted at startup and hourly. |
 | `file_integrity` | `{ "path": "...", "old_sha256": "...", "new_sha256": "...", "size_bytes": 123, "exists": true }` on hash or existence changes for configured `fim_paths`. |
+| `process_start` (Linux, macOS) | `process{entity_id,pid,start_time,name,image,command_line,user{uid},hashes{sha256}}`, `parent{entity_id,pid}` from the 5 s launch diff. Older agents sent this as `process_launch` with a flat payload (`pid`, `ppid`, `start_time_unix`, ...), which the server still accepts. |
+| `process_exit` (Linux, macOS) | `process{entity_id,pid}`, `end_time` (when the diff noticed, up to one interval late). |
+| `agent_health` | `sensor_version`, `buffer_depth`, `uptime_seconds`, `next_sequence`, `boot_id`, once per heartbeat. |
 
 Windows event log types. Every payload carries `sensor` (`sysmon`, `security`,
 `system`, `powershell`), `channel`, `event_id`, `record_id`, `ts` (event time,
@@ -128,6 +197,25 @@ last_heartbeat_at, enrolled_at, public_ip, tags).
 ### GET `/api/agents/{id}`
 
 Auth: web user or `twny_` API token. Single agent, same shape.
+
+### GET `/api/agents/{id}/process-tree?entity_id=...`
+
+Auth: web user or `twny_` API token; same tenant check as the other agent
+routes, and `process_entities` has row-level security. Returns the process,
+its ancestors (parent first) and every descendant with `depth` (1 is a
+direct child, at most 500), ordered by depth then start time:
+
+```json
+{
+  "process": {"entity_id": "wxjm...", "parent_entity_id": "7iyr...", "pid": 5200, "image": "...", "command_line": "...", "user_name": "CORP\\alice", "start_time": "2026-11-09T01:00:05.200Z", "end_time": null, "first_event_id": 42},
+  "ancestors": [{"entity_id": "7iyr...", "depth": 1, "...": "..."}],
+  "children": [{"entity_id": "z64l...", "depth": 1, "...": "..."}]
+}
+```
+
+Without `entity_id` it returns `{"processes": [...]}`, the 50 newest
+processes on the agent. `400` for a malformed `entity_id`, `404` for an
+unknown agent or process.
 
 ### GET `/api/agents/{id}/events?type=process_snapshot&limit=50&before=...`
 

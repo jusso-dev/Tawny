@@ -1,0 +1,17 @@
+{
+  "sensor": "system",
+  "channel": "System",
+  "event_id": 7045,
+  "record_id": 9,
+  "ts": "2026-11-09T01:01:00.0000000Z",
+  "service": {
+    "name": "Updater",
+    "image_path": "C:\\Users\\alice\\AppData\\Local\\Temp\\payload.exe",
+    "type": "user mode service",
+    "start_type": "auto start",
+    "account": "LocalSystem"
+  },
+  "user": {
+    "sid": "S-1-5-18"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "network_connect.v1.json",
+  "title": "NETWORK_CONNECT",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "network"
+  ],
+  "properties": {
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    },
+    "network": {
+      "$ref": "common.v1.json#/$defs/network"
+    }
+  }
+}

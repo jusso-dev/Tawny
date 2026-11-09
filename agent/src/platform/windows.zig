@@ -8,6 +8,8 @@ pub const ProcessInfo = struct {
     /// denied). Never a copy of the name.
     command_line: []u8,
     start_time_unix: ?i64 = null,
+    /// Creation time in 100 ns ticks since the Unix epoch (entity id input).
+    start_time_100ns: ?u64 = null,
     image_path: ?[]u8 = null,
 };
 
@@ -132,6 +134,8 @@ fn enrich(alloc: std.mem.Allocator, info: *ProcessInfo, query_buf: []align(@alig
     var user: FILETIME = undefined;
     if (GetProcessTimes(process, &creation, &exit_time, &kernel, &user) != 0) {
         info.start_time_unix = filetimeToUnix(creation);
+        const ticks = (@as(u64, creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+        if (ticks >= 116_444_736_000_000_000) info.start_time_100ns = ticks - 116_444_736_000_000_000;
     }
 
     var ret_len: u32 = 0;

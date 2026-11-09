@@ -469,5 +469,11 @@ comptime {
     _ = @import("ai/reasoning.zig");
     _ = @import("jobs/ai_reasoning.zig");
     _ = @import("routes/ai.zig");
+    _ = @import("ingest/entity.zig");
+    _ = @import("ingest/legacy.zig");
+    _ = @import("ingest/v2.zig");
+    _ = @import("ingest/schema_check.zig");
+    _ = @import("ingest/process_store.zig");
+    _ = @import("ingest/integration.zig");
     _ = @import("fuzz.zig");
 }

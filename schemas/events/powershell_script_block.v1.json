@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "powershell_script_block.v1.json",
+  "title": "POWERSHELL_ACTIVITY (script block)",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "script_block"
+  ],
+  "properties": {
+    "script_block": {
+      "type": "object",
+      "required": [
+        "id",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "parts_total": {
+          "type": "integer"
+        },
+        "parts_received": {
+          "type": "integer"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    },
+    "user": {
+      "$ref": "common.v1.json#/$defs/user"
+    }
+  }
+}

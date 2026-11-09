@@ -1,0 +1,26 @@
+{
+  "sensor": "security",
+  "channel": "Security",
+  "event_id": 4624,
+  "record_id": 77,
+  "ts": "2026-11-09T00:59:00.0000000Z",
+  "user": {
+    "name": "alice",
+    "domain": "CORP",
+    "sid": "S-1-5-21-1-1001"
+  },
+  "logon": {
+    "id": "0x3e7",
+    "type": 2,
+    "type_name": "interactive",
+    "elevated": false
+  },
+  "network": {
+    "src_ip": "127.0.0.1"
+  },
+  "process": {
+    "pid": 720,
+    "image": "C:\\Windows\\System32\\winlogon.exe",
+    "name": "winlogon.exe"
+  }
+}

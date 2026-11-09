@@ -9,6 +9,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const evtxml = @import("../platform/windows/evtxml.zig");
 const privacy = @import("privacy.zig");
+const entity = @import("../entity.zig");
+const schema_check = @import("../schema_check.zig");
 const iox = @import("../io_compat.zig");
 const eventlog = if (builtin.target.os.tag == .windows) @import("../platform/windows/eventlog.zig") else struct {};
 
@@ -196,10 +198,24 @@ pub const Mapped = struct {
     payload: []u8,
 };
 
+/// Entity table for the mapping call in progress (set by `mapEventWith`).
+/// Mapping is synchronous, so a thread-local keeps the helper signatures as
+/// they are.
+threadlocal var map_entities: ?*entity.Table = null;
+
 /// Map one parsed event to a Tawny event type and JSON payload. Returns null
 /// for event IDs this collector does not handle. Script blocks (4104) go
 /// through `ScriptBlocks` instead.
 pub fn mapEvent(alloc: std.mem.Allocator, ev: *const evtxml.Event) !?Mapped {
+    return mapEventWith(alloc, ev, null);
+}
+
+/// As `mapEvent`, filling `process.entity_id` and `parent.entity_id` from
+/// `table`. Process starts (Sysmon 1, Security 4688) are recorded in the table
+/// first, so later events for the same pid and Sysmon ProcessGuid get the id.
+pub fn mapEventWith(alloc: std.mem.Allocator, ev: *const evtxml.Event, table: ?*entity.Table) !?Mapped {
+    map_entities = table;
+    defer map_entities = null;
     const source = sourceForChannel(ev.channel) orelse return null;
     const event_type: []const u8 = switch (source) {
         .sysmon => switch (ev.event_id) {
@@ -282,6 +298,9 @@ fn writeEnvelope(jw: *Jw, source: Source, ev: *const evtxml.Event) !void {
 
 /// Sysmon 1: process create.
 fn mapSysmon1(alloc: std.mem.Allocator, jw: *Jw, ev: *const evtxml.Event) !void {
+    // Sysmon UtcTime is the process creation time (millisecond precision).
+    const start = entity.parseIso(ev.get("UtcTime") orelse "");
+    _ = try observeStart(ev.get("ProcessId"), start, ev.get("ProcessGuid"));
     try jw.objectField("process");
     try jw.beginObject();
     try sysmonProcessCore(jw, ev, "ProcessGuid", "ProcessId", "Image", "User");
@@ -299,7 +318,7 @@ fn mapSysmon1(alloc: std.mem.Allocator, jw: *Jw, ev: *const evtxml.Event) !void 
 
     try jw.objectField("parent");
     try jw.beginObject();
-    try sysmonProcessCore(jw, ev, "ParentProcessGuid", "ParentProcessId", "ParentImage", "ParentUser");
+    try sysmonProcessCoreAt(jw, ev, "ParentProcessGuid", "ParentProcessId", "ParentImage", "ParentUser", start orelse std.math.maxInt(u64));
     try commandLine(alloc, jw, "command_line", ev.get("ParentCommandLine"));
     try jw.endObject();
 }
@@ -569,9 +588,19 @@ fn mapSecurity4672(jw: *Jw, ev: *const evtxml.Event) !void {
 
 /// Security 4688: process creation (fallback when Sysmon is missing).
 fn mapSecurity4688(alloc: std.mem.Allocator, jw: *Jw, ev: *const evtxml.Event) !void {
+    // 4688 is logged as the process is created; TimeCreated stands in for
+    // the creation FILETIME.
+    const start = entity.parseIso(ev.time_created);
+    const id = try observeStart(ev.get("NewProcessId"), start, null);
     try jw.objectField("process");
     try jw.beginObject();
+    try entityField(jw, id);
     try hexOrInt(jw, "pid", ev.get("NewProcessId"));
+    if (start) |t| {
+        var buf: [24]u8 = undefined;
+        try jw.objectField("start_time");
+        try jw.write(entity.formatIso(&buf, t));
+    }
     try pathAsImage(jw, ev.get("NewProcessName"));
     try commandLine(alloc, jw, "command_line", ev.get("CommandLine"));
     // TargetUser* is filled when the process runs as a different account.
@@ -599,6 +628,7 @@ fn mapSecurity4688(alloc: std.mem.Allocator, jw: *Jw, ev: *const evtxml.Event) !
     try jw.endObject();
     try jw.objectField("parent");
     try jw.beginObject();
+    try entityField(jw, lookupEntity(ev.get("ProcessId"), null, start orelse std.math.maxInt(u64)));
     try hexOrInt(jw, "pid", ev.get("ProcessId"));
     try pathAsImage(jw, ev.get("ParentProcessName"));
     try jw.endObject();
@@ -726,7 +756,39 @@ fn sysmonUser(jw: *Jw, value: ?[]const u8) !void {
     try jw.endObject();
 }
 
+/// Record a process start in the entity table and return its id.
+fn observeStart(pid_text: ?[]const u8, start_100ns: ?u64, guid: ?[]const u8) !?entity.Id {
+    const t = map_entities orelse return null;
+    const pid = parseHexOrDec(pid_text orelse return null) orelse return null;
+    const start = start_100ns orelse return null;
+    return try t.observe(@intCast(@min(pid, std.math.maxInt(u32))), start, guid orelse "");
+}
+
+/// Entity holding `pid` now. With `child_start`, the holder must have started
+/// no later than the child (the parent case).
+fn lookupEntity(pid_text: ?[]const u8, guid: ?[]const u8, child_start: ?u64) ?entity.Id {
+    const t = map_entities orelse return null;
+    const pid64 = parseHexOrDec(pid_text orelse return null) orelse return null;
+    if (pid64 == 0 or pid64 > std.math.maxInt(u32)) return null;
+    const pid: u32 = @intCast(pid64);
+    const g = guid orelse "";
+    if (t.lookup(pid, if (isEmptyValue(g)) "" else g) == null) return null;
+    if (child_start) |c| return t.parentOf(pid, c);
+    return t.lookup(pid, "");
+}
+
+fn entityField(jw: *Jw, id: ?entity.Id) !void {
+    const v = id orelse return;
+    try jw.objectField("entity_id");
+    try jw.write(&v);
+}
+
 fn sysmonProcessCore(jw: *Jw, ev: *const evtxml.Event, guid: []const u8, pid: []const u8, image: []const u8, user: []const u8) !void {
+    return sysmonProcessCoreAt(jw, ev, guid, pid, image, user, null);
+}
+
+fn sysmonProcessCoreAt(jw: *Jw, ev: *const evtxml.Event, guid: []const u8, pid: []const u8, image: []const u8, user: []const u8, child_start: ?u64) !void {
+    try entityField(jw, lookupEntity(ev.get(pid), ev.get(guid), child_start));
     try str(jw, "guid", ev.get(guid));
     try int(jw, "pid", ev.get(pid));
     try pathAsImage(jw, ev.get(image));
@@ -1226,6 +1288,8 @@ pub const Processor = struct {
     counters: Counters = .{},
     /// When true, Security 4688 is dropped because Sysmon 1 is delivering.
     sysmon_active: bool = false,
+    /// pid -> entity table shared with the agent loop.
+    entities: ?*entity.Table = null,
 
     pub fn init(alloc: std.mem.Allocator) Processor {
         return .{ .allocator = alloc, .blocks = ScriptBlocks.init(alloc) };
@@ -1266,7 +1330,7 @@ pub const Processor = struct {
             self.counters.skipped_4688_with_sysmon += 1;
             return;
         }
-        const mapped = mapEvent(self.allocator, ev) catch |err| switch (err) {
+        const mapped = mapEventWith(self.allocator, ev, self.entities) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {
                 self.counters.dropped_map += 1;
@@ -1310,6 +1374,7 @@ const NullCollector = struct {
     }
     pub fn commit(_: *NullCollector) void {}
     pub fn noteQueueDrop(_: *NullCollector) void {}
+    pub fn setEntities(_: *NullCollector, _: *entity.Table) void {}
 };
 
 const WindowsCollector = struct {
@@ -1339,6 +1404,10 @@ const WindowsCollector = struct {
 
     pub fn noteQueueDrop(self: *WindowsCollector) void {
         self.processor.counters.dropped_queue += 1;
+    }
+
+    pub fn setEntities(self: *WindowsCollector, table: *entity.Table) void {
+        self.processor.entities = table;
     }
 
     /// Pull up to the per-channel cap from every channel. Caller pushes the
@@ -2066,4 +2135,83 @@ test "bookmarks round-trip through the state directory" {
 test "utf8 truncation keeps whole code points" {
     try std.testing.expectEqualStrings("ab", truncUtf8("ab\xc3\xa9", 3));
     try std.testing.expectEqualStrings("ab\xc3\xa9", truncUtf8("ab\xc3\xa9", 4));
+}
+
+test "sysmon 1 and 5 carry entity ids; the child joins the parent seeded from a snapshot" {
+    const alloc = std.testing.allocator;
+    var table = entity.Table.init(alloc, "0f8fad5b-d9cb-469f-a165-70867728950e", "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c", 64);
+    defer table.deinit();
+    // cmd.exe (pid 5532) was running when the agent started.
+    const parent_start = entity.parseIso("2026-11-09T01:12:40.000Z").?;
+    const parent_id = try table.observe(5532, parent_start, "");
+
+    var ev = try evtxml.parse(alloc, samples.sysmon_1);
+    defer ev.deinit();
+    const start = (try mapEventWith(alloc, &ev, &table)).?;
+    defer alloc.free(start.payload);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, start.payload, .{});
+    defer parsed.deinit();
+    const want = entity.compute("0f8fad5b-d9cb-469f-a165-70867728950e", 6844, entity.parseIso("2026-11-09 01:12:44.548").?, "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c");
+    try expectStr(parsed.value, "process.entity_id", &want);
+    try expectStr(parsed.value, "parent.entity_id", &parent_id);
+    // The Sysmon ProcessGuid stays as an extra field, not the id.
+    try expectStr(parsed.value, "process.guid", "{4f3c6a1e-b7cc-672e-2c01-000000001e00}");
+    try schema_check.expectValid(alloc, "process_start", start.payload);
+
+    var exit_ev = try evtxml.parse(alloc, samples.sysmon_5);
+    defer exit_ev.deinit();
+    const exit = (try mapEventWith(alloc, &exit_ev, &table)).?;
+    defer alloc.free(exit.payload);
+    try schema_check.expectValid(alloc, "process_exit", exit.payload);
+}
+
+test "parent seeded after pid reuse is not used for an older child" {
+    const alloc = std.testing.allocator;
+    var table = entity.Table.init(alloc, "0f8fad5b-d9cb-469f-a165-70867728950e", "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c", 64);
+    defer table.deinit();
+    // pid 5532 now belongs to a process that started after the child.
+    _ = try table.observe(5532, entity.parseIso("2026-11-09T02:00:00.000Z").?, "");
+    var ev = try evtxml.parse(alloc, samples.sysmon_1);
+    defer ev.deinit();
+    const m = (try mapEventWith(alloc, &ev, &table)).?;
+    defer alloc.free(m.payload);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, m.payload, .{});
+    defer parsed.deinit();
+    try std.testing.expect(getPath(parsed.value, "parent.entity_id") == null);
+    try std.testing.expect(getPath(parsed.value, "process.entity_id") != null);
+}
+
+test "security 4688 gets an entity id from TimeCreated" {
+    const alloc = std.testing.allocator;
+    var table = entity.Table.init(alloc, "0f8fad5b-d9cb-469f-a165-70867728950e", "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c", 64);
+    defer table.deinit();
+    var ev = try evtxml.parse(alloc, samples.security_4688);
+    defer ev.deinit();
+    const m = (try mapEventWith(alloc, &ev, &table)).?;
+    defer alloc.free(m.payload);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, m.payload, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, entity.len), getPath(parsed.value, "process.entity_id").?.string.len);
+    try std.testing.expect(getPath(parsed.value, "process.start_time") != null);
+    try schema_check.expectValid(alloc, "process_start", m.payload);
+}
+
+test "mapped Windows payloads match their schemas" {
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { xml: []const u8, ty: []const u8 }{
+        .{ .xml = samples.sysmon_3, .ty = "network_connect" },
+        .{ .xml = samples.sysmon_11, .ty = "file_create" },
+        .{ .xml = samples.sysmon_13, .ty = "registry_set" },
+        .{ .xml = samples.sysmon_22, .ty = "dns_query" },
+        .{ .xml = samples.security_4624, .ty = "user_logon" },
+        .{ .xml = samples.system_7045, .ty = "service_create" },
+    };
+    for (cases) |c| {
+        var ev = try evtxml.parse(alloc, c.xml);
+        defer ev.deinit();
+        const m = (try mapEvent(alloc, &ev)).?;
+        defer alloc.free(m.payload);
+        try std.testing.expectEqualStrings(c.ty, m.event_type);
+        try schema_check.expectValid(alloc, c.ty, m.payload);
+    }
 }

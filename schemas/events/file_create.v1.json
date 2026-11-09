@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "file_create.v1.json",
+  "title": "FILE_CREATE",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "file"
+  ],
+  "properties": {
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    },
+    "file": {
+      "$ref": "common.v1.json#/$defs/file"
+    }
+  }
+}

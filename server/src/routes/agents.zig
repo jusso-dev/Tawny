@@ -6,6 +6,10 @@ const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
 const batch_sig = @import("../crypto/batch_sig.zig");
 const detect = @import("../jobs/detect.zig");
+const ingest_v2 = @import("../ingest/v2.zig");
+const ingest_entity = @import("../ingest/entity.zig");
+const legacy = @import("../ingest/legacy.zig");
+const process_store = @import("../ingest/process_store.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub fn createEnrollmentToken(
@@ -524,6 +528,15 @@ pub fn heartbeat(
     try util.respondJson(request, .ok, out.items);
 }
 
+/// One event after parsing either schema, ready to store.
+const IngestEvent = struct {
+    event_type: []const u8,
+    occurred_unix: i64,
+    payload: std.json.Value,
+    client_event_id: ?[]const u8,
+    sequence: ?i64,
+};
+
 pub fn ingestEvents(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -541,6 +554,15 @@ pub fn ingestEvents(
     }
     const body = try util.readBody(allocator, request, 1024 * 1024);
     defer allocator.free(body);
+
+    // Schema 2 batches say so; anything else is a schema 1 batch.
+    const probe = std.json.parseFromSlice(ingest_v2.Probe, allocator, body, .{ .ignore_unknown_fields = true }) catch {
+        return util.problem(request, allocator, .bad_request, "Invalid events body.");
+    };
+    const schema = probe.value.schema orelse 1;
+    probe.deinit();
+    if (schema == 2) return ingestV2(allocator, io, conn, request, agent, body);
+    if (schema != 1) return util.problem(request, allocator, .bad_request, "Unsupported schema.");
 
     const Event = struct {
         type: []const u8,
@@ -566,21 +588,10 @@ pub fn ingestEvents(
         return util.problem(request, allocator, .bad_request, "At most 500 events per batch.");
     }
 
-    const arows = try conn.exec(allocator,
-        \\SELECT device_public_key, last_telemetry_sequence::text, hostname
-        \\FROM agents WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1
-    , &.{ .{ .text = agent.agent_id }, .{ .text = agent.tenant_id } });
-    defer {
-        for (arows) |row| row.deinit(allocator);
-        allocator.free(arows);
-    }
-    if (arows.len == 0) return util.problem(request, allocator, .not_found, "Agent not found.");
-    const device_key = arows[0].cols[0];
-    const last_seq: i64 = if (arows[0].cols[1]) |s| std.fmt.parseInt(i64, s, 10) catch 0 else 0;
-    const hostname = arows[0].cols[2] orelse "";
+    var ctx = (try loadIngestAgent(allocator, conn, request, agent)) orelse return;
+    defer ctx.deinit(allocator);
     var batch_buf: [36]u8 = undefined;
-
-    const batch_id: []const u8 = switch (checkBatchSignature(allocator, agent.agent_id, device_key, body, parsed.value)) {
+    const batch_id: []const u8 = switch (checkBatchSignature(allocator, agent.agent_id, ctx.device_key(), body, parsed.value)) {
         .verified => |id| id,
         .unsigned_allowed => parsed.value.batch_id orelse util.newUuid(io, &batch_buf),
         .rejected => {
@@ -588,13 +599,137 @@ pub fn ingestEvents(
             return util.problem(request, allocator, .unauthorized, "Invalid or missing device batch signature.");
         },
     };
+
+    const now = util.nowUnix(io);
+    const events = try allocator.alloc(IngestEvent, parsed.value.events.len);
+    defer allocator.free(events);
+    for (parsed.value.events, 0..) |ev, i| {
+        // occurred_at may be unix number or string
+        const occurred_unix: i64 = switch (ev.occurred_at) {
+            .integer => |n| n,
+            .float => |f| @intFromFloat(f),
+            .string => |s| std.fmt.parseInt(i64, s, 10) catch auth_parse_ts(s) orelse now,
+            else => now,
+        };
+        events[i] = .{
+            .event_type = ev.type,
+            .occurred_unix = occurred_unix,
+            .payload = ev.payload,
+            .client_event_id = ev.client_event_id,
+            .sequence = ev.sequence,
+        };
+    }
+    return storeBatch(allocator, io, conn, request, agent, &ctx, batch_id, events);
+}
+
+/// Schema 2: envelope and per-type checks, signature over tawny-batch-v2.
+fn ingestV2(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    agent: auth.AgentAuth,
+    body: []const u8,
+) !void {
+    var parsed = std.json.parseFromSlice(ingest_v2.Batch, allocator, body, .{ .ignore_unknown_fields = true }) catch {
+        return util.problem(request, allocator, .bad_request, "Invalid schema 2 events body.");
+    };
+    defer parsed.deinit();
+    const b = &parsed.value;
+    if (b.events.len > 500) return util.problem(request, allocator, .bad_request, "At most 500 events per batch.");
+    if (ingest_v2.checkEnvelope(b, agent.agent_id)) |why| {
+        if (why.index) |i| {
+            const title = try std.fmt.allocPrint(allocator, "events[{d}]: {s}", .{ i, why.title });
+            defer allocator.free(title);
+            return util.problem(request, allocator, .bad_request, title);
+        }
+        return util.problem(request, allocator, .bad_request, why.title);
+    }
+    if (b.events.len == 0) {
+        try util.respondJson(request, .accepted, "");
+        return;
+    }
+
+    var ctx = (try loadIngestAgent(allocator, conn, request, agent)) orelse return;
+    defer ctx.deinit(allocator);
+    if (!checkBatchSignatureV2(allocator, agent.agent_id, ctx.device_key(), body, b)) {
+        try audit.add(allocator, io, conn, agent.tenant_id, null, "telemetry.signature_rejected", agent.agent_id, null);
+        return util.problem(request, allocator, .unauthorized, "Invalid or missing device batch signature.");
+    }
+
+    const events = try allocator.alloc(IngestEvent, b.events.len);
+    defer allocator.free(events);
+    for (b.events, 0..) |*ev, i| {
+        events[i] = .{
+            .event_type = ev.event_type,
+            .occurred_unix = ingest_v2.tsUnix(ev),
+            .payload = ev.data,
+            .client_event_id = ev.event_id,
+            .sequence = ev.seq,
+        };
+    }
+    return storeBatch(allocator, io, conn, request, agent, &ctx, b.batch_id, events);
+}
+
+const IngestAgent = struct {
+    rows: []pg.Row,
+    last_seq: i64,
+    hostname: []const u8,
+
+    fn device_key(self: *const IngestAgent) ?[]const u8 {
+        return self.rows[0].cols[0];
+    }
+
+    fn deinit(self: *IngestAgent, allocator: std.mem.Allocator) void {
+        for (self.rows) |row| row.deinit(allocator);
+        allocator.free(self.rows);
+    }
+};
+
+fn loadIngestAgent(allocator: std.mem.Allocator, conn: *pg.Conn, request: *std.http.Server.Request, agent: auth.AgentAuth) !?IngestAgent {
+    const arows = try conn.exec(allocator,
+        \\SELECT device_public_key, last_telemetry_sequence::text, hostname
+        \\FROM agents WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1
+    , &.{ .{ .text = agent.agent_id }, .{ .text = agent.tenant_id } });
+    if (arows.len == 0) {
+        allocator.free(arows);
+        try util.problem(request, allocator, .not_found, "Agent not found.");
+        return null;
+    }
+    return .{
+        .rows = arows,
+        .last_seq = if (arows[0].cols[1]) |s| std.fmt.parseInt(i64, s, 10) catch 0 else 0,
+        .hostname = arows[0].cols[2] orelse "",
+    };
+}
+
+/// Store a batch of either schema: dedupe, insert, process entities, detect
+/// queue, sequence bookkeeping. Both schemas end here, so v1 and v2 agents
+/// ingest side by side.
+fn storeBatch(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    agent: auth.AgentAuth,
+    ctx: *const IngestAgent,
+    batch_id: []const u8,
+    events: []const IngestEvent,
+) !void {
     const now = util.nowUnix(io);
     var tbuf: [32]u8 = undefined;
     const received = util.formatRfc3339(&tbuf, now);
+    const last_seq = ctx.last_seq;
 
     var min_seq: ?i64 = null;
     var max_seq: ?i64 = null;
-    for (parsed.value.events) |ev| {
+    for (events) |ev| {
+        if (ev.occurred_unix > now + 300) {
+            return util.problem(request, allocator, .bad_request, "occurred_at too far in the future");
+        }
+        if (ev.payload != .object) {
+            return util.problem(request, allocator, .bad_request, "payload must be a JSON object.");
+        }
         if (ev.sequence) |s| {
             min_seq = if (min_seq) |m| @min(m, s) else s;
             max_seq = if (max_seq) |m| @max(m, s) else s;
@@ -606,25 +741,9 @@ pub fn ingestEvents(
     if (gap) try audit.add(allocator, io, conn, agent.tenant_id, null, "telemetry.sequence_gap", agent.agent_id, null);
 
     var inserted: usize = 0;
-    for (parsed.value.events) |ev| {
-        // occurred_at may be unix number or string
-        const occurred_unix: i64 = switch (ev.occurred_at) {
-            .integer => |n| n,
-            .float => |f| @intFromFloat(f),
-            .string => |s| std.fmt.parseInt(i64, s, 10) catch auth_parse_ts(s) orelse now,
-            else => now,
-        };
-        if (occurred_unix > now + 300) {
-            return util.problem(request, allocator, .bad_request, "occurred_at too far in the future");
-        }
-        if (ev.payload != .object) {
-            return util.problem(request, allocator, .bad_request, "payload must be a JSON object.");
-        }
-        var payload_buf: std.ArrayList(u8) = .empty;
-        defer payload_buf.deinit(allocator);
-        const payload_tmp = try std.json.Stringify.valueAlloc(allocator, ev.payload, .{});
-        defer allocator.free(payload_tmp);
-        try payload_buf.appendSlice(allocator, payload_tmp);
+    for (events) |ev| {
+        const payload_text = try std.json.Stringify.valueAlloc(allocator, ev.payload, .{});
+        defer allocator.free(payload_text);
 
         if (ev.client_event_id) |cid| {
             const existing = try conn.exec(allocator,
@@ -638,8 +757,8 @@ pub fn ingestEvents(
         }
 
         var obuf: [32]u8 = undefined;
-        const occurred_s = util.formatRfc3339(&obuf, occurred_unix);
-        const digest = try util.sha256Hex(allocator, payload_buf.items);
+        const occurred_s = util.formatRfc3339(&obuf, ev.occurred_unix);
+        const digest = try util.sha256Hex(allocator, payload_text);
         defer allocator.free(digest);
 
         const seq_val: pg.Value = if (ev.sequence) |s| blk: {
@@ -659,10 +778,10 @@ pub fn ingestEvents(
             seq_val,
             .{ .text = agent.tenant_id },
             .{ .text = agent.agent_id },
-            .{ .text = ev.type },
+            .{ .text = ev.event_type },
             .{ .text = occurred_s },
             .{ .text = digest },
-            .{ .text = payload_buf.items },
+            .{ .text = payload_text },
         });
         defer {
             for (ins) |row| row.deinit(allocator);
@@ -684,8 +803,11 @@ pub fn ingestEvents(
                 .{ .text = event_id },
             }) catch {};
         }
+        if (legacy.processFacts(agent.agent_id, ev.event_type, ev.payload, ev.occurred_unix)) |facts| {
+            try process_store.record(conn, agent.tenant_id, agent.agent_id, event_id, &facts);
+        }
         inserted += 1;
-        try detect.enqueue(allocator, conn, agent.tenant_id, agent.agent_id, hostname, ev.type, event_id, recv_at);
+        try detect.enqueue(allocator, conn, agent.tenant_id, agent.agent_id, ctx.hostname, ev.event_type, event_id, recv_at);
     }
 
     if (!rollback) {
@@ -710,6 +832,43 @@ pub fn ingestEvents(
     }
 
     try util.respondJson(request, .accepted, "");
+}
+
+/// GET /api/agents/{id}/process-tree?entity_id=... (ancestors and
+/// descendants), or without entity_id the newest processes on the agent.
+pub fn processTree(
+    allocator: std.mem.Allocator,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    web: auth.WebUser,
+    agent_id: []const u8,
+    target: []const u8,
+) !void {
+    _ = util.readBody(allocator, request, 1024) catch {};
+    if (!ingest_entity.isUuid(agent_id)) return util.problem(request, allocator, .not_found, "Agent not found.");
+    const exists = try conn.exec(allocator, "SELECT 1 FROM agents WHERE id = $1::uuid AND tenant_id = $2::uuid", &.{
+        .{ .text = agent_id },
+        .{ .text = web.tenant_id },
+    });
+    defer {
+        for (exists) |row| row.deinit(allocator);
+        allocator.free(exists);
+    }
+    if (exists.len == 0) return util.problem(request, allocator, .not_found, "Agent not found.");
+
+    const eid = util.queryParam(target, "entity_id") orelse {
+        const json = try process_store.recentJson(allocator, conn, web.tenant_id, agent_id, 50);
+        defer allocator.free(json);
+        return util.respondJson(request, .ok, json);
+    };
+    if (!ingest_entity.isEntityId(eid)) {
+        return util.problem(request, allocator, .bad_request, "entity_id must be 26 base32 characters.");
+    }
+    const json = try process_store.treeJson(allocator, conn, web.tenant_id, agent_id, eid) orelse {
+        return util.problem(request, allocator, .not_found, "Process not found.");
+    };
+    defer allocator.free(json);
+    try util.respondJson(request, .ok, json);
 }
 
 pub fn createAction(
@@ -1283,6 +1442,26 @@ fn checkBatchSignature(allocator: std.mem.Allocator, agent_id: []const u8, devic
     defer allocator.free(msg);
     batch_sig.verify(key, msg, sig) catch return .rejected;
     return .{ .verified = batch_id };
+}
+
+/// Schema 2 signature check, same key rules as `checkBatchSignature`.
+fn checkBatchSignatureV2(allocator: std.mem.Allocator, agent_id: []const u8, device_key: ?[]const u8, body: []const u8, b: *const ingest_v2.Batch) bool {
+    const key = device_key orelse "";
+    if (key.len == 0) return !state.requireSignedBatches();
+    const sig = b.signature orelse return false;
+    if (sig.len == 0) return false;
+    const raws = batch_sig.rawEventsV2(allocator, body) catch return false;
+    defer allocator.free(raws);
+    if (raws.len != b.events.len) return false;
+    const evs = allocator.alloc(batch_sig.EventV2, raws.len) catch return false;
+    defer allocator.free(evs);
+    for (b.events, raws, 0..) |ev, raw, i| {
+        evs[i] = .{ .event_id = ev.event_id, .seq = ev.seq, .event_type = ev.event_type, .v = ev.v, .ts = ev.ts, .data_raw = raw.payload };
+    }
+    const msg = batch_sig.canonicalV2(allocator, agent_id, b.batch_id, b.agent.boot_id, b.agent.sensor_version, evs) catch return false;
+    defer allocator.free(msg);
+    batch_sig.verify(key, msg, sig) catch return false;
+    return true;
 }
 
 test "unsigned batch from an agent with no key follows TAWNY_REQUIRE_SIGNED_BATCHES" {
