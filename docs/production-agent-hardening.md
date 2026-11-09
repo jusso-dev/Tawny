@@ -27,6 +27,82 @@ not a normal install option.
 Keep a copy of each approved binary, `SHA256SUMS`, release tag, attestation
 verification output, and deployment approval in the SOC change record.
 
+### Code signing and signed update manifests
+
+Authenticode (Windows) and Developer ID with notarisation (macOS) steps are in
+`.github/workflows/release.yml` and run only when their secrets exist, so
+releases still publish without them. The options and what they need are in
+[code-signing.md](code-signing.md). Until certificates exist, Windows
+SmartScreen and macOS Gatekeeper warn on first run, and the SHA-256 plus
+attestation checks above are the release trust.
+
+Self-update trusts neither of those. It trusts only a minisign signature on a
+release manifest, checked with the public key compiled into the agent
+(`agent/src/update_key.zig`). **That key is a placeholder today, so the agent
+refuses every update** and reports `update.state` =
+`disabled_no_release_key` in `agent_health`. Installs and upgrades go through
+the installers as before. To turn self-update on:
+
+1. The project owner creates the key offline (`minisign -G`), keeps the
+   secret key off any shared machine, and commits only the second line of
+   `minisign.pub` into `update_key.zig` in place of the placeholder.
+2. The owner creates a GitHub environment named `release-signing` with
+   required reviewers and puts the secret key in `MINISIGN_SECRET_KEY` (and
+   `MINISIGN_PASSWORD` if it has one). Repository secrets are not used.
+3. The next tagged release publishes `*.manifest.json` and `.minisig` beside
+   each binary. New releases start in the `canary` ring and widen one ring a
+   day while rollbacks stay under 5% (docs/api.md, update-check).
+
+## Agent self-protection
+
+- **Clean shutdown marker.** On a service stop, system shutdown or SIGTERM,
+  the agent flushes, sends a final heartbeat with `shutdown: true` and writes
+  `<state>.clean`. A start without that file sends `agent_tamper`
+  `unexpected_stop`. The server raises `Agent silent` when an agent goes
+  offline without the notice.
+- **Tamper checks** (`agent/src/tamper.zig`, every 60 seconds): the agent
+  binary's SHA-256 (against the signed manifest after a self-update, else the
+  hash at start; hashed every fifth run), `config.toml`, `state.toml`, the
+  device key and the pinned action key changing outside the agent, the Sysmon
+  service stopping (Windows), and Defender Operational 5007 entries adding a
+  path or process exclusion that covers `C:\ProgramData\Tawny`,
+  `C:\Program Files\Tawny` or `tawny-agent.exe`. Each sends `agent_tamper`
+  and the server raises `Agent tamper`. These are detections only. There is
+  no anti-debug or rootkit behaviour.
+- **Service DACL (Windows).** `install.ps1` runs `sc.exe sdset` so only
+  SYSTEM and Administrators can stop, pause, reconfigure or delete
+  `TawnyAgent`. Other users can query it. Check with `sc.exe sdshow TawnyAgent`.
+- **systemd (Linux).** The unit's hardening in `install.sh` is unchanged
+  (`NoNewPrivileges`, `ProtectSystem=strict` and the rest). Only root can stop
+  a system unit.
+
+## Key protection
+
+`agent_health.key_protection` reports how the agent JWT and device seed are
+held:
+
+| Value | Where | Notes |
+| --- | --- | --- |
+| `keychain` | macOS System keychain (LaunchDaemon) or login keychain | Unchanged from before #58 |
+| `tpm` | Windows: DPAPI blob wrapped by a non-exportable 2048-bit RSA key `TawnyAgentWrap` in the Microsoft Platform Crypto Provider (RSA-OAEP SHA-256) | Copying the files to another machine is useless without that TPM |
+| `dpapi` | Windows: DPAPI machine scope, fixed entropy, `%ProgramData%\Tawny\state\<secret>.dpapi`, ACL SYSTEM and Administrators only | Used when no TPM is usable, or with `TAWNY_KEYSTORE_TPM=off` |
+| `file` | Linux: `state.toml` and `state.toml.devicekey`, mode 0600, in the root-owned 0750 state directory; any OS with `TAWNY_KEYSTORE=file` | tpm2-tss sealing on Linux is not done yet |
+
+On the first start after an upgrade to #58, a Windows agent moves a plaintext
+JWT and device seed into DPAPI, reads them back, and only then scrubs and
+deletes the plaintext files. If any step fails the plaintext stays and the
+agent logs why. An administrator on the host can still decrypt DPAPI machine
+secrets; the ACL and the TPM wrap raise the bar for everyone else and for
+offline copies.
+
+Check on a host:
+
+```powershell
+icacls "$env:ProgramData\Tawny\state\device-seed.dpapi"   # SYSTEM and Administrators only
+Test-Path "$env:ProgramData\Tawny\state\state.toml.devicekey"  # False after migration
+& "$env:ProgramFiles\Tawny\tawny-agent.exe" --keystore-selftest "$env:TEMP\tawny-ks"  # prints key_protection
+```
+
 ## Linux and EC2
 
 Prerequisites: root, `curl`, Python 3, GitHub CLI, systemd, and outbound HTTPS to
@@ -352,6 +428,10 @@ backend outage, and no secrets in logs. Expand gradually with automatic rollback
 criteria and SOC ownership for heartbeat and upgrade alerts.
 
 ## Known residual risk
+
+Self-update is built but off until the release key exists (see above).
+Authenticode and notarisation need certificates the project does not have
+yet. Linux keeps its secrets in a 0600 file without TPM sealing.
 
 Response actions do not yet have durable lease, execution journal, or explicit
 agent acknowledgement semantics. Backend can mark an action `Dispatched` before

@@ -26,7 +26,7 @@ Honest threat model for Tawny as a self-hosted EDR. Not a substitute for a forma
 | Threat | Mitigation | Residual / future |
 | --- | --- | --- |
 | Enrollment token theft | Single-use, hashed at rest, short TTL | Bind to expected host / CIDR |
-| Agent JWT theft from disk | Short-lived JWT (minutes), `jti`, `cv` credential version, admin revoke bumps version | Platform keystores (DPAPI/Keychain/TPM), device-bound keys |
+| Agent JWT theft from disk | Short-lived JWT (minutes), `jti`, `cv` credential version, admin revoke bumps version. macOS Keychain; Windows DPAPI machine scope with fixed entropy and a SYSTEM/Administrators ACL, TPM-wrapped through the Platform Crypto Provider when present (#58) | Linux keeps a root-only 0600 file; tpm2-tss sealing not done. An administrator on the host can still read DPAPI secrets |
 | Stolen JWT after revoke | Every agent endpoint (JWT validation hook) rejects revoked agents and credential-version mismatch, and audits the rejection | Global denylist of `jti` |
 | Stolen session cookie | HttpOnly, Secure, SameSite=Lax; idle 8h and absolute 7d; logout deletes the row | XSS that can read a non-HttpOnly token is out of this cookie's reach; CSRF still applies |
 | Cross-site session use | `X-CSRF-Token` required on state-changing session requests. API tokens and agent JWTs are exempt | A stolen cookie plus a stolen CSRF secret is a full session |
@@ -42,8 +42,23 @@ Honest threat model for Tawny as a self-hosted EDR. Not a substitute for a forma
 | XSS in dashboard | Static pages must escape telemetry and operator text on insert | Trusted Types |
 | OpenAPI probe in production | tawny-server does not publish an OpenAPI document | — |
 | Reverse-proxy misconfig | Document HTTPS termination; public URL HTTPS checks in production | Trusted proxy / forwarded headers validation |
-| Supply-chain agent release | Published SHA-256 | Sigstore / Authenticode / notarisation |
+| Supply-chain agent release | Published SHA-256 and build attestations. Self-update only installs a binary named by a minisign-signed manifest (`ED`, BLAKE2b prehashed) checked against the release key compiled into the agent, then checks size and SHA-256, refuses downgrades except a signed `rollback`, and rolls back after a failed health window (#58) | Authenticode and notarisation steps exist but need certificates (docs/code-signing.md). The release key is a placeholder until the owner creates it, so self-update is off |
 | Insider DB access | Audit log of security-sensitive actions | Column encryption, append-only audit sink |
+| Agent stopped or killed to blind the host | Clean shutdown marker plus a final `shutdown` heartbeat on service stop and SIGTERM. A start without the marker sends `agent_tamper` `unexpected_stop`. An agent that goes offline without the notice raises `Agent silent` (closed by its next heartbeat; revoked agents never alert). Installer service DACL lets only SYSTEM and Administrators stop or delete the service (#58) | An administrator can still stop the service and delete the marker first; the server still sees the missing heartbeat |
+| Sensor silenced (Sysmon stopped, channel cleared, Defender exclusion) | `sensor_health` and `agent_health.sensors` feed per-sensor status. A sensor that was running and stops, fails, or (Sysmon, Security) delivers nothing for 15 minutes raises `Sensor silent`. Tamper checks report the Sysmon service stopping, Defender 5007 exclusions covering Tawny paths, the binary hash changing, and config or identity files changing outside the agent | User-mode only; an attacker with kernel access can hide these. No anti-debug or rootkit behaviour by design |
+
+## Decision: no mutual TLS for now (#58)
+
+Agents authenticate with short-lived JWT bearer tokens over server-side TLS.
+Mutual TLS was considered and left out for this release. The risks it would
+cover are already covered: every event batch is signed with the agent's
+Ed25519 device key and verified by the server, every response action is
+signed by the server action key and verified by the agent, and the agent's
+secrets are held in the OS keystore (Keychain, DPAPI with optional TPM wrap).
+mTLS would add certificate issuance, rotation and revocation, and would break
+TLS-terminating proxies such as Caddy in front of the server, for little
+gain over those. Revisit if agents ever need to talk to the server through an
+untrusted proxy that could replay bearer tokens.
 
 ## Explicit coverage (required scenarios)
 

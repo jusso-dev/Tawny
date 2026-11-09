@@ -654,6 +654,15 @@ permits for now. Linux nftables isolation lands in #59.
 4. Ingest checks `cv` (fixes current gap). Pinned server action key and
    release key delivered at enrollment.
 
+   **Status (#58, Nov 2026):** Windows keeps the JWT and device seed in DPAPI
+   machine scope (fixed entropy, SYSTEM and Administrators ACL), wrapped by a
+   TPM key in the Microsoft Platform Crypto Provider when one is usable, and
+   migrates plaintext copies away. Linux stays on a root-only 0600 file;
+   tpm2-tss is not done. `agent_health.key_protection` reports which. The
+   release key is compiled in (`agent/src/update_key.zig`) rather than sent at
+   enrolment, and is a placeholder until the owner creates it. No mTLS: see
+   docs/threat-model.md.
+
 ### Tamper detection (`AGENT_TAMPER`)
 
 Service stop not initiated by SCM shutdown/upgrade (recorded on next start
@@ -663,6 +672,14 @@ notifications), ETW session stopped or provider disabled, Defender exclusion
 added for Tawny paths. Server-side: heartbeat gap > N min with no shutdown
 notice → `AGENT_SILENT` detection. Install ACLs and service DACL restrict
 stop/delete to SYSTEM/Admins. No anti-debug or rootkit behaviour.
+
+**Status (#58, Nov 2026):** done except the ETW checks (no ETW sessions yet;
+Sysmon service state stands in) and Windows directory change notifications
+(the agent polls hashes every 60 seconds instead). The clean shutdown marker,
+`agent_tamper` checks and `Agent silent` alert (offline at 15 minutes without
+a notice, closed by the next heartbeat, never for revoked agents) are in
+`agent/src/lifecycle.zig`, `agent/src/tamper.zig` and
+`server/src/jobs/agent_alerts.zig`. `install.ps1` sets the service DACL.
 
 ### Updates
 
@@ -680,6 +697,17 @@ stop/delete to SYSTEM/Admins. No anti-debug or rootkit behaviour.
 - Authenticode-sign Windows binaries and notarise macOS when certificates are
   available; the manifest signature is the trust root regardless.
 
+**Status (#58, Nov 2026):** built and tested, off by default. Minisign
+manifests (`ED` prehashed and legacy `Ed`), downgrade refusal, signed
+rollback, stage, swap with `.previous`, restart through the service manager,
+a 5 minute health window and rollback are in `agent/src/updater.zig`, with a
+CI self-test on every OS. Rings and gated promotion (24 hour soak, under 5%
+rolled back or failed) are in `server/src/jobs/releases.zig` and
+`routes/agent_releases.zig`. The compiled-in release key is a placeholder, so
+agents refuse every update until the owner provides one. Release signing
+steps (signtool, notarytool, minisign) skip cleanly without their secrets;
+options are in docs/code-signing.md.
+
 ### Health (`AGENT_HEALTH`, every heartbeat)
 
 version, uptime, last event ts, queue depth per priority, spool bytes, events
@@ -687,6 +715,13 @@ generated / dropped per priority and reason, CPU %, RSS, disk free, per-sensor
 status (running/degraded/stopped + last event age), isolation state, update
 state. Server computes `healthy|degraded|silent|tampered`; agents list sorts
 unhealthy first; silent > 15 min raises a detection.
+
+**Status (#58, Nov 2026):** `agent_health` now carries `key_protection`,
+`sensors` (name, status, last event age) and `update` (state, version, ring,
+bucket). Windows channels keep their own `sensor_health`. The server alerts
+`Sensor silent` when a sensor that was running stops, fails, or (Sysmon and
+Security) delivers nothing for 15 minutes. CPU, RSS, disk, per-priority
+queues and the `healthy|degraded|silent|tampered` verdict are not done.
 
 ## 11. False-positive management
 
@@ -786,3 +821,6 @@ with current packages, agent on Zig 0.17.0, Windows service runs as
    prevention is limited to post-launch kill/quarantine and WFP blocking.
 4. **Code-signing certificates** (Authenticode, Apple Developer ID) — needed
    for production trust and SmartScreen; procurement is outside the repo.
+   **Status (#58, Nov 2026):** release steps are ready and skip without
+   secrets. Options and what to check are in docs/code-signing.md; waiting
+   on the owner's choice.
