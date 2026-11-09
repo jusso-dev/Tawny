@@ -66,6 +66,204 @@ jobs:
           path: agent/zig-out/bin/tawny-agent-*
           if-no-files-found: error
 
+  # Code signing (#58, docs/code-signing.md). Each step below runs only when
+  # its secrets exist, so a release without certificates still publishes the
+  # unsigned binaries. Secrets can't be read in `if:`, so a job-level env flag
+  # carries "are they set". Signing changes the bytes, so the .sha256 sidecar
+  # is rewritten and the artifact replaced; the release job attests the final
+  # files.
+  sign-windows:
+    name: sign Windows agent (Authenticode)
+    needs: [build-agent]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      HAS_WINDOWS_SIGNING: ${{ secrets.WINDOWS_PFX_BASE64 != '' && secrets.WINDOWS_PFX_PASSWORD != '' }}
+      WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: agent-windows-x64
+          path: dist
+      - name: skip note
+        if: env.HAS_WINDOWS_SIGNING != 'true'
+        shell: pwsh
+        run: Write-Host "WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD not set; publishing the Windows agent unsigned."
+      - name: sign with signtool
+        if: env.HAS_WINDOWS_SIGNING == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "\\x64\\" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          $pfx = Join-Path $env:RUNNER_TEMP "tawny-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          try {
+            Get-ChildItem dist -Filter "tawny-agent-*.exe" | ForEach-Object {
+              & $signtool.FullName sign /fd sha256 /tr $env:WINDOWS_TIMESTAMP_URL /td sha256 /f $pfx /p $env:WINDOWS_PFX_PASSWORD $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($_.Name)" }
+              & $signtool.FullName verify /pa /v $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($_.Name)" }
+              $stem = $_.BaseName
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLower()
+              # Same "<hash>  <name>" shape as sha256sum, LF only.
+              [IO.File]::WriteAllText((Join-Path dist "$stem.sha256"), "$hash  $($_.Name)`n")
+            }
+          } finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: env.HAS_WINDOWS_SIGNING == 'true'
+        with:
+          name: agent-windows-x64
+          path: dist/tawny-agent-*
+          overwrite: true
+          if-no-files-found: error
+
+  notarize-macos:
+    name: sign and notarise macOS agents
+    needs: [build-agent]
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        name: [macos-arm64, macos-x64]
+    env:
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 != '' && secrets.APPLE_DEVELOPER_ID_P12_PASSWORD != '' && secrets.APPLE_DEVELOPER_ID_IDENTITY != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_NOTARY_APPLE_ID != '' && secrets.APPLE_NOTARY_TEAM_ID != '' && secrets.APPLE_NOTARY_PASSWORD != '' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: agent-${{ matrix.name }}
+          path: dist
+      - name: skip note
+        if: env.HAS_APPLE_SIGNING != 'true'
+        run: echo "Apple Developer ID secrets not set; publishing the macOS agent unsigned (ad-hoc signed by the linker)."
+      - name: codesign with Developer ID
+        if: env.HAS_APPLE_SIGNING == 'true'
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/tawny-signing.keychain-db"
+          kc_pass="$(openssl rand -hex 24)"
+          p12="$RUNNER_TEMP/tawny-signing.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$p12"
+          for bin in dist/tawny-agent-*-${{ matrix.name }}; do
+            codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$IDENTITY" "$bin"
+            codesign --verify --strict --verbose=2 "$bin"
+          done
+      - name: notarise with notarytool
+        if: env.HAS_APPLE_SIGNING == 'true' && env.HAS_APPLE_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # A bare Mach-O can't be stapled; Gatekeeper checks the ticket
+          # online. The zip is only the upload container.
+          for bin in dist/tawny-agent-*-${{ matrix.name }}; do
+            zip="$RUNNER_TEMP/$(basename "$bin").zip"
+            ditto -c -k --keepParent "$bin" "$zip"
+            xcrun notarytool submit "$zip" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+          done
+      - name: rehash signed binaries
+        if: env.HAS_APPLE_SIGNING == 'true'
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for bin in tawny-agent-*-${{ matrix.name }}; do
+            case "$bin" in *.sha256) continue ;; esac
+            shasum -a 256 "$bin" > "${bin}.sha256"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: env.HAS_APPLE_SIGNING == 'true'
+        with:
+          name: agent-${{ matrix.name }}
+          path: dist/tawny-agent-*
+          overwrite: true
+          if-no-files-found: error
+
+  # Signed update manifests (#58, target-edr §10 "Updates"). The minisign
+  # secret key lives only in the protected `release-signing` environment
+  # (required reviewers), never in repository secrets. Without it no manifest
+  # is published and agents never self-update; they also refuse to while the
+  # compiled-in key in agent/src/update_key.zig is the placeholder.
+  release-manifests:
+    name: sign update manifests (minisign)
+    needs: [sign-windows, notarize-macos]
+    runs-on: ubuntu-latest
+    environment: release-signing
+    permissions:
+      contents: read
+    env:
+      HAS_MINISIGN: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: agent-*
+          path: dist
+          merge-multiple: true
+      - name: write manifests
+        run: |
+          set -euo pipefail
+          mkdir -p manifests
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "manifests for $VERSION" > manifests/status.txt
+          cd dist
+          for bin in tawny-agent-*; do
+            case "$bin" in *.sha256) continue ;; esac
+            stem="${bin%.exe}"
+            platform="${stem#tawny-agent-${VERSION}-}"
+            sha="$(sha256sum "$bin" | awk '{print $1}')"
+            size="$(stat -c %s "$bin")"
+            printf '{"version":"%s","platform":"%s","sha256":"%s","size":%s,"min_from_version":"0.1.0","ring":"canary","rollback":false}' \
+              "$VERSION" "$platform" "$sha" "$size" > "../manifests/${stem}.manifest.json"
+          done
+      - name: skip note
+        if: env.HAS_MINISIGN != 'true'
+        run: |
+          echo "MINISIGN_SECRET_KEY is not set in the release-signing environment; no update manifests are published."
+          rm -f manifests/*.manifest.json
+      - name: sign manifests
+        if: env.HAS_MINISIGN == 'true'
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          key="$RUNNER_TEMP/tawny-release.key"
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          for m in manifests/*.manifest.json; do
+            # A key made with `minisign -G -W` has no password; otherwise the
+            # password is read from stdin.
+            printf '%s\n' "${MINISIGN_PASSWORD:-}" | minisign -S -s "$key" -m "$m" -x "$m.minisig" -t "tawny release $GITHUB_REF_NAME $(basename "$m")"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-manifests
+          path: manifests
+          if-no-files-found: error
+
   build-server-image:
     name: publish tawny-server image
     runs-on: ubuntu-latest
@@ -102,7 +300,7 @@ jobs:
 
   release:
     name: publish release
-    needs: [build-agent, build-server-image]
+    needs: [build-agent, sign-windows, notarize-macos, release-manifests, build-server-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,6 +315,10 @@ jobs:
           pattern: agent-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifests
+          path: manifests
       - name: verify artifacts and create release manifest
         run: |
           set -euo pipefail
@@ -124,6 +326,8 @@ jobs:
           for checksum in *.sha256; do
             sha256sum -c "$checksum"
           done
+          # Signed update manifests, when the release key is configured.
+          find ../manifests -maxdepth 1 -name '*.manifest.json*' -exec cp {} . \;
           install -m 0755 ../agent/install/install.sh ./install.sh
           install -m 0644 ../agent/install/install.ps1 ./install.ps1
           find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
