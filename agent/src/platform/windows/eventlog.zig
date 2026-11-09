@@ -18,6 +18,10 @@ const ERROR_ACCESS_DENIED: u32 = 5;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const ERROR_NO_MORE_ITEMS: u32 = 259;
 const ERROR_TIMEOUT: u32 = 1460;
+/// EvtNext on a pull subscription returns this, not ERROR_NO_MORE_ITEMS,
+/// once the subscription has nothing left to hand out (seen on Windows
+/// Server hosted runners). Treat it the same way.
+const ERROR_INVALID_OPERATION: u32 = 4317;
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 const ERROR_EVT_INVALID_CHANNEL_PATH: u32 = 15002;
 const ERROR_EVT_CHANNEL_NOT_FOUND: u32 = 15007;
@@ -191,7 +195,7 @@ pub const Subscription = struct {
             var returned: u32 = 0;
             if (EvtNext(self.handle, want, &batch, 0, 0, &returned) == 0) {
                 const err = GetLastError();
-                if (err == ERROR_NO_MORE_ITEMS or err == ERROR_TIMEOUT) {
+                if (endOfItems(err)) {
                     _ = ResetEvent(self.signal);
                     if (!waited and count == 0) {
                         waited = true;
@@ -256,3 +260,14 @@ pub const Subscription = struct {
         return std.unicode.wtf16LeToWtf8Alloc(self.allocator, trimmed);
     }
 };
+
+fn endOfItems(err: u32) bool {
+    return err == ERROR_NO_MORE_ITEMS or err == ERROR_TIMEOUT or err == ERROR_INVALID_OPERATION;
+}
+
+test "EvtNext end-of-items codes" {
+    try std.testing.expect(endOfItems(259));
+    try std.testing.expect(endOfItems(1460));
+    try std.testing.expect(endOfItems(4317));
+    try std.testing.expect(!endOfItems(5));
+}
