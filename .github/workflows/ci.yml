@@ -220,7 +220,7 @@ jobs:
           }
           function Select-Events([object[]]$Lines, [string]$Type, [string]$Needle) {
             # Leading comma: a single match must stay an array, or [0] indexes a character.
-  return ,@($Lines | Where-Object { $_.StartsWith("EVENT`t$Type`t") -and $_.Contains($Needle) })
+            return ,@($Lines | Where-Object { $_.StartsWith("EVENT`t$Type`t") -and $_.Contains($Needle) })
           }
           function New-Activity([string]$Marker) {
             cmd.exe /c "whoami /user" | Out-Null
