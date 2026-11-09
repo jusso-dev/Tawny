@@ -38,6 +38,9 @@ jobs:
       TAWNY_BASE_URL: http://127.0.0.1:18080
       TAWNY_CONTRACT_EMAIL: admin@tawny.local
       TAWNY_CONTRACT_PASSWORD: contract-password
+      # The contract suite posts unsigned batches from keyless test agents.
+      # Signed batches are checked there and in agent-e2e with this on.
+      TAWNY_REQUIRE_SIGNED_BATCHES: "off"
     defaults:
       run:
         working-directory: server
@@ -63,6 +66,10 @@ jobs:
       # fuzz runner panic with "error logs detected", so read the first [SafeAllocator] line.
       - name: zig test
         run: zig test src/main.zig -lc
+      - name: throwaway agent JWT seed
+        working-directory: ${{ github.workspace }}
+        # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
+        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: contract suite
         working-directory: ${{ github.workspace }}
         run: |
@@ -322,6 +329,7 @@ jobs:
       TAWNY_BASE_URL: http://127.0.0.1:18080
       TAWNY_CONTRACT_EMAIL: admin@tawny.local
       TAWNY_CONTRACT_PASSWORD: contract-password
+      # TAWNY_REQUIRE_SIGNED_BATCHES stays at its default (on): the real agent must sign every batch.
     steps:
       - uses: actions/checkout@v4
       - name: install Zig 0.17.0
@@ -339,6 +347,10 @@ jobs:
           tar -xJf "$archive" -C "$zig_dir" --strip-components=1
           echo "$zig_dir" >> "$GITHUB_PATH"
           "$zig_dir/zig" version
+      - name: throwaway agent JWT seed
+        working-directory: ${{ github.workspace }}
+        # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
+        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: enroll, heartbeat, telemetry, isolate
         run: |
           set -euo pipefail

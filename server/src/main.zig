@@ -3,6 +3,7 @@ const config_mod = @import("config.zig");
 const pg = @import("db/pg/conn.zig");
 const migrate = @import("db/migrate.zig");
 const util = @import("http/util.zig");
+const state = @import("http/state.zig");
 const detect = @import("jobs/detect.zig");
 const deliver = @import("jobs/deliver.zig");
 const purge = @import("jobs/purge.zig");
@@ -52,6 +53,23 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (!std.mem.eql(u8, cmd, "serve")) return error.UnknownCommand;
+
+    const dev_mode = state.flagOn(init.environ_map.get("TAWNY_DEV"), false);
+    const seed_source = state.configureAgentKey(io, init.environ_map.get("TAWNY_AGENT_JWT_SEED"), dev_mode) catch |err| {
+        switch (err) {
+            error.AgentJwtSeedMissing => std.debug.print("tawny-server: TAWNY_AGENT_JWT_SEED is not set. Set it to 64 hex characters (openssl rand -hex 32), or set TAWNY_DEV=1 for a throwaway dev seed.\n", .{}),
+            error.AgentJwtSeedMalformed => std.debug.print("tawny-server: TAWNY_AGENT_JWT_SEED must be exactly 64 hex characters.\n", .{}),
+            else => {},
+        }
+        return err;
+    };
+    if (seed_source == .dev_random) {
+        std.debug.print("tawny-server: TAWNY_DEV is on and TAWNY_AGENT_JWT_SEED is unusable. Using a random agent JWT seed; agents must re-enrol after a restart.\n", .{});
+    }
+    state.require_signed_batches = state.flagOn(init.environ_map.get("TAWNY_REQUIRE_SIGNED_BATCHES"), true);
+    if (!state.require_signed_batches) {
+        std.debug.print("tawny-server: TAWNY_REQUIRE_SIGNED_BATCHES is off. Agents without a device key may send unsigned telemetry.\n", .{});
+    }
 
     const conn = try pg.Conn.connect(allocator, io, cfg.database_url);
     defer {
@@ -405,6 +423,7 @@ fn readyBody(allocator: std.mem.Allocator, conn: *pg.Conn) Ready {
 
 comptime {
     _ = @import("crypto/jwt.zig");
+    _ = @import("crypto/batch_sig.zig");
     _ = @import("crypto/secret_box.zig");
     _ = @import("crypto/sigv4.zig");
     _ = @import("crypto/passwords.zig");
@@ -425,6 +444,7 @@ comptime {
     _ = @import("routes/github.zig");
     _ = @import("jobs/detect.zig");
     _ = @import("detect/package_exposure.zig");
+    _ = @import("detect/match.zig");
     _ = @import("detect/exposure_import.zig");
     _ = @import("routes/hunts.zig");
     _ = @import("routes/feeds.zig");

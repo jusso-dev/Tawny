@@ -290,38 +290,6 @@ pub fn containsIgnoreCase(hay: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// Simple contains match: search whole payload text, or value at dotted path if present as string.
-pub fn payloadContains(payload_json: []const u8, path: ?[]const u8, match_value: []const u8) bool {
-    if (match_value.len == 0) return false;
-    if (path) |p| {
-        if (p.len > 0 and pathContains(payload_json, p, match_value)) return true;
-    }
-    return containsIgnoreCase(payload_json, match_value);
-}
-
-/// Compare before the parse tree is freed. A returned slice would dangle.
-fn pathContains(json: []const u8, path: []const u8, needle: []const u8) bool {
-    var parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json, .{}) catch return false;
-    defer parsed.deinit();
-    var cur = parsed.value;
-    var rest = path;
-    while (rest.len > 0) {
-        const dot = std.mem.indexOfScalar(u8, rest, '.');
-        const key = if (dot) |d| rest[0..d] else rest;
-        rest = if (dot) |d| rest[d + 1 ..] else "";
-        switch (cur) {
-            .object => |obj| {
-                cur = obj.get(key) orelse return false;
-            },
-            else => return false,
-        }
-    }
-    return switch (cur) {
-        .string => |s| containsIgnoreCase(s, needle),
-        else => false,
-    };
-}
-
 pub fn pgArrayText(allocator: std.mem.Allocator, items: []const []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);

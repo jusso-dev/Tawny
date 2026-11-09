@@ -3,6 +3,7 @@
 const std = @import("std");
 const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
+const match = @import("../detect/match.zig");
 const package_exposure = @import("../detect/package_exposure.zig");
 
 const DetectJob = struct {
@@ -156,18 +157,29 @@ fn evaluateRules(
     const now = util.nowUnix(io);
     var tbuf: [32]u8 = undefined;
     const created = util.formatRfc3339(&tbuf, now);
+    // Parse once per event. Every rule and suppression reads this tree.
+    var parsed_payload = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
+        std.debug.print("detect: event {s} payload is not JSON, skipped\n", .{event_id});
+        return;
+    };
+    defer parsed_payload.deinit();
+    const root = parsed_payload.value;
     for (rules) |row| {
         const format = row.cols[7] orelse "";
         if (std.mem.eql(u8, format, "package_exposure")) {
             const definition = row.cols[8] orelse continue;
             if (!package_exposure.matches(allocator, definition, payload)) continue;
         } else {
-            if (row.cols[3] == null) continue;
-            const path = row.cols[4];
-            const match_value = row.cols[5] orelse continue;
-            if (!util.payloadContains(payload, path, match_value)) continue;
+            switch (match.evaluate(root, .{ .operator = row.cols[3], .path = row.cols[4], .want = row.cols[5] })) {
+                .match => {},
+                .no_match => continue,
+                .invalid => {
+                    std.debug.print("detect: rule {s} has no usable path or operator, skipped\n", .{row.cols[0] orelse "?"});
+                    continue;
+                },
+            }
         }
-        if (matchingSuppression(sups, row.cols[0].?, agent_id, payload)) |sid| {
+        if (matchingSuppression(sups, row.cols[0].?, agent_id, root)) |sid| {
             try conn.execNoRows(
                 \\UPDATE suppression_rules
                 \\SET suppressed_count = suppressed_count + 1, last_suppressed_at = $2::timestamptz
@@ -203,7 +215,7 @@ fn evaluateRules(
     }
 }
 
-fn matchingSuppression(rules: []const pg.Row, rule_id: []const u8, agent_id: []const u8, payload: []const u8) ?[]const u8 {
+fn matchingSuppression(rules: []const pg.Row, rule_id: []const u8, agent_id: []const u8, root: std.json.Value) ?[]const u8 {
     for (rules) |s| {
         const id = s.cols[0] orelse continue;
         const scope = s.cols[1] orelse continue;
@@ -214,12 +226,10 @@ fn matchingSuppression(rules: []const pg.Row, rule_id: []const u8, agent_id: []c
         if (s.cols[3]) |bound_agent| {
             if (!std.mem.eql(u8, bound_agent, agent_id)) continue;
         }
+        // No path: the suppression covers the whole scope (rule and agent).
         const path = s.cols[4];
         if (path == null or path.?.len == 0) return id;
-        const op = s.cols[5] orelse continue;
-        const want = s.cols[6] orelse continue;
-        if (std.mem.eql(u8, op, "exists")) return id;
-        if (util.payloadContains(payload, path, want)) return id;
+        if (match.evaluate(root, .{ .operator = s.cols[5], .path = path, .want = s.cols[6] }) == .match) return id;
     }
     return null;
 }
@@ -398,6 +408,94 @@ test "suppression skips the alert and increments the counter" {
     try std.testing.expectEqualStrings("0", alerts);
     try std.testing.expectEqualStrings("1", count);
     try std.testing.expect(finished >= 1);
+    try conn.execSimple("ROLLBACK");
+}
+
+const scoped_agent = "00000000-0000-0000-0000-00000000d701";
+const scoped_rule = "00000000-0000-0000-0000-00000000d702";
+const scoped_sup = "00000000-0000-0000-0000-00000000d703";
+
+test "field rules honour operator and a scoped suppression only hides its own value" {
+    const url = std.testing.environ.getPosix("TAWNY_DATABASE_URL") orelse return;
+    if (url.len == 0) return;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const conn = try pg.Conn.connect(allocator, io, url);
+    defer {
+        conn.close();
+        allocator.destroy(conn);
+    }
+    try conn.execSimple("BEGIN");
+    errdefer conn.execSimple("ROLLBACK") catch {};
+
+    try exec(conn,
+        \\INSERT INTO agents (
+        \\  id, tenant_id, hostname, operating_system, os_version, agent_version,
+        \\  architecture, enrolled_at, status
+        \\) VALUES ($1, $2, 'scoped-host', 'windows', 'test', '0', 'x64', now(), 'online')
+    , &.{ .{ .text = scoped_agent }, .{ .text = default_tenant } });
+    try exec(conn,
+        \\INSERT INTO alert_rules (
+        \\  id, tenant_id, name, format, severity, operator, payload_path, match_value,
+        \\  event_type, created_at, updated_at
+        \\) VALUES (
+        \\  $1, $2, 'scoped-rule', 'tawny_predicate', 'high', 'equals',
+        \\  'processes.name', 'scoped-cmd.exe', 'process_snapshot', now(), now()
+        \\)
+    , &.{ .{ .text = scoped_rule }, .{ .text = default_tenant } });
+    // Suppress only when the user is svc-backup.
+    try exec(conn,
+        \\INSERT INTO suppression_rules (
+        \\  id, tenant_id, name, scope, alert_rule_id, payload_path, operator, match_value,
+        \\  is_enabled, created_at, updated_at
+        \\) VALUES (
+        \\  $1, $2, 'scoped-sup', 'specific_rule', $3, 'processes.user', 'equals',
+        \\  'svc-backup', true, now(), now()
+        \\)
+    , &.{ .{ .text = scoped_sup }, .{ .text = default_tenant }, .{ .text = scoped_rule } });
+
+    const payloads = [_][]const u8{
+        // 0: name matches, user is suppressed.
+        "{\"processes\":[{\"name\":\"SCOPED-CMD.EXE\",\"user\":\"svc-backup\"}]}",
+        // 1: name matches, other user mentions svc-backup elsewhere. Must alert.
+        "{\"processes\":[{\"name\":\"scoped-cmd.exe\",\"user\":\"alice\",\"command_line\":\"run as svc-backup\"}]}",
+        // 2: value only in command_line. equals on name must not fire.
+        "{\"processes\":[{\"name\":\"x.exe\",\"command_line\":\"scoped-cmd.exe /c\"}]}",
+    };
+    var ids: [payloads.len][]u8 = undefined;
+    var stamps: [payloads.len][]u8 = undefined;
+    for (payloads, 0..) |pl, i| {
+        const rows = try conn.exec(allocator,
+            \\INSERT INTO telemetry_events (received_at, tenant_id, agent_id, event_type, occurred_at, payload)
+            \\VALUES (now(), $1, $2, 'process_snapshot', now(), $3::jsonb)
+            \\RETURNING id::text, received_at::text
+        , &.{ .{ .text = default_tenant }, .{ .text = scoped_agent }, .{ .text = pl } });
+        defer {
+            for (rows) |row| row.deinit(allocator);
+            allocator.free(rows);
+        }
+        ids[i] = try allocator.dupe(u8, rows[0].cols[0].?);
+        stamps[i] = try allocator.dupe(u8, rows[0].cols[1].?);
+    }
+    defer for (0..payloads.len) |i| {
+        allocator.free(ids[i]);
+        allocator.free(stamps[i]);
+    };
+    try exec(conn, "UPDATE work_queue SET locked_until = now() + interval '1 hour' WHERE kind = 'detect'", &.{});
+    for (0..payloads.len) |i| {
+        try enqueue(allocator, conn, default_tenant, scoped_agent, "scoped-host", "process_snapshot", ids[i], stamps[i]);
+    }
+    _ = try drain(allocator, io, conn);
+
+    const want = [_][]const u8{ "0", "1", "0" };
+    for (0..payloads.len) |i| {
+        const n = try scalar(allocator, conn, "SELECT count(*)::text FROM alerts WHERE telemetry_event_id = $1::bigint", &.{.{ .text = ids[i] }});
+        defer allocator.free(n);
+        try std.testing.expectEqualStrings(want[i], n);
+    }
+    const count = try scalar(allocator, conn, "SELECT suppressed_count::text FROM suppression_rules WHERE id = $1::uuid", &.{.{ .text = scoped_sup }});
+    defer allocator.free(count);
+    try std.testing.expectEqualStrings("1", count);
     try conn.execSimple("ROLLBACK");
 }
 
