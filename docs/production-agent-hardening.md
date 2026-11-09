@@ -125,6 +125,96 @@ Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control 
 Confirm EDR policy does not quarantine approved binary. LocalSystem can read
 all local FIM paths, so no per-path ACL grants are needed.
 
+### Windows sensor
+
+Tawny ships no kernel driver of its own. The Windows agent reads event logs
+through wevtapi (`EvtSubscribe` pull subscriptions). Sysmon, which Tawny can
+install for you, loads a Microsoft-signed driver. That driver comes from
+Microsoft Sysinternals, not from Tawny.
+
+| Channel | Event IDs | Needs |
+|---|---|---|
+| `Microsoft-Windows-Sysmon/Operational` | 1, 3, 5, 7, 8, 10, 11, 12, 13, 14, 22, 23, 26 | Sysmon installed with a config that turns them on |
+| `Security` | 4624, 4625, 4672, 4688 | LocalSystem (the service account); 4688 needs process creation auditing |
+| `System` | 7045 | nothing extra |
+| `Microsoft-Windows-PowerShell/Operational` | 4104 | script block logging turned on |
+
+Install Sysmon with the pinned config at the same time as the agent:
+
+```powershell
+Install-TawnyAgent -BackendUrl https://tawny.example.com `
+  -EnrollmentToken $env:TAWNY_ENROLLMENT_TOKEN -InstallSysmon
+```
+
+`-InstallSysmon` downloads `https://download.sysinternals.com/files/Sysmon.zip`,
+checks that `Sysmon64.exe` has a `Valid` Authenticode signature whose signer
+subject contains `Microsoft Corporation`, and installs it with
+`agent/install/sysmon/sysmonconfig.xml` (sysmon-modular, pinned commit and
+SHA-256 in `agent/install/sysmon/SOURCE.md`). When the installer is piped
+(`irm | iex`) it fetches the same pinned file from the upstream release and
+checks the hash. Installing Sysmon accepts the Sysinternals licence. No
+Sysinternals binary is stored in this repository. Without the switch, the
+installer only reports whether Sysmon is present.
+
+Turn on the Windows sources Sysmon does not cover (Group Policy is the usual
+route on a fleet):
+
+```powershell
+auditpol /set /subcategory:"Process Creation" /success:enable
+# Include command lines in 4688.
+New-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit `
+  -Name ProcessCreationIncludeCmdLine_Enabled -PropertyType DWord -Value 1 -Force
+# PowerShell script block logging (4104).
+New-Item -Path HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging -Force
+New-ItemProperty -Path HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging `
+  -Name EnableScriptBlockLogging -PropertyType DWord -Value 1 -Force
+```
+
+How the agent reads the logs:
+
+- Every `eventlog_interval_seconds` (default 5) it pulls at most 512 events
+  per channel. Events past the cap stay in the subscription for the next
+  tick.
+- One bookmark per channel is saved in the state directory
+  (`eventlog-<channel>.bookmark`) after the events are written to the spool.
+  A restart resumes after the bookmark. A crash between spooling and saving
+  the bookmark replays a few events, which the server drops because each
+  event's `client_event_id` comes from the channel, record ID and time.
+- Without a bookmark the agent starts at new events, so a first install does
+  not upload the whole log history.
+- While Sysmon delivers, Security 4688 is skipped so process starts are not
+  sent twice. Without Sysmon, 4688 is the `process_start` source.
+- 4104 script blocks arrive in parts. The agent joins them by
+  `ScriptBlockId`, sends the block when the last part arrives or 30 seconds
+  after the first, caps it at 64 KiB and sets `truncated: true` when it cut
+  text or a part was missing. At most 64 blocks wait at once.
+- Command lines go through the same redaction as process snapshots.
+
+`sensor_health` events report channel state changes: Sysmon missing,
+access denied, a failed subscription, or a channel that has delivered nothing
+for 15 minutes (`silent`). `status` is `degraded` whenever Sysmon is missing
+or the channel is not `ok`. Each event carries the drop counters (parse, map,
+queue, unmapped, script parts) so a quiet host can be told apart from a broken
+sensor.
+
+Process snapshots on Windows now carry the full image path
+(`QueryFullProcessImageNameW`), the start time (`GetProcessTimes`) and the
+command line (`NtQueryInformationProcess`, `ProcessCommandLineInformation`).
+`command_line` is empty for processes the agent cannot open (protected
+processes); it is never a copy of the name. Network snapshots list TCP and UDP
+connections for IPv4 and IPv6 with the owning pid, in the same row shape as
+Linux.
+
+Check a host:
+
+```powershell
+Get-Service Sysmon64
+Get-WinEvent -ListLog Microsoft-Windows-Sysmon/Operational
+Get-ChildItem "$env:ProgramData\Tawny\state" -Filter "eventlog-*.bookmark"
+# Read the last 10 minutes of the four channels and print mapped events.
+& "$env:ProgramFiles\Tawny\tawny-agent.exe" --eventlog-dump --state-dir $env:TEMP\tawny-dump --since-seconds 600
+```
+
 ## macOS
 
 Installer registers root-owned system LaunchDaemon with restrictive file modes,

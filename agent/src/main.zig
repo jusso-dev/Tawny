@@ -16,6 +16,7 @@ const dns_collector = @import("collectors/dns.zig");
 const inventory_collector = @import("collectors/inventory.zig");
 const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
+const windows_events = @import("collectors/windows_events.zig");
 const response_actions = @import("response_actions.zig");
 const iox = @import("io_compat.zig");
 const lifecycle = @import("lifecycle.zig");
@@ -30,6 +31,9 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 2 and std.mem.eql(u8, args[1], "--export-credentials")) {
         return config_mod.exportCredentialsCommand(alloc);
+    }
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--eventlog-dump")) {
+        return windows_events.dumpCommand(alloc, args[2..]);
     }
 
     if (builtin.target.os.tag == .windows) {
@@ -104,6 +108,10 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     defer dns.deinit();
     dns.start();
 
+    // Bookmarks live beside state.toml so a restart resumes each channel.
+    var eventlog = try windows_events.Collector.init(alloc, std.fs.path.dirname(cfg.state_path) orelse ".");
+    defer eventlog.deinit();
+
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
     var mcp = mcp_collector.Scanner.init(alloc);
@@ -111,6 +119,7 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     var heartbeat_timer = try iox.Timer.start();
     var process_timer = try iox.Timer.start();
     var process_events_timer = try iox.Timer.start();
+    var eventlog_timer = try iox.Timer.start();
     var network_timer = try iox.Timer.start();
     var users_timer = try iox.Timer.start();
     var system_timer = try iox.Timer.start();
@@ -222,6 +231,33 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         }
 
         if (lifecycle.shouldStop()) break;
+        if (builtin.target.os.tag == .windows and
+            eventlog_timer.read() / std.time.ns_per_s >= cfg.eventlog_interval_seconds)
+        {
+            eventlog_timer.reset();
+            if (eventlog.collect()) |items| {
+                defer windows_events.freeItems(alloc, items);
+                for (items) |item| {
+                    buf.push(.{
+                        .client_event_id = item.client_event_id,
+                        .event_type = item.event_type,
+                        .occurred_at = item.occurred_at,
+                        .payload = item.payload,
+                    }) catch |err| {
+                        eventlog.noteQueueDrop();
+                        std.debug.print("queue {s} failed: {s}\n", .{ item.event_type, @errorName(err) });
+                    };
+                }
+                // Bookmarks move only after the events are in the spool, so
+                // a crash replays (deduplicated by client_event_id) rather
+                // than skips.
+                eventlog.commit();
+            } else |err| {
+                std.debug.print("eventlog collector failed: {s}\n", .{@errorName(err)});
+            }
+        }
+
+        if (lifecycle.shouldStop()) break;
         if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
             fs_events_timer.reset();
             if (fs_watcher.collectEvents()) |events| {
@@ -325,6 +361,9 @@ test "main module loads" {
     _ = iox;
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
+    // Windows event log parsing and mapping are pure too.
+    _ = @import("platform/windows/evtxml.zig");
+    _ = windows_events;
     if (builtin.target.os.tag == .macos) {
         _ = @import("platform/macos/fsevents.zig");
         _ = @import("platform/macos/dnslog.zig");

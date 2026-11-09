@@ -85,10 +85,37 @@ Current agent event types:
 | Type | Payload |
 | --- | --- |
 | `process_snapshot` | `{ "processes": [{ "pid": 123, "ppid": 1, "name": "..." }] }` |
-| `network_snapshot` | Windows uses `iphlpapi` table snapshots; macOS currently emits `lsof -i -P -n` rows under `{ "source": "lsof", "connections": [...] }`. |
+| `network_snapshot` | `{ "source": "procfs" \| "libproc" \| "iphlpapi", "connections": [{ "protocol", "local_address", "local_port", "remote_address", "remote_port", "state", "state_name", "pid" }] }`. Windows reads the TCP and UDP owner-pid tables for IPv4 and IPv6; `pid` is present on macOS and Windows. |
 | `user_session` | Windows uses WTS sessions; macOS uses `utmpx`. Payload shape is `{ "source": "...", "sessions": [...] }`. |
 | `system_info` | Hostname, platform, OS/kernel version, architecture, CPU, and memory facts. Emitted at startup and hourly. |
 | `file_integrity` | `{ "path": "...", "old_sha256": "...", "new_sha256": "...", "size_bytes": 123, "exists": true }` on hash or existence changes for configured `fim_paths`. |
+
+Windows event log types. Every payload carries `sensor` (`sysmon`, `security`,
+`system`, `powershell`), `channel`, `event_id`, `record_id`, `ts` (event time,
+ISO 8601 UTC) and `rule_name` when Sysmon matched a named rule. Field names
+follow `docs/architecture/target-edr.md` section 2.2. Fields the event did not
+carry (or carried as `-`) are left out.
+
+| Type | Source | Payload |
+| --- | --- | --- |
+| `process_start` | Sysmon 1; Security 4688 when Sysmon is missing | `process{guid,pid,image,name,command_line,cwd,start_time,user{name,domain},session_id,integrity_level,logon_id,hashes{sha256,sha1,md5,imphash}}`, `parent{guid,pid,image,name,command_line,user}`. 4688 gives `pid`, `image`, `command_line`, `user{name,domain,sid}`, `integrity_level`, `elevation_type`, `elevated` and `parent{pid,image}`. |
+| `process_exit` | Sysmon 5 | `process{guid,pid,image,name,user}` |
+| `network_connect` | Sysmon 3 | `process{...}`, `network{protocol,direction,src_ip,src_port,src_hostname,dst_ip,dst_port,dst_hostname,dst_port_name,ipv6}` |
+| `dns_query` | Sysmon 22 | `process{...}`, `dns{query,status,answers[]}`, plus top-level `qname` (same as `dns.query`) for existing DNS rules |
+| `file_create` | Sysmon 11 | `process{...}`, `file{path,name,extension,creation_time}` |
+| `file_delete` | Sysmon 23, 26 | `process{...}`, `file{path,name,extension,hashes,is_executable}`, `archived` |
+| `registry_create`, `registry_delete` | Sysmon 12 | `process{...}`, `registry{key,value_name,operation}` |
+| `registry_set` | Sysmon 13 | `process{...}`, `registry{key,value_name,value_type,data,data_truncated,operation}` (`data` capped at 1 KiB) |
+| `registry_rename` | Sysmon 14 | `process{...}`, `registry{key,new_name,operation}` |
+| `image_load` | Sysmon 7 | `process{...}`, `file{path,name,extension,hashes,signature{signed,status,signer}}` |
+| `remote_thread` | Sysmon 8 | `process{...}` (source), `target{guid,pid,image,name,user}`, `thread{id,start_address,start_module,start_function}` |
+| `process_access` | Sysmon 10 | `process{...}` (source), `target{...}`, `granted_access`, `call_trace` |
+| `user_logon` | Security 4624 | `user{name,domain,sid}`, `subject{...}`, `logon{id,type,type_name,process,auth_package,workstation,elevated}`, `network{src_ip,src_port}`, `process{pid,image,name}` |
+| `user_logon_failed` | Security 4625 | `user{...}`, `logon{type,type_name,process,auth_package,workstation,status,sub_status,failure_reason}`, `network{...}`, `process{...}` |
+| `special_privileges` | Security 4672 | `user{...}`, `logon{id}`, `privileges[]` |
+| `service_create` | System 7045 | `service{name,image_path,type,start_type,account}`, `user{sid}` |
+| `powershell_script_block` | PowerShell 4104 | `script_block{id,text,path,parts_total,parts_received,complete,truncated}`, `process{pid}`, `user{sid}`. Parts are joined by `ScriptBlockId`; `text` is capped at 64 KiB. |
+| `sensor_health` | agent | `{ "sensor": "windows_eventlog", "channel", "state": "ok" \| "missing" \| "access_denied" \| "silent" \| "failed", "previous_state", "status": "ok" \| "degraded", "sysmon_present", "process_start_source", "win32_error", "channels": {...}, "counters": {...} }`, sent when a channel's state changes. |
 
 ## Dashboard endpoints
 

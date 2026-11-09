@@ -1,0 +1,5 @@
+# Test fixtures are compared byte for byte. Keep LF on Windows checkouts.
+agent/src/platform/windows/testdata/** -text eol=lf
+agent/src/platform/linux/testdata/** -text eol=lf
+server/fixtures/** -text eol=lf
+schemas/** -text eol=lf

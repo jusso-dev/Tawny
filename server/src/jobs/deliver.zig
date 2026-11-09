@@ -252,6 +252,24 @@ fn pascalEvent(event_type: []const u8) []const u8 {
     if (std.mem.eql(u8, event_type, "process_launch")) return "ProcessLaunch";
     if (std.mem.eql(u8, event_type, "file_event")) return "FileEvent";
     if (std.mem.eql(u8, event_type, "package_inventory")) return "PackageInventory";
+    if (std.mem.eql(u8, event_type, "process_start")) return "ProcessStart";
+    if (std.mem.eql(u8, event_type, "process_exit")) return "ProcessExit";
+    if (std.mem.eql(u8, event_type, "network_connect")) return "NetworkConnect";
+    if (std.mem.eql(u8, event_type, "image_load")) return "ImageLoad";
+    if (std.mem.eql(u8, event_type, "remote_thread")) return "RemoteThread";
+    if (std.mem.eql(u8, event_type, "process_access")) return "ProcessAccess";
+    if (std.mem.eql(u8, event_type, "file_create")) return "FileCreate";
+    if (std.mem.eql(u8, event_type, "file_delete")) return "FileDelete";
+    if (std.mem.eql(u8, event_type, "registry_create")) return "RegistryCreate";
+    if (std.mem.eql(u8, event_type, "registry_set")) return "RegistrySet";
+    if (std.mem.eql(u8, event_type, "registry_rename")) return "RegistryRename";
+    if (std.mem.eql(u8, event_type, "registry_delete")) return "RegistryDelete";
+    if (std.mem.eql(u8, event_type, "user_logon")) return "UserLogon";
+    if (std.mem.eql(u8, event_type, "user_logon_failed")) return "UserLogonFailed";
+    if (std.mem.eql(u8, event_type, "special_privileges")) return "SpecialPrivileges";
+    if (std.mem.eql(u8, event_type, "service_create")) return "ServiceCreate";
+    if (std.mem.eql(u8, event_type, "powershell_script_block")) return "PowershellScriptBlock";
+    if (std.mem.eql(u8, event_type, "sensor_health")) return "SensorHealth";
     return event_type;
 }
 
@@ -272,6 +290,14 @@ fn failJob(conn: *pg.Conn, id: []const u8, message: []const u8) !void {
 
 fn deleteJob(conn: *pg.Conn, id: []const u8) !void {
     try conn.execNoRows("DELETE FROM work_queue WHERE id = $1::bigint", &.{.{ .text = id }});
+}
+
+test "sentinel event names cover the Windows event log types" {
+    try std.testing.expectEqualStrings("ProcessStart", pascalEvent("process_start"));
+    try std.testing.expectEqualStrings("UserLogonFailed", pascalEvent("user_logon_failed"));
+    try std.testing.expectEqualStrings("PowershellScriptBlock", pascalEvent("powershell_script_block"));
+    try std.testing.expectEqualStrings("SensorHealth", pascalEvent("sensor_health"));
+    try std.testing.expectEqualStrings("unknown_type", pascalEvent("unknown_type"));
 }
 
 test "webhook host parse" {

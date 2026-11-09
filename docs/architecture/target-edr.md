@@ -193,7 +193,38 @@ until spool hard cap, then drop oldest P1 before any P0. Every drop increments
 
 ### 3.4 Windows sensor (`agent/src/platform/windows/`)
 
-User-mode only. No kernel driver.
+User-mode only. Tawny ships no kernel driver of its own.
+
+**Status (issue #54): Sysmon plus `EvtSubscribe` comes first, ETW later.**
+Sysmon already does the hard parts (process GUIDs, hashes, command lines,
+network, registry, DNS), so the first Windows sensor reads event logs instead
+of running its own ETW session:
+
+| File | Source |
+|---|---|
+| `eventlog.zig` | wevtapi pull subscriptions (`EvtSubscribe` with a signal event, `EvtNext`, `EvtRender(EvtRenderEventXml)`), one bookmark per channel saved under the state directory |
+| `evtxml.zig` | small parser for the rendered XML: `System/EventID`, `TimeCreated/@SystemTime`, `EventRecordID`, every `EventData/Data[@Name]` |
+| `collectors/windows_events.zig` | one mapper per event ID to the section 2.2 field names, 4104 script block reassembly, per-tick cap, drop counters, `sensor_health` |
+
+| Channel | Event IDs | Tawny event type |
+|---|---|---|
+| `Microsoft-Windows-Sysmon/Operational` | 1, 5 | `process_start`, `process_exit` |
+| same | 3 | `network_connect` |
+| same | 22 | `dns_query` |
+| same | 11; 23 and 26 | `file_create`; `file_delete` |
+| same | 12, 13, 14 | `registry_create` (or `registry_delete`), `registry_set`, `registry_rename` |
+| same | 7, 8, 10 | `image_load`, `remote_thread`, `process_access` |
+| `Security` | 4624, 4625, 4672, 4688 | `user_logon`, `user_logon_failed`, `special_privileges`, `process_start` (only while Sysmon is not delivering) |
+| `System` | 7045 | `service_create` |
+| `Microsoft-Windows-PowerShell/Operational` | 4104 | `powershell_script_block` |
+
+Sysmon loads its own Microsoft-signed driver. "No driver" means Tawny ships
+none. Sysmon is optional (`install.ps1 -InstallSysmon`); without it the agent
+falls back to Security 4688 and reports `sensor_health` degraded.
+
+The ETW design below is the later step. It stays the target for hosts where
+Sysmon cannot be installed and for data Sysmon does not give (token detail,
+Defender state).
 
 | File | Source |
 |---|---|

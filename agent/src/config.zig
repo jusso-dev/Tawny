@@ -19,6 +19,8 @@ pub const Config = struct {
     fim_interval_seconds: u32 = 300,
     fs_events_interval_seconds: u32 = 5,
     dns_interval_seconds: u32 = 30,
+    /// Windows event log pull (Sysmon, Security, System, PowerShell).
+    eventlog_interval_seconds: u32 = 5,
     supply_chain_interval_seconds: u32 = 21600,
     max_in_memory_events: usize = 1000,
     max_spool_bytes: u64 = 256 * 1024 * 1024,
@@ -134,6 +136,8 @@ pub fn loadWith(alloc: std.mem.Allocator, options: LoadOptions) !Config {
             cfg.fs_events_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "dns_interval_seconds")) {
             cfg.dns_interval_seconds = try std.fmt.parseInt(u32, val, 10);
+        } else if (std.mem.eql(u8, key, "eventlog_interval_seconds")) {
+            cfg.eventlog_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "supply_chain_interval_seconds")) {
             cfg.supply_chain_interval_seconds = try std.fmt.parseInt(u32, val, 10);
         } else if (std.mem.eql(u8, key, "max_in_memory_events")) {
@@ -523,6 +527,7 @@ fn validate(cfg: *const Config) !void {
         cfg.fim_interval_seconds,
         cfg.fs_events_interval_seconds,
         cfg.dns_interval_seconds,
+        cfg.eventlog_interval_seconds,
         cfg.supply_chain_interval_seconds,
     };
     for (intervals) |interval| {
@@ -621,6 +626,9 @@ test "production limits reject hot loops and unbounded retry settings" {
     cfg.dns_interval_seconds = 0;
     try std.testing.expectError(error.InvalidCollectionInterval, validate(&cfg));
     cfg.dns_interval_seconds = 30;
+    cfg.eventlog_interval_seconds = 0;
+    try std.testing.expectError(error.InvalidCollectionInterval, validate(&cfg));
+    cfg.eventlog_interval_seconds = 5;
     cfg.http_timeout_seconds = 301;
     try std.testing.expectError(error.InvalidHttpTimeout, validate(&cfg));
 }

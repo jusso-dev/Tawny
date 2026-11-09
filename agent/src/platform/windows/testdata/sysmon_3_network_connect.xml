@@ -1,0 +1,20 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/><EventID>3</EventID><Version>5</Version><Level>4</Level><Task>3</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-11-09T01:12:45.0102200Z'/><EventRecordID>48212</EventRecordID><Correlation/><Execution ProcessID='3120' ThreadID='4012'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel><Computer>WIN-TAWNY01</Computer><Security UserID='S-1-5-18'/></System><EventData>
+<Data Name='RuleName'>technique_id=T1105,technique_name=Ingress Tool Transfer</Data>
+<Data Name='UtcTime'>2026-11-09 01:12:43.871</Data>
+<Data Name='ProcessGuid'>{4f3c6a1e-b7c0-672e-2901-000000001e00}</Data>
+<Data Name='ProcessId'>7120</Data>
+<Data Name='Image'>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data>
+<Data Name='User'>WIN-TAWNY01\runneradmin</Data>
+<Data Name='Protocol'>tcp</Data>
+<Data Name='Initiated'>true</Data>
+<Data Name='SourceIsIpv6'>false</Data>
+<Data Name='SourceIp'>10.1.0.4</Data>
+<Data Name='SourceHostname'>-</Data>
+<Data Name='SourcePort'>51544</Data>
+<Data Name='SourcePortName'>-</Data>
+<Data Name='DestinationIsIpv6'>false</Data>
+<Data Name='DestinationIp'>93.184.215.14</Data>
+<Data Name='DestinationHostname'>-</Data>
+<Data Name='DestinationPort'>443</Data>
+<Data Name='DestinationPortName'>https</Data>
+</EventData></Event>
