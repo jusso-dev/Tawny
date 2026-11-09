@@ -961,7 +961,10 @@ pub const Live = struct {
         defer _ = c.pthread_attr_destroy(&attr);
         _ = c.pthread_attr_setstacksize(&attr, 256 * 1024);
         var handle: c.pthread_t = undefined;
-        const rc = c.pthread_create(&handle, &attr, readerEntry, @ptrCast(self));
+        var rc = c.pthread_create(&handle, &attr, readerEntry, @ptrCast(self));
+        // EINVAL here means the attributes were refused (seen on the CI
+        // runner). Retry with libc defaults before giving up.
+        if (rc == .INVAL) rc = c.pthread_create(&handle, null, readerEntry, @ptrCast(self));
         if (rc != .SUCCESS) {
             last_spawn_errno = @intFromEnum(rc);
             std.log.warn("audit: reader thread not started: {s}", .{@tagName(rc)});

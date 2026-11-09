@@ -472,11 +472,13 @@ jobs:
             fi
           else
             echo "::warning::audit netlink was not available to the sensor (source=$source); proving the auditd log path instead"
-            log="$RUNNER_TEMP/audit.log"
+            # /home/runner is not traversable by tawny-ci, so use a shared dir.
+            # The runner appends and tawny-ci only reads.
+            logdir="$(mktemp -d /tmp/tawny-audit.XXXXXX)"
+            chmod 0755 "$logdir"
+            log="$logdir/audit.log"
             : > "$log"
-            # The runner appends and tawny-ci only reads, so keep the runner as owner.
             chmod 0644 "$log"
-            chmod o+x "$RUNNER_TEMP"
             sudo setpriv --reuid=tawny-ci --regid=tawny-ci --init-groups \
               --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
               "$bin" --linux-sensor-dump --seconds 4 --source audit_log --audit-log "$log" > "$out" 2>&1 &
