@@ -67,12 +67,17 @@ pub fn main(init: std.process.Init) !void {
     if (seed_source == .dev_random) {
         std.debug.print("tawny-server: TAWNY_DEV is on and TAWNY_AGENT_JWT_SEED is unusable. Using a random agent JWT seed; agents must re-enrol after a restart.\n", .{});
     }
-    const rule_derived = state.configureRuleKey(init.environ_map.get("TAWNY_RULE_SIGNING_KEY")) catch |err| {
-        if (err == error.RuleSigningKeyMalformed) std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY must be exactly 64 hex characters.\n", .{});
+    const action_source = state.configureActionKey(
+        init.environ_map.get("TAWNY_ACTION_SIGNING_KEY"),
+        init.environ_map.get("TAWNY_RULE_SIGNING_KEY"),
+    ) catch |err| {
+        if (err == error.ActionSigningKeyMalformed) std.debug.print("tawny-server: TAWNY_ACTION_SIGNING_KEY (or TAWNY_RULE_SIGNING_KEY) must be exactly 64 hex characters.\n", .{});
         return err;
     };
-    if (rule_derived) {
-        std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY is not set. YARA rule packs are signed with a key derived from the agent JWT seed.\n", .{});
+    switch (action_source) {
+        .configured => {},
+        .legacy_rule_alias => std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY is deprecated. Rename it to TAWNY_ACTION_SIGNING_KEY; it now signs response actions and YARA rule packs.\n", .{}),
+        .derived => std.debug.print("tawny-server: TAWNY_ACTION_SIGNING_KEY is not set. Response actions and YARA rule packs are signed with a key derived from the agent JWT seed.\n", .{}),
     }
     state.require_signed_batches = state.flagOn(init.environ_map.get("TAWNY_REQUIRE_SIGNED_BATCHES"), true);
     if (!state.require_signed_batches) {
@@ -435,6 +440,7 @@ fn readyBody(allocator: std.mem.Allocator, conn: *pg.Conn) Ready {
 comptime {
     _ = @import("crypto/jwt.zig");
     _ = @import("crypto/batch_sig.zig");
+    _ = @import("crypto/action_sig.zig");
     _ = @import("crypto/secret_box.zig");
     _ = @import("crypto/sigv4.zig");
     _ = @import("crypto/passwords.zig");

@@ -62,6 +62,8 @@ fn linkPlatformLibraries(mod: *std.Build.Module, os: std.Target.Os.Tag) void {
             mod.linkSystemLibrary("wtsapi32", .{});
             mod.linkSystemLibrary("ntdll", .{});
             mod.linkSystemLibrary("wevtapi", .{});
+            // WFP user-mode API for network isolation (#57).
+            mod.linkSystemLibrary("fwpuclnt", .{});
         },
         // macOS: libproc and libdispatch come from libSystem (link_libc).
         // CoreServices/CoreFoundation (FSEvents) are dlopen'd at runtime by

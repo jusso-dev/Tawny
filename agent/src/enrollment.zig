@@ -138,6 +138,7 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
         jwt: []const u8,
         jwt_expires_at: []const u8,
         yara_rule_key: ?[]const u8 = null,
+        action_public_key: ?[]const u8 = null,
     }, alloc, response_body.written(), .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
@@ -146,6 +147,14 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
     if (parsed.value.yara_rule_key) |key| {
         @import("yara_key.zig").pin(alloc, cfg.state_path, key) catch |err| {
             std.log.warn("could not pin the YARA rule key: {s}", .{@errorName(err)});
+        };
+    }
+
+    // Pin the server action key (#57). Same bytes as the rule key now, but a
+    // separate file so agents enrolled before #57 can pin it over a heartbeat.
+    if (parsed.value.action_public_key orelse parsed.value.yara_rule_key) |key| {
+        @import("action_key.zig").pin(alloc, cfg.state_path, key) catch |err| {
+            std.log.warn("could not pin the server action key: {s}", .{@errorName(err)});
         };
     }
 

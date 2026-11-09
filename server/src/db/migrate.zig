@@ -11,6 +11,8 @@ const process_entities_sql = @embedFile("migrations/0004_process_entities.sql");
 const process_entities_version = "0004_process_entities";
 const detection_engine_sql = @embedFile("migrations/0005_detection_engine.sql");
 const detection_engine_version = "0005_detection_engine";
+const windows_response_sql = @embedFile("migrations/0006_windows_response.sql");
+const windows_response_version = "0006_windows_response";
 
 pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try conn.execSimple(
@@ -28,6 +30,7 @@ pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try applyScript(allocator, conn, ai_reasoning_version, ai_reasoning_sql, true);
     try applyScript(allocator, conn, process_entities_version, process_entities_sql, true);
     try applyScript(allocator, conn, detection_engine_version, detection_engine_sql, true);
+    try applyScript(allocator, conn, windows_response_version, windows_response_sql, true);
     try conn.execSimple("GRANT EXECUTE ON FUNCTION tawny_purge_expired(timestamptz) TO tawny_jobs");
     try ensurePartitions(conn);
 }

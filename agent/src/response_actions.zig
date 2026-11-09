@@ -1,66 +1,320 @@
+//! Response actions (#57). Every action the server sends is signed; the agent
+//! verifies the signature against the pinned action key before it runs
+//! anything, journals the action for dedupe and restart replay, then dispatches
+//! to the platform handler. Results are reported to the server and retried
+//! until acked (the server redelivers pending actions on each heartbeat).
+
 const std = @import("std");
 const builtin = @import("builtin");
 const transport = @import("transport/http.zig");
 const iox = @import("io_compat.zig");
+const action_sig = @import("action_sig.zig");
+const action_key = @import("action_key.zig");
+const journal_mod = @import("action_journal.zig");
+const quarantine = @import("quarantine.zig");
+const wfp = @import("platform/windows/wfp.zig");
+const Ed25519 = std.crypto.sign.Ed25519;
+const process_control = if (builtin.target.os.tag == .windows)
+    @import("platform/windows/process_control.zig")
+else
+    struct {};
 
-pub fn execute(
+pub const Context = struct {
     alloc: std.mem.Allocator,
     http: *transport.Client,
-    action: transport.ResponseAction,
-) !void {
-    if (std.mem.eql(u8, action.action_type, "kill_process")) {
-        executeKillProcess(alloc, http, action) catch |err| {
-            try report(http, action, "failed", @errorName(err));
+    agent_id: []const u8,
+    public_key: ?Ed25519.PublicKey,
+    journal: *journal_mod.Journal,
+    quarantine_dir: []const u8,
+    /// Where isolation state is stored (`<state_path>.wfp`).
+    state_path: []const u8 = "",
+    /// Agent backend URL, for resolving server IPs and the verify probe.
+    backend_url: []const u8 = "",
+};
+
+const Result = struct {
+    status: []const u8,
+    message: []const u8,
+    /// message is heap-owned and must be freed.
+    owned: bool = false,
+};
+
+fn ok(msg: []const u8) Result {
+    return .{ .status = "succeeded", .message = msg };
+}
+fn fail(msg: []const u8) Result {
+    return .{ .status = "failed", .message = msg };
+}
+
+/// Run one action: dedupe, verify, journal, dispatch, report.
+pub fn execute(ctx: Context, action: transport.ResponseAction) void {
+    // Dedupe and restart replay. A finished action is reported again with the
+    // fresh token from this dispatch, not re-run.
+    if (ctx.journal.read(action.id)) |entry| {
+        defer ctx.journal.freeEntry(entry);
+        if (entry.state == .done) {
+            if (report(ctx.http, action, entry.status, entry.message)) {
+                ctx.journal.clear(action.id);
+            }
+            return;
+        }
+        // state == running: the agent crashed mid-action. The handlers are
+        // idempotent (kill of a gone process, quarantine by hash), so re-run.
+    }
+
+    // Verify the server signature before doing anything.
+    const fields = action_sig.Fields{
+        .action_id = action.id,
+        .agent_id = ctx.agent_id,
+        .action_type = action.action_type,
+        .expires_at = action.expires_at,
+        .payload = action.payload,
+        .payload_hash = action.payload_hash,
+        .signature = action.signature,
+    };
+    action_sig.verify(ctx.alloc, fields, ctx.public_key, iox.timestamp()) catch |err| {
+        const reason = switch (err) {
+            error.ActionUnsigned => "action has no server signature",
+            error.ActionExpired => "action expired before execution",
+            error.ActionPayloadMismatch => "action payload does not match its signed hash",
+            error.ActionSignatureInvalid => "action signature did not verify",
+            error.ActionKeyMissing => "no pinned server action key",
+            error.OutOfMemory => "out of memory verifying action",
         };
+        _ = report(ctx.http, action, "failed", reason);
         return;
-    }
+    };
 
-    if (std.mem.eql(u8, action.action_type, "isolate_host")) {
-        try report(http, action, "failed", "isolate_host is not implemented by this agent build");
-        return;
-    }
+    ctx.journal.begin(action.id, action.action_type) catch {};
 
-    try report(http, action, "failed", "unknown response action");
+    const result = dispatch(ctx, action);
+    defer if (result.owned) ctx.alloc.free(result.message);
+
+    ctx.journal.finish(action.id, action.action_type, result.status, result.message) catch {};
+    if (report(ctx.http, action, result.status, result.message)) {
+        ctx.journal.clear(action.id);
+    }
 }
 
-fn executeKillProcess(
-    alloc: std.mem.Allocator,
-    http: *transport.Client,
-    action: transport.ResponseAction,
-) !void {
-    const parsed = try std.json.parseFromSlice(struct {
-        pid: i32,
-        image_path: ?[]const u8 = null,
-        start_time_unix: ?i64 = null,
-        image_hash: ?[]const u8 = null,
-        command_line: ?[]const u8 = null,
-    }, alloc, action.payload, .{ .ignore_unknown_fields = true });
+fn dispatch(ctx: Context, action: transport.ResponseAction) Result {
+    const t = action.action_type;
+    if (std.mem.eql(u8, t, "kill_process")) return processAction(ctx, action, .kill);
+    if (std.mem.eql(u8, t, "suspend_process")) return processAction(ctx, action, .do_suspend);
+    if (std.mem.eql(u8, t, "resume_process")) return processAction(ctx, action, .do_resume);
+    if (std.mem.eql(u8, t, "quarantine_file")) return quarantineAction(ctx, action);
+    if (std.mem.eql(u8, t, "restore_file")) return restoreAction(ctx, action);
+    if (std.mem.eql(u8, t, "isolate_host") or std.mem.eql(u8, t, "isolate"))
+        return isolateAction(ctx, action);
+    if (std.mem.eql(u8, t, "release") or std.mem.eql(u8, t, "release_host"))
+        return releaseAction(ctx);
+    return fail("unknown response action");
+}
+
+const IsolatePayload = struct {
+    max_duration_seconds: ?i64 = null,
+    nonce: ?[]const u8 = null,
+    server_ips: []const []const u8 = &.{},
+    dns_resolvers: []const []const u8 = &.{},
+    admin_allowlist: []const []const u8 = &.{},
+};
+
+/// Resolve the backend host to IPv4 strings so the server stays reachable
+/// while isolated. Appends to `list`. Best-effort: a host that resolves to IPv6
+/// only is skipped (documented limit).
+fn resolveServerIps(ctx: Context, list: *std.ArrayList([]const u8)) void {
+    const url = ctx.backend_url;
+    const after = if (std.mem.indexOf(u8, url, "://")) |i| url[i + 3 ..] else url;
+    var host_port = after;
+    if (std.mem.indexOfScalar(u8, host_port, '/')) |i| host_port = host_port[0..i];
+    var host = host_port;
+    if (std.mem.lastIndexOfScalar(u8, host_port, ':')) |i| host = host_port[0..i];
+    if (host.len == 0) return;
+    // If the host is already a dotted IPv4, keep it verbatim.
+    if (wfp.parseIpv4(host) != null) {
+        if (ctx.alloc.dupe(u8, host)) |d| list.append(ctx.alloc, d) catch ctx.alloc.free(d) else |_| {}
+        return;
+    }
+    const addr = std.Io.net.IpAddress.resolve(iox.current(), host, 443) catch return;
+    switch (addr) {
+        .ip4 => |v| {
+            const b = v.bytes;
+            const text = std.fmt.allocPrint(ctx.alloc, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }) catch return;
+            list.append(ctx.alloc, text) catch ctx.alloc.free(text);
+        },
+        .ip6 => {}, // IPv6-only hosts are skipped (documented limit).
+    }
+}
+
+fn isolateAction(ctx: Context, action: transport.ResponseAction) Result {
+    if (builtin.target.os.tag != .windows) {
+        return fail("isolate_host is not supported on " ++ @tagName(builtin.target.os.tag) ++ " yet");
+    }
+    const parsed = std.json.parseFromSlice(IsolatePayload, ctx.alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return fail("invalid isolate payload");
     defer parsed.deinit();
+    const p = parsed.value;
 
-    if (parsed.value.pid <= 0) return error.InvalidPid;
-
-    if (parsed.value.image_path != null or parsed.value.start_time_unix != null) {
-        try assertProcessIdentity(alloc, parsed.value.pid, parsed.value.image_path, parsed.value.start_time_unix);
+    var ips: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ips.items) |ip| ctx.alloc.free(ip);
+        ips.deinit(ctx.alloc);
+    }
+    resolveServerIps(ctx, &ips);
+    for (p.server_ips) |s| {
+        if (ctx.alloc.dupe(u8, s)) |d| ips.append(ctx.alloc, d) catch ctx.alloc.free(d) else |_| {}
     }
 
-    switch (builtin.target.os.tag) {
-        .windows => return error.UnsupportedPlatform,
-        else => try std.posix.kill(parsed.value.pid, std.posix.SIG.TERM),
-    }
+    wfp.isolate(ctx.alloc, .{
+        .server_ips = ips.items,
+        .dns_resolvers = p.dns_resolvers,
+        .admin_allowlist = p.admin_allowlist,
+    }) catch |err| return fail(@errorName(err));
 
-    try report(http, action, "succeeded", "process termination signal sent");
+    const max_dur = p.max_duration_seconds orelse wfp.default_max_duration_seconds;
+    wfp.saveState(ctx.alloc, ctx.state_path, .{
+        .isolated = true,
+        .started_unix = iox.timestamp(),
+        .max_duration_seconds = max_dur,
+        .nonce = p.nonce orelse "",
+        .server_ips = ips.items,
+        .dns_resolvers = p.dns_resolvers,
+        .admin_allowlist = p.admin_allowlist,
+    }) catch {};
+
+    // Verify: the server should still be reachable, a blocked address not.
+    const server_ok = if (ips.items.len > 0) wfp.tcpReachable(ips.items[0], 443, 3000) else true;
+    const blocked_ok = wfp.tcpReachable("192.0.2.1", 443, 1500); // TEST-NET, should fail
+    const msg = std.fmt.allocPrint(ctx.alloc, "isolated; server_reachable={}, blocked_unreachable={}", .{ server_ok, !blocked_ok }) catch
+        return ok("isolated");
+    return .{ .status = "succeeded", .message = msg, .owned = true };
 }
 
-/// Refuse kill when optional identity fields no longer match the live process (PID reuse).
+fn releaseAction(ctx: Context) Result {
+    if (builtin.target.os.tag != .windows) {
+        return fail("release is not supported on " ++ @tagName(builtin.target.os.tag) ++ " yet");
+    }
+    wfp.release() catch |err| return fail(@errorName(err));
+    wfp.clearState(ctx.alloc, ctx.state_path);
+    return ok("isolation released");
+}
+
+const ProcessOp = enum { kill, do_suspend, do_resume };
+
+const ProcessPayload = struct {
+    pid: i32,
+    image_path: ?[]const u8 = null,
+    start_time_unix: ?i64 = null,
+    image_hash: ?[]const u8 = null,
+    command_line: ?[]const u8 = null,
+};
+
+fn processAction(ctx: Context, action: transport.ResponseAction, op: ProcessOp) Result {
+    const parsed = std.json.parseFromSlice(ProcessPayload, ctx.alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return fail("invalid process action payload");
+    defer parsed.deinit();
+    const p = parsed.value;
+    if (p.pid <= 0) return fail("process action needs a positive pid");
+
+    if (builtin.target.os.tag == .windows) {
+        const id = process_control.Identity{ .image_path = p.image_path, .start_time_unix = p.start_time_unix };
+        const outcome = switch (op) {
+            .kill => process_control.kill(ctx.alloc, @intCast(p.pid), id),
+            .do_suspend => process_control.suspend_(ctx.alloc, @intCast(p.pid), id),
+            .do_resume => process_control.resume_(ctx.alloc, @intCast(p.pid), id),
+        } catch |err| return fail(processErrorReason(err));
+        return switch (outcome) {
+            .already_gone => ok("process already gone"),
+            .done => switch (op) {
+                .kill => ok("process terminated"),
+                .do_suspend => ok("process suspended"),
+                .do_resume => ok("process resumed"),
+            },
+        };
+    }
+
+    // POSIX: identity guard is Linux /proc backed; macOS fails closed when
+    // identity is requested.
+    if (p.image_path != null or p.start_time_unix != null) {
+        assertProcessIdentity(ctx.alloc, p.pid, p.image_path, p.start_time_unix) catch |err|
+            return fail(@errorName(err));
+    }
+    const sig = switch (op) {
+        .kill => std.posix.SIG.TERM,
+        .do_suspend => std.posix.SIG.STOP,
+        .do_resume => std.posix.SIG.CONT,
+    };
+    std.posix.kill(p.pid, sig) catch |err| switch (err) {
+        error.ProcessNotFound => return ok("process already gone"),
+        else => return fail(@errorName(err)),
+    };
+    return switch (op) {
+        .kill => ok("process termination signal sent"),
+        .do_suspend => ok("process suspended"),
+        .do_resume => ok("process resumed"),
+    };
+}
+
+fn processErrorReason(err: anyerror) []const u8 {
+    return switch (err) {
+        error.CriticalProcessRefused => "refused: target is a critical system process",
+        error.ProcessIdentityMismatch => "refused: process identity no longer matches (possible PID reuse)",
+        error.ProcessIdentityUnavailable => "could not confirm process identity",
+        error.InvalidPid => "process action needs a positive pid",
+        else => @errorName(err),
+    };
+}
+
+const FilePayload = struct {
+    path: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
+};
+
+fn quarantineAction(ctx: Context, action: transport.ResponseAction) Result {
+    const parsed = std.json.parseFromSlice(FilePayload, ctx.alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return fail("invalid quarantine payload");
+    defer parsed.deinit();
+    const path = parsed.value.path orelse return fail("quarantine_file needs a path");
+    const sha = parsed.value.sha256 orelse return fail("quarantine_file needs a sha256");
+    const rec = quarantine.quarantine(ctx.alloc, ctx.quarantine_dir, path, sha) catch |err| return switch (err) {
+        error.HashMismatch => fail("refused: file hash does not match the action"),
+        error.FileTooBig => fail("file too large to quarantine"),
+        error.QuarantineVerifyFailed => fail("quarantine copy failed verification"),
+        else => fail(@errorName(err)),
+    };
+    const msg = std.fmt.allocPrint(ctx.alloc, "quarantined {s} ({d} bytes)", .{ rec.sha256[0..16], rec.size }) catch
+        return ok("quarantined");
+    return .{ .status = "succeeded", .message = msg, .owned = true };
+}
+
+fn restoreAction(ctx: Context, action: transport.ResponseAction) Result {
+    const parsed = std.json.parseFromSlice(FilePayload, ctx.alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return fail("invalid restore payload");
+    defer parsed.deinit();
+    const sha = parsed.value.sha256 orelse return fail("restore_file needs a sha256");
+    const original = quarantine.restore(ctx.alloc, ctx.quarantine_dir, sha) catch |err| return switch (err) {
+        error.SidecarMissing => fail("no quarantined file for that sha256"),
+        error.QuarantineVerifyFailed => fail("quarantine copy failed verification"),
+        else => fail(@errorName(err)),
+    };
+    defer ctx.alloc.free(original);
+    const msg = std.fmt.allocPrint(ctx.alloc, "restored to {s}", .{original}) catch return ok("restored");
+    return .{ .status = "succeeded", .message = msg, .owned = true };
+}
+
+/// Refuse kill/suspend/resume when optional identity fields no longer match
+/// the live process (PID reuse). Windows delegates to the process_control
+/// identity check so it no longer fails closed; POSIX uses /proc on Linux.
 fn assertProcessIdentity(
     alloc: std.mem.Allocator,
     pid: i32,
     expected_path: ?[]const u8,
     expected_start: ?i64,
 ) !void {
+    if (builtin.target.os.tag == .windows) {
+        // process_control re-checks inside its open; nothing to do here.
+        return;
+    }
     if (builtin.target.os.tag != .linux) {
-        // Path/start identity checks are Linux /proc-backed for now.
-        // When identity was requested on other platforms, fail closed.
         if (expected_path != null or expected_start != null) return error.ProcessIdentityUnavailable;
         return;
     }
@@ -88,7 +342,6 @@ fn readLinuxProcessImagePath(alloc: std.mem.Allocator, pid: i32) ![]u8 {
     var path_buf: [64]u8 = undefined;
     const link_path = try std.fmt.bufPrint(&path_buf, "/proc/{d}/exe", .{pid});
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-    // Zig 0.16+: use Io.Dir.readLinkAbsolute (std.posix.readlink is not available).
     const n = std.Io.Dir.readLinkAbsolute(iox.current(), link_path, &target_buf) catch
         return error.ProcessIdentityMismatch;
     return try alloc.dupe(u8, target_buf[0..n]);
@@ -136,6 +389,22 @@ fn readBtime() !i64 {
     return error.ProcessIdentityMismatch;
 }
 
-fn report(http: *transport.Client, action: transport.ResponseAction, status: []const u8, message: []const u8) !void {
-    try http.reportActionResult(action.id, action.execution_token, status, message);
+/// Report a result. Returns true when the server acked it (so the journal
+/// entry can be cleared). A failed report leaves the entry for the next
+/// heartbeat to retry.
+fn report(http: *transport.Client, action: transport.ResponseAction, status: []const u8, message: []const u8) bool {
+    http.reportActionResult(action.id, action.execution_token, status, message) catch |err| {
+        std.debug.print("response action {s} result report failed: {s}\n", .{ action.id, @errorName(err) });
+        return false;
+    };
+    return true;
+}
+
+test "pure helpers compile on every OS" {
+    _ = action_sig;
+    _ = action_key;
+    _ = journal_mod;
+    _ = quarantine;
+    try std.testing.expect(pathsMatch("/usr/bin/evil", "evil"));
+    try std.testing.expect(!pathsMatch("/usr/bin/a", "/usr/bin/b"));
 }

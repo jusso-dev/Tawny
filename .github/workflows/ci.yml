@@ -191,6 +191,90 @@ jobs:
       # Proves the wevtapi path on the hosted runner without Sysmon: Security
       # 4688 (process creation auditing) and PowerShell 4104 (script block
       # logging) are switched on, activity is generated, and the agent's
+      # Drives the Windows response actions with the agent's debug subcommands:
+      # kill a process by PID and start time, suspend and resume a child, and
+      # quarantine then restore a file comparing hashes. No server involved.
+      - name: prove Windows response actions (kill, suspend, resume, quarantine)
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The agent exits non-zero on purpose for a refused critical process.
+          # Govern flow by $LASTEXITCODE, not PowerShell 7.4's native-command
+          # error propagation, which would otherwise throw on that exit.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
+
+          # Kill by PID plus start time. Start a long-running ping we own.
+          $ping = Start-Process -FilePath "ping.exe" -ArgumentList @("-t", "127.0.0.1") -PassThru
+          Start-Sleep -Seconds 1
+          # DateTimeOffset of a Local-kind DateTime uses the local offset, so
+          # this is the correct absolute instant with no locale parsing.
+          $start = [int]([DateTimeOffset]$ping.StartTime).ToUnixTimeSeconds()
+          $image = (Get-Process -Id $ping.Id).Path
+          & $agent --kill-pid $ping.Id $image $start | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "kill-pid exit $LASTEXITCODE" }
+          Start-Sleep -Seconds 1
+          if (Get-Process -Id $ping.Id -ErrorAction SilentlyContinue) { throw "ping $($ping.Id) still running after kill" }
+          Write-Host "kill by pid and start time OK"
+
+          # Killing an already-gone pid is a success.
+          & $agent --kill-pid $ping.Id | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "already-gone kill should succeed" }
+
+          # Suspend and resume a child, then clean it up.
+          $child = Start-Process -FilePath "ping.exe" -ArgumentList @("-t", "127.0.0.1") -PassThru
+          Start-Sleep -Seconds 1
+          & $agent --suspend-pid $child.Id | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "suspend exit $LASTEXITCODE" }
+          if (-not (Get-Process -Id $child.Id -ErrorAction SilentlyContinue)) { throw "suspend killed the child" }
+          & $agent --resume-pid $child.Id | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "resume exit $LASTEXITCODE" }
+          Stop-Process -Id $child.Id -Force
+          Write-Host "suspend and resume OK"
+
+          # Refuse a critical process even with a real pid.
+          $sys = Get-Process -Name "lsass" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($sys) {
+            & $agent --kill-pid $sys.Id "C:\Windows\System32\lsass.exe" 0
+            if ($LASTEXITCODE -eq 0) { throw "critical process lsass was not refused" }
+            Write-Host "critical process refusal OK"
+          }
+
+          # Quarantine then restore a temp file and compare hashes.
+          $qdir = Join-Path $env:RUNNER_TEMP "tawny-quarantine"
+          Remove-Item -LiteralPath $qdir -Recurse -Force -ErrorAction SilentlyContinue
+          $target = Join-Path $env:RUNNER_TEMP ("mal-" + [Guid]::NewGuid().ToString('N') + ".bin")
+          [IO.File]::WriteAllBytes($target, [byte[]](0x4D,0x5A,0x90,0x00,0x11,0x22,0x33))
+          $before = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLower()
+          & $agent --quarantine $target $before $qdir | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "quarantine exit $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $target) { throw "original not removed after quarantine" }
+          if (-not (Test-Path -LiteralPath (Join-Path $qdir "$before.bin"))) { throw "quarantine copy missing" }
+          & $agent --restore $before $qdir | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "restore exit $LASTEXITCODE" }
+          $after = (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLower()
+          if ($before -ne $after) { throw "restore hash mismatch: $before vs $after" }
+          Write-Host "quarantine and restore round-trip OK"
+
+      # Live WFP: adds one block filter for a TEST-NET address (192.0.2.1),
+      # never a block-all, so it cannot cut the runner off. Confirms the filter
+      # is present, a routable address stays reachable (no over-block), then
+      # releases and confirms the sublayer is empty. Admin is required to open
+      # the filter engine; GitHub's windows runner user is an administrator.
+      - name: prove live WFP add, probe and release (safe, no block-all)
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
+          & $agent --wfp-selftest | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "wfp-selftest exit $LASTEXITCODE" }
+          Write-Host "live WFP add/probe/release OK"
+
       # --eventlog-dump reads, maps and bookmarks the channels. A second and
       # third dump with the same state dir check that a restart neither
       # repeats nor skips events. Sysmon is not installed on the runner.

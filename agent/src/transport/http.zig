@@ -16,13 +16,21 @@ pub const HeartbeatResult = struct {
     yara_pack_version: u64 = 0,
     actions: []ResponseAction = &.{},
 
+    /// Server action public key for trust-on-first-use pinning (#57). Base64
+    /// Ed25519. Present on heartbeats so agents enrolled before #57 pin it.
+    action_public_key: ?[]u8 = null,
+
     pub fn deinit(self: *HeartbeatResult, alloc: std.mem.Allocator) void {
         if (self.rotated_jwt) |jwt| alloc.free(jwt);
+        if (self.action_public_key) |k| alloc.free(k);
         for (self.actions) |action| {
             alloc.free(action.id);
             alloc.free(action.action_type);
             alloc.free(action.payload);
             alloc.free(action.execution_token);
+            alloc.free(action.expires_at);
+            alloc.free(action.payload_hash);
+            if (action.signature) |s| alloc.free(s);
         }
         if (self.actions.len > 0) alloc.free(self.actions);
     }
@@ -33,6 +41,13 @@ pub const ResponseAction = struct {
     action_type: []u8,
     payload: []u8,
     execution_token: []u8,
+    /// RFC 3339 deadline the server signed (empty if the server omitted it).
+    expires_at: []u8 = &.{},
+    /// Lower-case hex SHA-256 of the payload the server signed.
+    payload_hash: []u8 = &.{},
+    /// Base64 Ed25519 signature over the canonical action string. Null when
+    /// the server sent no signature (refused by the agent).
+    signature: ?[]u8 = null,
 };
 
 pub const Client = struct {
@@ -105,10 +120,14 @@ pub const Client = struct {
             action_type: []const u8,
             payload: std.json.Value,
             execution_token: []const u8,
+            expires_at: ?[]const u8 = null,
+            payload_hash: ?[]const u8 = null,
+            signature: ?[]const u8 = null,
         };
         const Parsed = struct {
             rotated_jwt: ?[]const u8 = null,
             yara_pack_version: u64 = 0,
+            action_public_key: ?[]const u8 = null,
             actions: []const ParsedAction = &.{},
         };
         const parsed = std.json.parseFromSlice(Parsed, self.allocator, response, .{
@@ -117,8 +136,12 @@ pub const Client = struct {
         defer parsed.deinit();
 
         var result = HeartbeatResult{ .yara_pack_version = parsed.value.yara_pack_version };
+        errdefer result.deinit(self.allocator);
         if (parsed.value.rotated_jwt) |jwt| {
             result.rotated_jwt = try self.allocator.dupe(u8, jwt);
+        }
+        if (parsed.value.action_public_key) |k| {
+            result.action_public_key = try self.allocator.dupe(u8, k);
         }
         if (parsed.value.actions.len > 0) {
             var actions = std.array_list.Managed(ResponseAction).init(self.allocator);
@@ -128,6 +151,9 @@ pub const Client = struct {
                     self.allocator.free(action.action_type);
                     self.allocator.free(action.payload);
                     self.allocator.free(action.execution_token);
+                    self.allocator.free(action.expires_at);
+                    self.allocator.free(action.payload_hash);
+                    if (action.signature) |s| self.allocator.free(s);
                 }
                 actions.deinit();
             }
@@ -147,6 +173,9 @@ pub const Client = struct {
                     .action_type = try self.allocator.dupe(u8, action.action_type),
                     .payload = try payload.toOwnedSlice(),
                     .execution_token = try self.allocator.dupe(u8, action.execution_token),
+                    .expires_at = try self.allocator.dupe(u8, action.expires_at orelse ""),
+                    .payload_hash = try self.allocator.dupe(u8, action.payload_hash orelse ""),
+                    .signature = if (action.signature) |s| try self.allocator.dupe(u8, s) else null,
                 });
             }
             result.actions = try actions.toOwnedSlice();

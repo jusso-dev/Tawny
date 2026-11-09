@@ -5,6 +5,7 @@ const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
 const batch_sig = @import("../crypto/batch_sig.zig");
+const action_sig = @import("../crypto/action_sig.zig");
 const detect = @import("../jobs/detect.zig");
 const ingest_v2 = @import("../ingest/v2.zig");
 const ingest_entity = @import("../ingest/entity.zig");
@@ -170,13 +171,15 @@ pub fn enroll(
     defer allocator.free(jwt_j);
     const exp_j = try util.escapeJson(allocator, exp_s);
     defer allocator.free(exp_j);
-    // The agent pins this key and refuses YARA rule packs signed by any other.
-    const rule_kp = try state.rulePackKey(io);
+    // One action key signs response actions and YARA rule packs (#57). The
+    // agent pins this public key and refuses anything signed by another key.
+    // `yara_rule_key` is the same bytes, kept for agents enrolled before #57.
+    const act_kp = try state.actionKey(io);
     var rk_buf: [44]u8 = undefined;
-    const rule_key = std.base64.standard.Encoder.encode(&rk_buf, &rule_kp.public_key.bytes);
+    const action_key = std.base64.standard.Encoder.encode(&rk_buf, &act_kp.public_key.bytes);
     const json = try std.fmt.allocPrint(allocator,
-        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"yara_rule_key":"{s}","config":{{"heartbeat_interval_seconds":60}}}}
-    , .{ aid_j, jwt_j, exp_j, rule_key });
+        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"action_public_key":"{s}","yara_rule_key":"{s}","config":{{"heartbeat_interval_seconds":60}}}}
+    , .{ aid_j, jwt_j, exp_j, action_key, action_key });
     defer allocator.free(json);
     try util.respondJson(request, .ok, json);
 }
@@ -425,13 +428,15 @@ pub fn heartbeat(
             exp_owned = try allocator.dupe(u8, util.formatRfc3339(&tbuf, now + 15 * 60));
             exp_at = exp_owned;
         }
-        var ph = row.cols[4];
-        var ph_owned: ?[]u8 = null;
-        defer if (ph_owned) |p| allocator.free(p);
-        if (ph == null) {
-            ph_owned = try util.sha256Hex(allocator, row.cols[2] orelse "{}");
-            ph = ph_owned;
-        }
+        // Reserialize the payload to the compact form the agent reconstructs
+        // (parse then stringify), so the signed payload_hash matches the bytes
+        // the agent recomputes from the payload field it receives.
+        const payload_raw = row.cols[2] orelse "{}";
+        const payload_compact = reserializePayload(allocator, payload_raw) catch try allocator.dupe(u8, payload_raw);
+        defer allocator.free(payload_compact);
+        const ph_owned = try util.sha256Hex(allocator, payload_compact);
+        const ph: []const u8 = ph_owned;
+        defer allocator.free(ph_owned);
         try conn.execNoRows(
             \\UPDATE response_actions SET status = 'dispatched', dispatched_at = $2::timestamptz,
             \\  execution_token_hash = $3, expires_at = COALESCE(expires_at, $4::timestamptz),
@@ -442,7 +447,7 @@ pub fn heartbeat(
             .{ .text = now_s },
             .{ .text = exec_hash },
             .{ .text = exp_at.? },
-            .{ .text = ph.? },
+            .{ .text = ph },
         });
         const id_j = try util.escapeJson(allocator, row.cols[0].?);
         defer allocator.free(id_j);
@@ -452,13 +457,25 @@ pub fn heartbeat(
         defer allocator.free(tok_j);
         const exp_j = try util.escapeJson(allocator, exp_at.?);
         defer allocator.free(exp_j);
-        const ph_j = try util.escapeJson(allocator, ph.?);
+        const ph_j = try util.escapeJson(allocator, ph);
         defer allocator.free(ph_j);
-        const payload = row.cols[2] orelse "{}";
+        // Sign the action so the agent can refuse anything the server did not
+        // authorise. The signed string pins the id, agent, type, deadline and
+        // the hash of the payload the agent receives.
+        const sig_b64 = try action_sig.sign(
+            allocator,
+            try state.actionKey(io),
+            row.cols[0].?,
+            agent.agent_id,
+            row.cols[1] orelse "",
+            exp_at.?,
+            ph,
+        );
+        defer allocator.free(sig_b64);
         {
-            const __tmp = try std.fmt.allocPrint(allocator, 
-            "{{\"id\":{s},\"action_type\":{s},\"payload\":{s},\"execution_token\":{s},\"expires_at\":{s},\"payload_hash\":{s}}}",
-            .{ id_j, at_j, payload, tok_j, exp_j, ph_j },
+            const __tmp = try std.fmt.allocPrint(allocator,
+            "{{\"id\":{s},\"action_type\":{s},\"payload\":{s},\"execution_token\":{s},\"expires_at\":{s},\"payload_hash\":{s},\"signature\":\"{s}\"}}",
+            .{ id_j, at_j, payload_compact, tok_j, exp_j, ph_j, sig_b64 },
         );
             defer allocator.free(__tmp);
             try actions_json.appendSlice(allocator, __tmp);
@@ -514,6 +531,16 @@ pub fn heartbeat(
     {
         const yv = @import("yara_rules.zig").packVersion(allocator, conn, agent.tenant_id) catch 0;
         const __tmp = try std.fmt.allocPrint(allocator, "\"yara_pack_version\":{d},", .{yv});
+        defer allocator.free(__tmp);
+        try out.appendSlice(allocator, __tmp);
+    }
+    {
+        // Carry the action public key so agents enrolled before #57 pin it on
+        // their next heartbeat (trust on first use).
+        const act_kp = try state.actionKey(io);
+        var kb: [44]u8 = undefined;
+        const kb64 = std.base64.standard.Encoder.encode(&kb, &act_kp.public_key.bytes);
+        const __tmp = try std.fmt.allocPrint(allocator, "\"action_public_key\":\"{s}\",", .{kb64});
         defer allocator.free(__tmp);
         try out.appendSlice(allocator, __tmp);
     }
@@ -990,6 +1017,23 @@ pub fn createAction(
     , .{ id_j, aid_j, at_j, req_j, exp_j, payload_buf.items, ph_j });
     defer allocator.free(json);
     try util.respondJson(request, .created, json);
+}
+
+/// Parse then compact-serialize a JSON payload, matching the bytes the agent
+/// reconstructs from the payload field. Caller frees.
+fn reserializePayload(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+}
+
+test "reserializePayload produces compact JSON the agent can match" {
+    const a = std.testing.allocator;
+    const out = try reserializePayload(a, "{\"pid\": 1234, \"image_path\": \"/bin/x\"}");
+    defer a.free(out);
+    // No spaces after the structural characters.
+    try std.testing.expect(std.mem.indexOf(u8, out, ": ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1234") != null);
 }
 
 fn idempotencyConflict(msg: []const u8) bool {

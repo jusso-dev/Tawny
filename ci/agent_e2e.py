@@ -20,7 +20,7 @@ BASE = os.environ.get("TAWNY_BASE_URL", "http://127.0.0.1:18080").rstrip("/")
 EMAIL = os.environ.get("TAWNY_CONTRACT_EMAIL", "admin@tawny.local")
 PASSWORD = os.environ.get("TAWNY_CONTRACT_PASSWORD", "contract-password")
 AGENT_BIN = os.environ.get("TAWNY_AGENT_BIN", "")
-NOT_IMPLEMENTED = "isolate_host is not implemented by this agent build"
+NOT_IMPLEMENTED = "isolate_host is not supported on linux yet"
 
 
 def call(method: str, path: str, body: object | None, cookie: str, csrf: str) -> tuple[int, str]:
