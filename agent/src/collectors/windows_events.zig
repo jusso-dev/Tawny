@@ -13,6 +13,7 @@ const entity = @import("../entity.zig");
 const schema_check = @import("../schema_check.zig");
 const iox = @import("../io_compat.zig");
 const eventlog = if (builtin.target.os.tag == .windows) @import("../platform/windows/eventlog.zig") else struct {};
+const tamper = @import("../tamper.zig");
 
 const Jw = std.json.Stringify;
 
@@ -35,7 +36,7 @@ const max_registry_data_bytes: usize = 1024;
 // ---------------------------------------------------------------------------
 // Channels
 
-pub const Source = enum { sysmon, security, system, powershell };
+pub const Source = enum { sysmon, security, system, powershell, defender };
 
 pub const Channel = struct {
     source: Source,
@@ -64,6 +65,13 @@ pub const channels = [_]Channel{
         .source = .powershell,
         .path = "Microsoft-Windows-PowerShell/Operational",
         .event_filter = "EventID=4104",
+    },
+    // Defender configuration changes (#58). Only 5007 entries that add an
+    // exclusion covering a Tawny path become events (agent_tamper).
+    .{
+        .source = .defender,
+        .path = "Microsoft-Windows-Windows Defender/Operational",
+        .event_filter = "EventID=5007",
     },
 };
 
@@ -244,7 +252,7 @@ pub fn mapEventWith(alloc: std.mem.Allocator, ev: *const evtxml.Event, table: ?*
             7045 => "service_create",
             else => return null,
         },
-        .powershell => return null,
+        .powershell, .defender => return null,
     };
 
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -277,7 +285,7 @@ pub fn mapEventWith(alloc: std.mem.Allocator, ev: *const evtxml.Event, table: ?*
             else => unreachable,
         },
         .system => try mapSystem7045(alloc, &jw, ev),
-        .powershell => unreachable,
+        .powershell, .defender => unreachable,
     }
     try jw.endObject();
     return .{ .event_type = event_type, .payload = try out.toOwnedSlice() };
@@ -1324,6 +1332,23 @@ pub const Processor = struct {
                 },
             };
             self.counters.emitted += out.items.len - before;
+            return;
+        }
+        if (source == .defender) {
+            // 5007: configuration changed. Only a new exclusion that covers a
+            // Tawny path is reported, as agent_tamper.
+            const payload = (try tamper.defenderExclusionPayload(self.allocator, ev.get("Old Value"), ev.get("New Value"))) orelse {
+                self.counters.dropped_unmapped += 1;
+                return;
+            };
+            errdefer self.allocator.free(payload);
+            try out.append(.{
+                .event_type = "agent_tamper",
+                .occurred_at = parseSystemTime(ev.time_created) orelse now,
+                .client_event_id = recordEventId(ev.channel, ev.record_id, ev.time_created),
+                .payload = payload,
+            });
+            self.counters.emitted += 1;
             return;
         }
         if (source == .security and ev.event_id == 4688 and self.sysmon_active) {

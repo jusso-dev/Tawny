@@ -6,6 +6,12 @@ $script:TawnySysmonDownloadUrl = "https://download.sysinternals.com/files/Sysmon
 $script:TawnySysmonConfigUrl = "https://github.com/olafhartong/sysmon-modular/releases/download/configs-a45dedb13a43/sysmonconfig-with-filedelete.xml"
 $script:TawnySysmonConfigSha256 = "a7832f4423aae16e39342e08f3a2962291eafb7972eb9dfb070009781fde50d9"
 $script:TawnySysmonChannel = "Microsoft-Windows-Sysmon/Operational"
+# Service security descriptor (#58). SYSTEM (SY) and Administrators (BA) get
+# full control. Interactive (IU), service (SU) and authenticated (AU) users
+# may only query config and status, enumerate dependents, interrogate and read
+# the DACL (CC LC SW LO CR RC): no start (RP), stop (WP), pause (DT), change
+# config (DC) or delete (SD). The SACL audits failed changes by anyone.
+$script:TawnyServiceSddl = "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;CCLCSWLOCRRC;;;AU)S:(AU;FA;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"
 
 function Get-TawnySysmonStatus {
     [CmdletBinding()]
@@ -414,6 +420,13 @@ fim_paths = []
             & sc.exe sidtype $ServiceName unrestricted | Out-Null
             & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
             & sc.exe failureflag $ServiceName 1 | Out-Null
+            # Service DACL (#58): only SYSTEM and Administrators may stop,
+            # pause, reconfigure or delete the service. Interactive users,
+            # service accounts and authenticated users can still query it.
+            & sc.exe sdset $ServiceName $script:TawnyServiceSddl | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to restrict the service DACL for $ServiceName."
+            }
             $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
             New-ItemProperty -Path $serviceRegistryPath `
                 -Name Environment `

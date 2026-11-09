@@ -10,6 +10,16 @@ pub const HeartbeatPayload = struct {
     buffer_depth: usize,
 };
 
+/// Clean shutdown notice (#58): a final heartbeat. The server then skips
+/// `Agent silent` when the agent goes offline.
+pub const ShutdownPayload = struct {
+    agent_version: []const u8,
+    uptime_seconds: i64,
+    buffer_depth: usize,
+    shutdown: bool = true,
+    shutdown_reason: []const u8,
+};
+
 pub const HeartbeatResult = struct {
     rotated_jwt: ?[]u8 = null,
     /// Latest signed YARA rule pack version for this tenant (0: none).
@@ -181,6 +191,54 @@ pub const Client = struct {
             result.actions = try actions.toOwnedSlice();
         }
         return result;
+    }
+
+    /// Send the clean shutdown notice as a final heartbeat. One attempt, no
+    /// retry: a stopping service has a short wait hint.
+    pub fn sendShutdownNotice(self: *Client, agent_version: []const u8, uptime: i64, depth: usize, reason: []const u8) !void {
+        const body = try std.json.Stringify.valueAlloc(self.allocator, ShutdownPayload{
+            .agent_version = agent_version,
+            .uptime_seconds = @max(uptime, 0),
+            .buffer_depth = depth,
+            .shutdown_reason = reason,
+        }, .{});
+        defer self.allocator.free(body);
+        const response = try self.post("/api/agents/heartbeat", body);
+        self.allocator.free(response);
+    }
+
+    /// Signed release offered to this agent (#58): POST
+    /// /api/agent/update-check. Returns the reply body, or null on 204.
+    pub fn updateCheck(self: *Client, platform: []const u8, ring: []const u8) !?[]u8 {
+        const body = try std.json.Stringify.valueAlloc(self.allocator, .{ .platform = platform, .ring = ring }, .{});
+        defer self.allocator.free(body);
+        const reply = try self.post("/api/agent/update-check", body);
+        if (reply.len == 0) {
+            self.allocator.free(reply);
+            return null;
+        }
+        return reply;
+    }
+
+    /// GET a release binary over HTTPS, at most `max` bytes. Redirects are
+    /// followed (GitHub release assets redirect to object storage); the
+    /// bytes are checked against the signed manifest by the caller.
+    pub fn download(self: *Client, url: []const u8, max: u64) ![]u8 {
+        if (!std.ascii.startsWithIgnoreCase(url, "https://")) return error.InsecureDownloadUrl;
+        var client = std.http.Client{ .allocator = self.allocator, .io = iox.current() };
+        defer client.deinit();
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        errdefer out.deinit();
+        const result = try client.fetch(.{
+            .method = .GET,
+            .location = .{ .url = url },
+            .response_writer = &out.writer,
+            .redirect_behavior = .init(5),
+            .keep_alive = false,
+        });
+        if (@backingInt(result.status) != 200) return error.DownloadFailed;
+        if (out.written().len > max) return error.DownloadTooLarge;
+        return out.toOwnedSlice();
     }
 
     /// Fetch the tenant's signed YARA rule pack. The caller verifies it
@@ -540,6 +598,21 @@ test "heartbeat body escapes agent version" {
     defer alloc.free(body);
     try std.testing.expectEqualStrings(
         "{\"agent_version\":\"0.1.0\\\",\\\"x\\\":\\\"\\\\\",\"uptime_seconds\":5,\"buffer_depth\":2}",
+        body,
+    );
+}
+
+test "shutdown notice body carries the flag and reason" {
+    const alloc = std.testing.allocator;
+    const body = try std.json.Stringify.valueAlloc(alloc, ShutdownPayload{
+        .agent_version = "0.1.0",
+        .uptime_seconds = 5,
+        .buffer_depth = 0,
+        .shutdown_reason = "service_stop",
+    }, .{});
+    defer alloc.free(body);
+    try std.testing.expectEqualStrings(
+        "{\"agent_version\":\"0.1.0\",\"uptime_seconds\":5,\"buffer_depth\":0,\"shutdown\":true,\"shutdown_reason\":\"service_stop\"}",
         body,
     );
 }
