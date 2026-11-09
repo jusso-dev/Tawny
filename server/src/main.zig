@@ -15,6 +15,7 @@ const backup = @import("jobs/backup.zig");
 const releases = @import("jobs/releases.zig");
 const http_get = @import("jobs/http_get.zig");
 const ai_reasoning = @import("jobs/ai_reasoning.zig");
+const builtin_rules = @import("detect/builtin.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -65,6 +66,13 @@ pub fn main(init: std.process.Init) !void {
     };
     if (seed_source == .dev_random) {
         std.debug.print("tawny-server: TAWNY_DEV is on and TAWNY_AGENT_JWT_SEED is unusable. Using a random agent JWT seed; agents must re-enrol after a restart.\n", .{});
+    }
+    const rule_derived = state.configureRuleKey(init.environ_map.get("TAWNY_RULE_SIGNING_KEY")) catch |err| {
+        if (err == error.RuleSigningKeyMalformed) std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY must be exactly 64 hex characters.\n", .{});
+        return err;
+    };
+    if (rule_derived) {
+        std.debug.print("tawny-server: TAWNY_RULE_SIGNING_KEY is not set. YARA rule packs are signed with a key derived from the agent JWT seed.\n", .{});
     }
     state.require_signed_batches = state.flagOn(init.environ_map.get("TAWNY_REQUIRE_SIGNED_BATCHES"), true);
     if (!state.require_signed_batches) {
@@ -205,6 +213,9 @@ fn runJobs(
     last_release: *i64,
     last_ai: *i64,
 ) void {
+    builtin_rules.ensureSeededOnce(allocator, io, conn) catch |err| {
+        std.debug.print("builtin rule seed failed: {s}\n", .{@errorName(err)});
+    };
     if (detect.drain(allocator, io, conn)) |_| {} else |err| {
         std.debug.print("detect drain failed: {s}\n", .{@errorName(err)});
     }
@@ -438,6 +449,7 @@ comptime {
     _ = @import("routes/admin_jobs.zig");
     _ = @import("routes/agent_releases.zig");
     _ = @import("routes/alerts.zig");
+    _ = @import("routes/yara_rules.zig");
     _ = @import("routes/agents.zig");
     _ = @import("routes/auth.zig");
     _ = @import("routes/users.zig");
@@ -446,6 +458,16 @@ comptime {
     _ = @import("detect/package_exposure.zig");
     _ = @import("detect/match.zig");
     _ = @import("detect/exposure_import.zig");
+    _ = @import("detect/yaml.zig");
+    _ = @import("detect/regex.zig");
+    _ = @import("detect/ast.zig");
+    _ = @import("detect/sigma.zig");
+    _ = @import("detect/sigma_compat.zig");
+    _ = @import("detect/tawny_rule.zig");
+    _ = @import("detect/sequence.zig");
+    _ = @import("detect/threshold.zig");
+    _ = @import("detect/builtin.zig");
+    _ = @import("detect/correlation_test.zig");
     _ = @import("routes/hunts.zig");
     _ = @import("routes/feeds.zig");
     _ = @import("routes/lookup.zig");

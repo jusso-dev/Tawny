@@ -69,7 +69,9 @@ jobs:
       - name: throwaway agent JWT seed
         working-directory: ${{ github.workspace }}
         # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
-        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TAWNY_RULE_SIGNING_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: contract suite
         working-directory: ${{ github.workspace }}
         run: |
@@ -164,6 +166,13 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe
       - name: test
         run: zig build test
+      # YARA through libyara (#56). Fetches the pinned libyara source from
+      # build.zig.zon and runs the tests again with it built in, including the
+      # EICAR-in-a-watched-folder test on Linux and macOS.
+      - name: build with -Dyara=true
+        run: zig build -Dyara=true -Doptimize=ReleaseSafe -p zig-out-yara
+      - name: test with -Dyara=true
+        run: zig build test -Dyara=true
       - name: smoke-run binary
         timeout-minutes: 1
         run: |
@@ -324,6 +333,8 @@ jobs:
           "$zig_dir/zig" version
       - name: build
         run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall
+      - name: build with -Dyara=true
+        run: zig build -Dtarget=${{ matrix.target.zig }} -Doptimize=ReleaseSmall -Dyara=true -p zig-out-yara
       - name: package CI artifact
         run: |
           set -euo pipefail
@@ -393,6 +404,42 @@ jobs:
       - name: fuzz corpus
         run: zig test src/main.zig -lc --test-filter fuzz
 
+  # Compiles the pinned SigmaHQ windows/process_creation snapshot. Fails when
+  # fewer rules compile than rules/sigma/sigmahq/baseline-supported.txt, or
+  # when docs/sigma-compatibility.md is out of date.
+  sigma-compat:
+    name: sigma-compat
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Zig 0.17.0
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          zig_version=0.17.0
+          sha256=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+          archive="$RUNNER_TEMP/zig.tar.xz"
+          zig_dir="$RUNNER_TEMP/zig-$zig_version"
+          curl -fsSL --retry 3 \
+            "https://ziglang.org/download/${zig_version}/zig-x86_64-linux-${zig_version}.tar.xz" \
+            -o "$archive"
+          echo "${sha256}  ${archive}" | sha256sum -c -
+          mkdir -p "$zig_dir"
+          tar -xJf "$archive" -C "$zig_dir" --strip-components=1
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$zig_dir/zig" version
+      - name: compile SigmaHQ snapshot and compare with the baseline
+        run: |
+          set -euo pipefail
+          TAWNY_SIGMA_COMPAT_WRITE=1 zig test src/main.zig -lc --test-filter "sigma compatibility" 2>&1 | tee "$RUNNER_TEMP/sigma-compat.log"
+          grep -F "sigma_compat total=" "$RUNNER_TEMP/sigma-compat.log"
+          cat ../docs/sigma-compatibility.md >> "$GITHUB_STEP_SUMMARY"
+      - name: report is up to date
+        run: git diff --exit-code -- ../docs/sigma-compatibility.md
+
   agent-e2e:
     name: agent-e2e
     runs-on: ubuntu-latest
@@ -446,7 +493,9 @@ jobs:
       - name: throwaway agent JWT seed
         working-directory: ${{ github.workspace }}
         # serve refuses to start without a seed. A fresh one per run keeps keys out of the repo.
-        run: echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+        run: |
+          echo "TAWNY_AGENT_JWT_SEED=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "TAWNY_RULE_SIGNING_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
       - name: enroll, heartbeat, telemetry, isolate
         run: |
           set -euo pipefail

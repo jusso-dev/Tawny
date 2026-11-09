@@ -1,0 +1,12 @@
+id: tawny-builtin:failed-logons-from-one-ip
+title: More than 20 failed logons from one IP address
+description: More than 20 failed logons (4625) from one source IP address within 5 minutes.
+kind: threshold
+event_type: user_logon_failed
+by: IpAddress
+window: 5m
+min: 21
+level: medium
+tags:
+  - attack.credential-access
+  - attack.t1110

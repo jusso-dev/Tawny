@@ -5,6 +5,48 @@ const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const match = @import("../detect/match.zig");
 const package_exposure = @import("../detect/package_exposure.zig");
+const ast = @import("../detect/ast.zig");
+const tawny_rule = @import("../detect/tawny_rule.zig");
+const sequence = @import("../detect/sequence.zig");
+const threshold = @import("../detect/threshold.zig");
+
+/// Compiled rule expressions, parsed once per drain. Keyed by rule id and
+/// updated_at so an edited rule is parsed again.
+pub const RuleCache = struct {
+    arena: std.heap.ArenaAllocator,
+    map: std.StringHashMapUnmanaged(?ast.Node) = .empty,
+    rules: std.StringHashMapUnmanaged(?tawny_rule.Rule) = .empty,
+
+    pub fn init(gpa: std.mem.Allocator) RuleCache {
+        return .{ .arena = .init(gpa) };
+    }
+
+    pub fn deinit(self: *RuleCache) void {
+        self.arena.deinit();
+    }
+
+    /// Parsed expression, or null when the stored JSON is unusable.
+    fn get(self: *RuleCache, rule_id: []const u8, updated_at: []const u8, json_text: []const u8) !?ast.Node {
+        const a = self.arena.allocator();
+        const key = try std.mem.concat(a, u8, &.{ rule_id, "@", updated_at });
+        const gop = try self.map.getOrPut(a, key);
+        if (gop.found_existing) return gop.value_ptr.*;
+        gop.value_ptr.* = blk: {
+            const v = std.json.parseFromSliceLeaky(std.json.Value, a, json_text, .{}) catch break :blk null;
+            break :blk ast.parseExpr(a, v) catch null;
+        };
+        return gop.value_ptr.*;
+    }
+
+    fn getRule(self: *RuleCache, rule_id: []const u8, updated_at: []const u8, json_text: []const u8) !?tawny_rule.Rule {
+        const a = self.arena.allocator();
+        const key = try std.mem.concat(a, u8, &.{ rule_id, "@", updated_at });
+        const gop = try self.rules.getOrPut(a, key);
+        if (gop.found_existing) return gop.value_ptr.*;
+        gop.value_ptr.* = tawny_rule.load(a, json_text) catch null;
+        return gop.value_ptr.*;
+    }
+};
 
 const DetectJob = struct {
     event_id: []const u8,
@@ -63,6 +105,8 @@ pub fn drain(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn) !u32 {
         for (claimed) |row| row.deinit(allocator);
         allocator.free(claimed);
     }
+    var cache = RuleCache.init(allocator);
+    defer cache.deinit();
     var done: u32 = 0;
     for (claimed) |row| {
         const qid = row.cols[0] orelse continue;
@@ -83,7 +127,7 @@ pub fn drain(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn) !u32 {
         defer parsed.deinit();
         const job = parsed.value;
         const ev = conn.exec(allocator,
-            \\SELECT payload::text FROM telemetry_events
+            \\SELECT payload::text, occurred_at::text FROM telemetry_events
             \\WHERE id = $1::bigint AND received_at = $2::timestamptz
             \\LIMIT 1
         , &.{ .{ .text = job.event_id }, .{ .text = job.received_at } }) catch {
@@ -99,7 +143,16 @@ pub fn drain(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn) !u32 {
             done += 1;
             continue;
         }
-        evaluateRules(allocator, io, conn, tenant, job.agent_id, job.hostname, job.event_type, ev[0].cols[0].?, job.event_id, job.received_at) catch {
+        evaluateRules(allocator, io, conn, &cache, .{
+            .tenant_id = tenant,
+            .agent_id = job.agent_id,
+            .hostname = job.hostname,
+            .event_type = job.event_type,
+            .payload = ev[0].cols[0].?,
+            .event_id = job.event_id,
+            .received_at = job.received_at,
+            .occurred_at = ev[0].cols[1] orelse job.received_at,
+        }) catch {
             try failJob(conn, qid, "evaluate failed");
             continue;
         };
@@ -120,10 +173,7 @@ fn deleteJob(conn: *pg.Conn, id: []const u8) !void {
     try conn.execNoRows("DELETE FROM work_queue WHERE id = $1::bigint", &.{.{ .text = id }});
 }
 
-fn evaluateRules(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    conn: *pg.Conn,
+pub const EventCtx = struct {
     tenant_id: []const u8,
     agent_id: []const u8,
     hostname: []const u8,
@@ -131,15 +181,30 @@ fn evaluateRules(
     payload: []const u8,
     event_id: []const u8,
     received_at: []const u8,
+    occurred_at: []const u8,
+};
+
+/// Evaluate every enabled rule for one stored event. Public for the
+/// correlation fixture tests, which call it without the work queue.
+pub fn evaluateRules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    cache: *RuleCache,
+    e: EventCtx,
 ) !void {
+    // Atomic formats first, then sequence and threshold rules. Sequence rows
+    // have no event_type (their steps name it), so they are always loaded.
     const rules = try conn.exec(allocator,
         \\SELECT id::text, name, severity, operator, payload_path, match_value, mitre_techniques::text,
-        \\       format, source_definition
+        \\       format, source_definition, compiled_expression_json::text, updated_at::text,
+        \\       compile_notes::text
         \\FROM alert_rules
         \\WHERE tenant_id = $1::uuid AND is_enabled
         \\AND (event_type IS NULL OR event_type = $2)
-        \\AND format IN ('tawny_predicate','sigma','ioc','package_exposure')
-    , &.{ .{ .text = tenant_id }, .{ .text = event_type } });
+        \\AND format IN ('tawny_predicate','sigma','ioc','package_exposure','atomic','sequence','threshold','yara')
+        \\ORDER BY CASE WHEN format IN ('sequence','threshold') THEN 1 ELSE 0 END, id
+    , &.{ .{ .text = e.tenant_id }, .{ .text = e.event_type } });
     defer {
         for (rules) |row| row.deinit(allocator);
         allocator.free(rules);
@@ -149,7 +214,7 @@ fn evaluateRules(
         \\FROM suppression_rules
         \\WHERE tenant_id = $1::uuid AND is_enabled
         \\AND (expires_at IS NULL OR expires_at > now())
-    , &.{.{ .text = tenant_id }});
+    , &.{.{ .text = e.tenant_id }});
     defer {
         for (sups) |srow| srow.deinit(allocator);
         allocator.free(sups);
@@ -158,28 +223,75 @@ fn evaluateRules(
     var tbuf: [32]u8 = undefined;
     const created = util.formatRfc3339(&tbuf, now);
     // Parse once per event. Every rule and suppression reads this tree.
-    var parsed_payload = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
-        std.debug.print("detect: event {s} payload is not JSON, skipped\n", .{event_id});
+    var parsed_payload = std.json.parseFromSlice(std.json.Value, allocator, e.payload, .{}) catch {
+        std.debug.print("detect: event {s} payload is not JSON, skipped\n", .{e.event_id});
         return;
     };
     defer parsed_payload.deinit();
     const root = parsed_payload.value;
     for (rules) |row| {
+        const rule_id = row.cols[0] orelse continue;
         const format = row.cols[7] orelse "";
+        var description: ?[]u8 = null;
+        defer if (description) |d| allocator.free(d);
         if (std.mem.eql(u8, format, "package_exposure")) {
             const definition = row.cols[8] orelse continue;
-            if (!package_exposure.matches(allocator, definition, payload)) continue;
+            if (!package_exposure.matches(allocator, definition, e.payload)) continue;
+        } else if (std.mem.eql(u8, format, "yara")) {
+            // A yara_match from the agent names the YARA rule that matched;
+            // the stored rule lists the names it declares.
+            if (!std.mem.eql(u8, e.event_type, "yara_match")) continue;
+            if (!yaraRuleMatches(allocator, row.cols[11], root)) continue;
+            description = yaraDescription(allocator, root) catch null;
+        } else if (std.mem.eql(u8, format, "sequence") or std.mem.eql(u8, format, "threshold")) {
+            const json_text = row.cols[9] orelse continue;
+            const rule = (try cache.getRule(rule_id, row.cols[10] orelse "", json_text)) orelse {
+                std.debug.print("detect: rule {s} has an unusable definition, skipped\n", .{rule_id});
+                continue;
+            };
+            var scratch_state = std.heap.ArenaAllocator.init(allocator);
+            defer scratch_state.deinit();
+            const scratch = scratch_state.allocator();
+            const sev: sequence.Event = .{
+                .tenant_id = e.tenant_id,
+                .agent_id = e.agent_id,
+                .event_id = e.event_id,
+                .event_type = e.event_type,
+                .occurred_at = e.occurred_at,
+                .root = root,
+            };
+            switch (rule) {
+                .sequence => |sq| {
+                    const fired = (try sequence.apply(scratch, conn, rule_id, sq, sev)) orelse continue;
+                    description = try std.fmt.allocPrint(allocator, "Sequence complete. Events: {s}", .{fired.event_ids});
+                },
+                .threshold => |th| {
+                    const fired = (try threshold.apply(scratch, conn, rule_id, th, sev)) orelse continue;
+                    description = try std.fmt.allocPrint(allocator, "Threshold reached: {d} in {d} seconds.", .{ fired.count, th.window_seconds });
+                },
+                .atomic => continue,
+            }
+        } else if ((std.mem.eql(u8, format, "sigma") or std.mem.eql(u8, format, "atomic")) and row.cols[9] != null) {
+            // Compiled AST. Sigma rows from before #56 have none and use the
+            // single predicate below.
+            const expr = (try cache.get(rule_id, row.cols[10] orelse "", row.cols[9].?)) orelse {
+                std.debug.print("detect: rule {s} has an unusable compiled expression, skipped\n", .{rule_id});
+                continue;
+            };
+            if (!ast.eval(.{ .allocator = allocator }, expr, root)) continue;
+        } else if (std.mem.eql(u8, format, "atomic")) {
+            continue;
         } else {
             switch (match.evaluate(root, .{ .operator = row.cols[3], .path = row.cols[4], .want = row.cols[5] })) {
                 .match => {},
                 .no_match => continue,
                 .invalid => {
-                    std.debug.print("detect: rule {s} has no usable path or operator, skipped\n", .{row.cols[0] orelse "?"});
+                    std.debug.print("detect: rule {s} has no usable path or operator, skipped\n", .{rule_id});
                     continue;
                 },
             }
         }
-        if (matchingSuppression(sups, row.cols[0].?, agent_id, root)) |sid| {
+        if (matchingSuppression(sups, rule_id, e.agent_id, root)) |sid| {
             try conn.execNoRows(
                 \\UPDATE suppression_rules
                 \\SET suppressed_count = suppressed_count + 1, last_suppressed_at = $2::timestamptz
@@ -187,32 +299,72 @@ fn evaluateRules(
             , &.{ .{ .text = sid }, .{ .text = created } });
             continue;
         }
-        const title = try std.fmt.allocPrint(allocator, "{s} on {s}", .{ row.cols[1] orelse "rule", hostname });
-        defer allocator.free(title);
-        const inserted = try conn.exec(allocator,
-            \\INSERT INTO alerts (tenant_id, alert_rule_id, agent_id, telemetry_event_id, telemetry_received_at,
-            \\  severity, status, title, created_at)
-            \\VALUES ($1::uuid, $2::uuid, $3::uuid, $4::bigint, $5::timestamptz, $6, 'open', $7, $8::timestamptz)
-            \\RETURNING id::text
-        , &.{
-            .{ .text = tenant_id },
-            .{ .text = row.cols[0].? },
-            .{ .text = agent_id },
-            .{ .text = event_id },
-            .{ .text = received_at },
-            .{ .text = row.cols[2] orelse "medium" },
-            .{ .text = title },
-            .{ .text = created },
-        });
-        defer {
-            for (inserted) |irow| irow.deinit(allocator);
-            allocator.free(inserted);
-        }
-        if (inserted.len == 0) continue;
-        enqueueSink(allocator, conn, tenant_id, inserted[0].cols[0].?) catch |err| {
-            std.debug.print("sink enqueue failed: {s}\n", .{@errorName(err)});
-        };
+        try raiseAlert(allocator, conn, e, row.cols[0].?, row.cols[1] orelse "rule", row.cols[2] orelse "medium", description, created);
     }
+}
+
+fn yaraRuleMatches(allocator: std.mem.Allocator, names_text: ?[]const u8, root: std.json.Value) bool {
+    const text = names_text orelse return false;
+    if (root != .object) return false;
+    const rule = root.object.get("rule") orelse return false;
+    if (rule != .string) return false;
+    const names = util.parsePgTextArray(allocator, text) catch return false;
+    defer {
+        for (names) |n| allocator.free(n);
+        allocator.free(names);
+    }
+    for (names) |n| {
+        if (std.mem.eql(u8, n, rule.string)) return true;
+    }
+    return false;
+}
+
+fn yaraDescription(allocator: std.mem.Allocator, root: std.json.Value) ![]u8 {
+    var b1: [64]u8 = undefined;
+    var b2: [64]u8 = undefined;
+    var b3: [64]u8 = undefined;
+    const rule = ast.firstScalar(root, "rule", &b1) orelse "?";
+    const path = ast.firstScalar(root, "file.path", &b2) orelse "?";
+    const sha = ast.firstScalar(root, "file.hashes.sha256", &b3) orelse "?";
+    return std.fmt.allocPrint(allocator, "YARA rule {s} matched {s} (sha256 {s}).", .{ rule, path, sha });
+}
+
+fn raiseAlert(
+    allocator: std.mem.Allocator,
+    conn: *pg.Conn,
+    e: EventCtx,
+    rule_id: []const u8,
+    rule_name: []const u8,
+    severity: []const u8,
+    description: ?[]const u8,
+    created: []const u8,
+) !void {
+    const title = try std.fmt.allocPrint(allocator, "{s} on {s}", .{ rule_name, e.hostname });
+    defer allocator.free(title);
+    const inserted = try conn.exec(allocator,
+        \\INSERT INTO alerts (tenant_id, alert_rule_id, agent_id, telemetry_event_id, telemetry_received_at,
+        \\  severity, status, title, description, created_at)
+        \\VALUES ($1::uuid, $2::uuid, $3::uuid, $4::bigint, $5::timestamptz, $6, 'open', $7, $8, $9::timestamptz)
+        \\RETURNING id::text
+    , &.{
+        .{ .text = e.tenant_id },
+        .{ .text = rule_id },
+        .{ .text = e.agent_id },
+        .{ .text = e.event_id },
+        .{ .text = e.received_at },
+        .{ .text = severity },
+        .{ .text = title },
+        if (description) |d| .{ .text = d } else .{ .null = {} },
+        .{ .text = created },
+    });
+    defer {
+        for (inserted) |irow| irow.deinit(allocator);
+        allocator.free(inserted);
+    }
+    if (inserted.len == 0) return;
+    enqueueSink(allocator, conn, e.tenant_id, inserted[0].cols[0].?) catch |err| {
+        std.debug.print("sink enqueue failed: {s}\n", .{@errorName(err)});
+    };
 }
 
 fn matchingSuppression(rules: []const pg.Row, rule_id: []const u8, agent_id: []const u8, root: std.json.Value) ?[]const u8 {
@@ -598,6 +750,88 @@ test "package exposure inventory alerts only after drain" {
     try std.testing.expectEqualStrings("1", hit_alerts);
     try std.testing.expectEqualStrings("0", miss_alerts);
     try std.testing.expect(finished >= 2);
+    try conn.execSimple("ROLLBACK");
+}
+
+const sigma_agent = "00000000-0000-0000-0000-00000000da01";
+const sigma_rule = "00000000-0000-0000-0000-00000000da02";
+
+test "compiled sigma rule with several selections alerts only on the full match" {
+    const url = std.testing.environ.getPosix("TAWNY_DATABASE_URL") orelse return;
+    if (url.len == 0) return;
+    const sigma = @import("../detect/sigma.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const conn = try pg.Conn.connect(allocator, io, url);
+    defer {
+        conn.close();
+        allocator.destroy(conn);
+    }
+    try conn.execSimple("BEGIN");
+    errdefer conn.execSimple("ROLLBACK") catch {};
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const map = try arena.create(sigma.FieldMap);
+    map.* = try sigma.FieldMap.load(arena);
+    const compiled = try sigma.compile(arena, map,
+        \\title: office spawns encoded powershell
+        \\logsource: {product: windows, category: process_creation}
+        \\detection:
+        \\  parent:
+        \\    ParentImage|endswith: '\WINWORD.EXE'
+        \\  child:
+        \\    Image|endswith: '\powershell.exe'
+        \\    CommandLine|windash|contains: ' -enc '
+        \\  filter:
+        \\    CommandLine|contains: 'sigma-db-allowed'
+        \\  condition: parent and child and not filter
+    );
+    try std.testing.expect(compiled.status == .supported);
+
+    try exec(conn,
+        \\INSERT INTO agents (
+        \\  id, tenant_id, hostname, operating_system, os_version, agent_version,
+        \\  architecture, enrolled_at, status
+        \\) VALUES ($1, $2, 'sigma-host', 'windows', 'test', '0', 'x64', now(), 'online')
+    , &.{ .{ .text = sigma_agent }, .{ .text = default_tenant } });
+    try exec(conn,
+        \\INSERT INTO alert_rules (
+        \\  id, tenant_id, name, format, severity, operator, event_type,
+        \\  compiled_expression_json, compile_status, created_at, updated_at
+        \\) VALUES ($1, $2, 'sigma-db-rule', 'sigma', 'high', 'exists', 'process_start', $3::jsonb, 'supported', now(), now())
+    , &.{ .{ .text = sigma_rule }, .{ .text = default_tenant }, .{ .text = compiled.expr_json } });
+
+    const payloads = [_][]const u8{
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell /enc AAAA\"},\"parent\":{\"image\":\"C:\\\\Office\\\\WINWORD.EXE\"}}",
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell -enc AAAA\"},\"parent\":{\"image\":\"C:\\\\x\\\\explorer.exe\"}}",
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell -enc sigma-db-allowed\"},\"parent\":{\"image\":\"C:\\\\Office\\\\WINWORD.EXE\"}}",
+    };
+    const want = [_][]const u8{ "1", "0", "0" };
+    try exec(conn, "UPDATE work_queue SET locked_until = now() + interval '1 hour' WHERE kind = 'detect'", &.{});
+    var ids: [payloads.len][]u8 = undefined;
+    for (payloads, 0..) |pl, i| {
+        const rows = try conn.exec(allocator,
+            \\INSERT INTO telemetry_events (received_at, tenant_id, agent_id, event_type, occurred_at, payload)
+            \\VALUES (now(), $1, $2, 'process_start', now(), $3::jsonb)
+            \\RETURNING id::text, received_at::text
+        , &.{ .{ .text = default_tenant }, .{ .text = sigma_agent }, .{ .text = pl } });
+        defer {
+            for (rows) |row| row.deinit(allocator);
+            allocator.free(rows);
+        }
+        ids[i] = try allocator.dupe(u8, rows[0].cols[0].?);
+        try enqueue(allocator, conn, default_tenant, sigma_agent, "sigma-host", "process_start", rows[0].cols[0].?, rows[0].cols[1].?);
+    }
+    defer for (ids) |id| allocator.free(id);
+    _ = try drain(allocator, io, conn);
+    for (ids, 0..) |id, i| {
+        const n = try scalar(allocator, conn, "SELECT count(*)::text FROM alerts WHERE telemetry_event_id = $1::bigint AND alert_rule_id = $2::uuid", &.{ .{ .text = id }, .{ .text = sigma_rule } });
+        defer allocator.free(n);
+        std.debug.print("sigma_db event={d} alerts={s}\n", .{ i, n });
+        try std.testing.expectEqualStrings(want[i], n);
+    }
     try conn.execSimple("ROLLBACK");
 }
 

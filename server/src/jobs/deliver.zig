@@ -271,6 +271,7 @@ fn pascalEvent(event_type: []const u8) []const u8 {
     if (std.mem.eql(u8, event_type, "powershell_script_block")) return "PowershellScriptBlock";
     if (std.mem.eql(u8, event_type, "sensor_health")) return "SensorHealth";
     if (std.mem.eql(u8, event_type, "agent_health")) return "AgentHealth";
+    if (std.mem.eql(u8, event_type, "yara_match")) return "YaraMatch";
     return event_type;
 }
 

@@ -279,6 +279,7 @@ def enroll_host(
     return {
         "agent_id": agent_id,
         "jwt": parsed["jwt"],
+        "yara_rule_key": parsed.get("yara_rule_key"),
         "hostname": hostname,
         "config": parsed["config"],
         "summary": summary,
@@ -801,13 +802,75 @@ level: high
         rule_yaml = f"""title: {uniq("badmod")}
 detection:
   selection:
-    processes.name|re: suspicious.exe
+    processes.name|re: '(suspicious)\\1.exe'
   condition: selection
 level: high
 """
+        # `re` compiles now (#56); a backreference is still outside the
+        # RE2-safe subset, so the whole rule is refused.
         code, _parsed, raw = call("POST", "/api/alert-rules/sigma", {"rule_yaml": rule_yaml})
         self.assertEqual(code, 400, raw[:800])
         self.assertIn("Unsupported Sigma field modifier 're'", raw)
+        self.assertIn("backreferences", raw)
+
+    def test_yara_pack_is_signed_and_yara_match_alerts(self) -> None:
+        """#56: tenant YARA rules bundle into a pack signed with the key sent at enrolment."""
+        import tempfile
+
+        agent = windows_agent()
+        rule_name = "ct_" + uuid.uuid4().hex[:12]
+        source = f'rule {rule_name} : contract {{ strings: $a = "{uniq("marker")}" condition: $a }}'
+        code, rule, raw = call("POST", "/api/alert-rules/yara", {"rule_source": source, "severity": "high"})
+        self.assertEqual(code, 201, raw[:800])
+        assert isinstance(rule, dict)
+        self.assertEqual(rule.get("yara_rules"), [rule_name])
+
+        key_code, key, key_raw = call("GET", "/api/yara/rule-key")
+        self.assertEqual(key_code, 200, key_raw[:500])
+        assert isinstance(key, dict)
+        self.assertEqual(key.get("public_key"), agent.get("yara_rule_key"))
+
+        pack_code, pack, pack_raw = call("POST", "/api/agent/yara-rules", {}, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(pack_code, 200, pack_raw[:500])
+        assert isinstance(pack, dict)
+        self.assertEqual(pack.get("format"), "tawny-yara-pack-v1")
+        src = base64.b64decode(pack["rules_b64"])
+        self.assertIn(rule_name.encode(), src)
+        self.assertEqual(hashlib.sha256(src).hexdigest(), pack["sha256"])
+        signed = f"tawny-yara-pack-v1\n{pack['tenant_id']}\n{pack['version']}\n{pack['created_at']}\n{pack['sha256']}\n".encode()
+        raw_pub = base64.b64decode(key["public_key"])
+        # SubjectPublicKeyInfo DER for Ed25519 is a fixed 12-byte prefix plus the key.
+        der = bytes.fromhex("302a300506032b6570032100") + raw_pub
+        with tempfile.TemporaryDirectory(prefix="tawny-ct-yara-") as tmp:
+            pub = os.path.join(tmp, "pub.der")
+            msg = os.path.join(tmp, "msg")
+            sig = os.path.join(tmp, "sig")
+            with open(pub, "wb") as h:
+                h.write(der)
+            with open(msg, "wb") as h:
+                h.write(signed)
+            with open(sig, "wb") as h:
+                h.write(base64.b64decode(pack["signature"]))
+            ok = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-keyform", "DER", "-inkey", pub, "-rawin", "-in", msg, "-sigfile", sig], capture_output=True)
+            self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+            with open(msg, "wb") as h:
+                h.write(signed.replace(str(pack["version"]).encode(), str(pack["version"] + 1).encode()))
+            bad = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-keyform", "DER", "-inkey", pub, "-rawin", "-in", msg, "-sigfile", sig], capture_output=True)
+            self.assertNotEqual(bad.returncode, 0)
+
+        hb_code, hb, hb_raw = call("POST", "/api/agents/heartbeat", {"agent_version": "0.1.0", "uptime_seconds": 1, "buffer_depth": 0}, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(hb_code, 200, hb_raw[:500])
+        assert isinstance(hb, dict)
+        self.assertEqual(hb.get("yara_pack_version"), pack["version"])
+
+        path = f"C:\\Users\\a\\Downloads\\{uniq('drop')}.exe"
+        ev_code, _ev, ev_raw = post_events(
+            agent,
+            [event("yara_match", {"rule": rule_name, "tags": ["contract"], "file": {"path": path, "hashes": {"sha256": "00" * 32}}, "trigger": "file_event"})],
+        )
+        self.assertEqual(ev_code, 202, ev_raw[:500])
+        found = wait_alerts(lambda row: isinstance(row.get("title"), str) and rule.get("name", "") in row["title"])
+        self.assertEqual(found[0].get("severity"), "high")
 
     def test_stix_ioc_creates_alert(self) -> None:
         agent = windows_agent()

@@ -427,6 +427,15 @@ Operators in use today: `exists`, `equals`, `contains`, `startswith`,
 gone. The rest of the list above arrives with the Sigma compiler (#56). See
 `docs/detections.md`.
 
+**Status (#56):** sequence and threshold rules run in the detect job after
+atomic matching (`server/src/detect/sequence.zig`, `threshold.zig`). State
+is in `sequence_state` (keyed by rule and `by` key, with `expires_at`) and
+`threshold_counters` (one row per matching event), both on event time, so
+it survives a restart; the purge job removes expired rows. The rule format
+is in `rules/README.md` and the starter rules in `rules/builtin/` are
+seeded per tenant. Relationship and rarity rules are not built yet.
+Detections still produce alerts, not evidence items.
+
 Each detection outputs **evidence items**: `{rule_id, key, weight, confidence,
 severity, attack[], entity_ids[], event_ids[], explanation}`.
 
@@ -449,6 +458,52 @@ severity, attack[], entity_ids[], event_ids[], explanation}`.
 - CI job compiles a pinned SigmaHQ `rules/windows` snapshot and publishes
   counts (imported/supported/rejected by reason) to
   `docs/sigma-compatibility.md`; regression = test failure.
+
+**Status (#56).** Built in `server/src/detect/sigma.zig` (compiler),
+`yaml.zig` (YAML subset), `regex.zig` (linear-time `re` with a step limit)
+and `ast.zig` (AST, JSON form, evaluator over `match.zig` paths). The AST is
+stored in `alert_rules.compiled_expression_json` with `compile_status` and
+`compile_notes` (migration 0005). The pinned snapshot is
+`rules/windows/process_creation` only (`rules/sigma/sigmahq/`, DRL 1.1);
+other `rules/windows` folders need event types the agent does not send yet.
+The `sigma-compat` CI job fails when the compiled count drops below
+`rules/sigma/sigmahq/baseline-supported.txt`. Not built: `N of` with N
+above 1, aggregations and `timeframe` (use a Tawny threshold rule),
+correlation rules, `fieldref`. `wide` is only accepted with `base64` or
+`base64offset`.
+
+### YARA
+
+File scanning with YARA runs on the agent through libyara, never on the
+server. Files stay on the host unless an analyst collects them.
+
+- **Build.** libyara 4.6.0 (BSD-3-Clause) is a lazy, pinned source dependency
+  in `agent/build.zig.zon`, compiled with Zig's C compiler in
+  `agent/build.zig` behind `-Dyara=true`. The default build doesn't fetch or
+  link it. Modules that need other libraries (magic, cuckoo, hash, dotnet,
+  dex, macho, authenticode) and OpenSSL are off, so `pe.imphash()` and
+  signature checks are not available. Process memory scanning is off on
+  macOS (`proc/none.c`) because `mach_vm.h` needs the macOS SDK; the agent
+  only scans files and buffers.
+- **Agent.** `agent/src/yara.zig` (compile, scan buffer, scan file, timeout,
+  size cap; files are read into memory, not mapped). `yara_scanner.zig` runs
+  the triggers: a created or modified executable or script in a watched
+  folder (file events over `fim_paths`), the `yara_scan` response action
+  (`{"path": ...}`, a file or one folder), and a scheduled scan of startup and
+  temp folders (`yara_scan_interval_seconds`, default 3600). Each match is a
+  `yara_match` event with rule, tags, file path, size, SHA-256 and trigger.
+- **Rule packs.** The server bundles a tenant's enabled `format = 'yara'`
+  rules (`POST /api/agent/yara-rules`) and signs them with Ed25519
+  (`tawny-yara-pack-v1`: tenant, version, time and SHA-256 of the source).
+  The agent pins the public key from the enrolment reply (or
+  `yara_rule_key` in config) and refuses unsigned, tampered, wrong-key or
+  older packs, keeping the rules it has. The heartbeat reply carries
+  `yara_pack_version` so agents fetch only on change.
+- **Key.** `TAWNY_RULE_SIGNING_KEY`, or derived from the agent JWT seed. A
+  separate key from the JWT key. Issue #57 adds a server action key; that
+  work can merge the two behind `state.rulePackKey`.
+- **Alerts.** A `yara_match` raises an alert through the `yara` rule that
+  declares the matched rule name, so suppressions and sinks work as usual.
 
 ### IOC index
 

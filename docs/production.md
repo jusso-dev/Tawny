@@ -10,6 +10,7 @@
 | `TAWNY_DATABASE_URL` | `postgres://tawny:<password>@postgres:5432/tawny` |
 | `TAWNY_INTEGRATION_ENCRYPTION_KEY` | ≥ 32 random bytes. Losing it makes stored integration secrets unreadable. |
 | `TAWNY_AGENT_JWT_SEED` | 64 hex characters (`openssl rand -hex 32`). Stable Ed25519 seed for newly issued agent JWTs. `tawny-server serve` refuses to start when it's missing or malformed. `TAWNY_DEV=1` swaps that for a random seed per start, for local development only: every agent has to re-enrol after a restart. |
+| `TAWNY_RULE_SIGNING_KEY` | Optional, 64 hex characters. Ed25519 seed that signs YARA rule packs. When unset the key is derived from `TAWNY_AGENT_JWT_SEED` (HKDF with its own label), so it stays the same across restarts. Agents pin the public key at enrolment and refuse packs signed by another key, so changing it means re-enrolling agents or setting `yara_rule_key` in their config. |
 | `TAWNY_REQUIRE_SIGNED_BATCHES` | On by default. Telemetry from an agent with no stored device key is refused with a 401. Set `off` only while older agents that enrolled without a key are re-enrolled. |
 | `TAWNY_AGENT_JWT_SIGNING_KEY_PEM` | RSA PEM used only to verify tokens issued before the Ed25519 cutover. |
 | `TAWNY_PUBLIC_URL` | `https://…` origin browsers and enrollment commands use. |

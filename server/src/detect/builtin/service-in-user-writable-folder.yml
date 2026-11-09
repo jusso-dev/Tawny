@@ -1,0 +1,15 @@
+id: tawny-builtin:service-in-user-writable-folder
+title: New service runs from a user-writable folder
+description: A service was installed (System 7045) whose image path is under a user profile, ProgramData or a temp folder.
+kind: atomic
+event_type: service_create
+level: high
+tags:
+  - attack.persistence
+  - attack.t1543.003
+where:
+  ImagePath|contains:
+    - '\Users\'
+    - '\ProgramData\'
+    - '\AppData\'
+    - '\Temp\'

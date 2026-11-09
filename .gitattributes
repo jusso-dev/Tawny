@@ -3,3 +3,6 @@ agent/src/platform/windows/testdata/** -text eol=lf
 agent/src/platform/linux/testdata/** -text eol=lf
 server/fixtures/** -text eol=lf
 schemas/** -text eol=lf
+rules/** -text eol=lf
+server/src/detect/sigma-field-map.yaml -text eol=lf
+server/src/detect/builtin/** -text eol=lf

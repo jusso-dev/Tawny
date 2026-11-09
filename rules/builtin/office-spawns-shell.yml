@@ -1,0 +1,23 @@
+id: tawny-builtin:office-spawns-shell
+title: Office application starts PowerShell or cmd
+description: Word, Excel, PowerPoint, Outlook, Access, Publisher or OneNote starting powershell.exe, pwsh.exe or cmd.exe. Common for malicious macros and documents.
+kind: atomic
+event_type: process_start
+level: high
+tags:
+  - attack.execution
+  - attack.t1204.002
+  - attack.t1059.001
+where:
+  ParentImage|endswith:
+    - '\winword.exe'
+    - '\excel.exe'
+    - '\powerpnt.exe'
+    - '\outlook.exe'
+    - '\msaccess.exe'
+    - '\mspub.exe'
+    - '\onenote.exe'
+  Image|endswith:
+    - '\powershell.exe'
+    - '\pwsh.exe'
+    - '\cmd.exe'

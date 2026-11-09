@@ -105,6 +105,52 @@ fn walk(cur: std.json.Value, rest: []const u8, op: Operator, want: []const u8, d
     }
 }
 
+/// Walk a dotted path like `matchPath`, calling `pred(context, value)` on
+/// each value at the end (arrays fan out). True when any call is true. The
+/// Sigma AST evaluator uses this for operators `matchValue` doesn't cover.
+pub fn anyAtPath(root: std.json.Value, path: []const u8, context: anytype, comptime pred: fn (@TypeOf(context), std.json.Value) bool) bool {
+    if (path.len == 0) return false;
+    return visit(root, path, context, pred, 0);
+}
+
+fn visit(cur: std.json.Value, rest: []const u8, context: anytype, comptime pred: fn (@TypeOf(context), std.json.Value) bool, depth: usize) bool {
+    if (depth > max_depth) return false;
+    if (cur == .array) {
+        for (cur.array.items) |item| {
+            if (visit(item, rest, context, pred, depth + 1)) return true;
+        }
+        return false;
+    }
+    if (rest.len == 0) return pred(context, cur);
+    const dot = std.mem.indexOfScalar(u8, rest, '.');
+    const key = if (dot) |d| rest[0..d] else rest;
+    const next = if (dot) |d| rest[d + 1 ..] else "";
+    switch (cur) {
+        .object => |obj| {
+            const child = obj.get(key) orelse return false;
+            return visit(child, next, context, pred, depth + 1);
+        },
+        else => return false,
+    }
+}
+
+/// Text form of a scalar JSON value, as `matchValue` sees it. Null for
+/// objects, arrays and null.
+pub fn scalarText(value: std.json.Value, buf: *[64]u8) ?[]const u8 {
+    return switch (value) {
+        .string => |s| s,
+        .number_string => |s| s,
+        .integer => |n| std.fmt.bufPrint(buf, "{d}", .{n}) catch null,
+        .float => |f| std.fmt.bufPrint(buf, "{d}", .{f}) catch null,
+        .bool => |b| if (b) "true" else "false",
+        else => null,
+    };
+}
+
+pub fn numberValue(value: std.json.Value) ?f64 {
+    return numberOf(value);
+}
+
 /// A rule or suppression predicate read from the database.
 pub const Predicate = struct {
     operator: ?[]const u8,

@@ -1,0 +1,171 @@
+# Sigma field and logsource map for the Tawny Sigma compiler
+# (server/src/detect/sigma.zig). The server embeds a copy at
+# server/src/detect/sigma-field-map.yaml; a test fails when the two differ.
+#
+# fields: Sigma field name to Tawny payload path. Forms:
+#   Name: path                      the value at that dotted path
+#   Name: {join: [a, b], sep: '\'}  `a<sep>b` built from two paths. Used where
+#                                   the agent splits one Windows value in two
+#                                   (DOMAIN\user, registry key\value).
+#   Name: {hashes: path}            Sysmon `ALGO=hex` values become a match on
+#                                   `path.<algo>` (status supported_with_notes)
+#   Name: {path: p, values: {...}}  the value is rewritten before matching
+# A field not listed here, and not already a dotted Tawny path, rejects the
+# whole rule.
+#
+# logsources: Sigma logsource to Tawny event type. `event_ids` picks the
+# event type from the rule's EventID values (Security and System channels).
+# `keyword_fields` lists the only fields a Sigma keyword list is matched
+# against; there is no whole-payload text search.
+
+fields:
+  # Process (Sysmon 1, Security 4688 fallback)
+  Image: process.image
+  OriginalFileName: process.original_file_name
+  CommandLine: process.command_line
+  CurrentDirectory: process.cwd
+  Description: process.description
+  Product: process.product
+  Company: process.company
+  FileVersion: process.file_version
+  IntegrityLevel: process.integrity_level
+  LogonId: process.logon_id
+  ProcessId: process.pid
+  ProcessGuid: process.guid
+  TerminalSessionId: process.session_id
+  User:
+    join: [process.user.domain, process.user.name]
+    sep: '\'
+  Hashes:
+    hashes: process.hashes
+  ParentImage: parent.image
+  ParentCommandLine: parent.command_line
+  ParentProcessId: parent.pid
+  ParentProcessGuid: parent.guid
+  ParentUser:
+    join: [parent.user.domain, parent.user.name]
+    sep: '\'
+  # Security 4688 names
+  NewProcessName: process.image
+  ParentProcessName: parent.image
+  # File (Sysmon 11, 23, 26)
+  TargetFilename: file.path
+  CreationUtcTime: file.creation_time
+  # Network (Sysmon 3)
+  DestinationIp: network.dst_ip
+  DestinationPort: network.dst_port
+  DestinationHostname: network.dst_hostname
+  DestinationPortName: network.dst_port_name
+  DestinationIsIpv6: network.ipv6
+  SourceIp: network.src_ip
+  SourcePort: network.src_port
+  SourceHostname: network.src_hostname
+  Protocol: network.protocol
+  Initiated:
+    path: network.direction
+    values:
+      'true': outbound
+      'false': inbound
+  # DNS (Sysmon 22)
+  QueryName: dns.query
+  QueryStatus: dns.status
+  QueryResults: dns.answers
+  # Registry (Sysmon 12, 13, 14)
+  TargetObject:
+    join: [registry.key, registry.value_name]
+    sep: '\'
+  Details: registry.data
+  EventType: registry.operation
+  NewName: registry.new_name
+  # PowerShell 4104
+  ScriptBlockText: script_block.text
+  ScriptBlockId: script_block.id
+  # System 7045
+  ServiceName: service.name
+  ImagePath: service.image_path
+  ServiceType: service.type
+  StartType: service.start_type
+  AccountName: service.account
+  # Security 4624, 4625, 4672
+  TargetUserName: user.name
+  TargetDomainName: user.domain
+  TargetUserSid: user.sid
+  SubjectUserName: subject.name
+  SubjectDomainName: subject.domain
+  SubjectUserSid: subject.sid
+  LogonType: logon.type
+  LogonProcessName: logon.process
+  AuthenticationPackageName: logon.auth_package
+  WorkstationName: logon.workstation
+  Status: logon.status
+  SubStatus: logon.sub_status
+  IpAddress: network.src_ip
+  IpPort: network.src_port
+  ProcessName: process.image
+  PrivilegeList: privileges
+  # Every Windows event
+  EventID: event_id
+  Provider_Name: provider
+  Channel: channel
+
+logsources:
+  - product: windows
+    category: process_creation
+    event_type: process_start
+    keyword_fields: [process.command_line]
+  - product: linux
+    category: process_creation
+    event_type: process_start
+    keyword_fields: [process.command_line]
+  - product: macos
+    category: process_creation
+    event_type: process_start
+    keyword_fields: [process.command_line]
+  - product: windows
+    category: network_connection
+    event_type: network_connect
+  - product: windows
+    category: dns_query
+    event_type: dns_query
+  - product: windows
+    category: registry_set
+    event_type: registry_set
+  - product: windows
+    category: registry_add
+    event_type: registry_create
+  - product: windows
+    category: registry_delete
+    event_type: registry_delete
+  - product: windows
+    category: registry_rename
+    event_type: registry_rename
+  - product: windows
+    category: file_event
+    event_type: file_create
+  - product: windows
+    category: file_delete
+    event_type: file_delete
+  - product: windows
+    category: image_load
+    event_type: image_load
+  - product: windows
+    category: create_remote_thread
+    event_type: remote_thread
+  - product: windows
+    category: process_access
+    event_type: process_access
+  - product: windows
+    category: ps_script
+    event_type: powershell_script_block
+    keyword_fields: [script_block.text]
+  - product: windows
+    service: security
+    event_ids:
+      4624: user_logon
+      4625: user_logon_failed
+      4672: special_privileges
+      4688: process_start
+  - product: windows
+    service: system
+    event_ids:
+      7045: service_create

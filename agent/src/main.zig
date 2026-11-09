@@ -18,6 +18,7 @@ const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
 const windows_events = @import("collectors/windows_events.zig");
 const response_actions = @import("response_actions.zig");
+const yara_scanner = @import("yara_scanner.zig");
 const entity = @import("entity.zig");
 const iox = @import("io_compat.zig");
 const lifecycle = @import("lifecycle.zig");
@@ -136,6 +137,17 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     defer eventlog.deinit();
     eventlog.setEntities(&entities);
 
+    // YARA: rules only from a pack signed by the pinned server key.
+    const pinned_key = if (cfg.yara_rule_key == null) @import("yara_key.zig").load(alloc, cfg.state_path) else null;
+    defer if (pinned_key) |k| alloc.free(k);
+    var yara = yara_scanner.Scanner{
+        .alloc = alloc,
+        .public_key = yaraRuleKey(cfg.yara_rule_key orelse pinned_key),
+        .options = .{ .timeout_seconds = cfg.yara_timeout_seconds, .max_file_bytes = cfg.yara_max_file_bytes },
+    };
+    defer yara.deinit();
+    var yara_timer = try iox.Timer.start();
+
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
     var mcp = mcp_collector.Scanner.init(alloc);
@@ -181,7 +193,14 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
                         std.debug.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
                     };
                 }
+                if (heartbeat.yara_pack_version > yara.pack_version and yara.public_key != null) {
+                    refreshYaraPack(alloc, &http, &yara);
+                }
                 for (heartbeat.actions) |action| {
+                    if (std.mem.eql(u8, action.action_type, "yara_scan")) {
+                        runYaraAction(alloc, &http, &yara, &buf, action);
+                        continue;
+                    }
                     response_actions.execute(alloc, &http, action) catch |err| {
                         std.debug.print("response action {s} failed: {s}\n", .{ action.id, @errorName(err) });
                     };
@@ -293,10 +312,21 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         if (fs_events_timer.read() / std.time.ns_per_s >= cfg.fs_events_interval_seconds) {
             fs_events_timer.reset();
             if (fs_watcher.collectEvents()) |events| {
+                if (yara.rules != null) {
+                    if (yara.onFileEvents(events)) |hits| emitBatch(&buf, "yara_match", hits, alloc) else |err| {
+                        std.debug.print("yara file scan failed: {s}\n", .{@errorName(err)});
+                    }
+                }
                 emitBatch(&buf, "file_event", events, alloc);
             } else |err| {
                 std.debug.print("fs_events collector failed: {s}\n", .{@errorName(err)});
             }
+        }
+
+        if (lifecycle.shouldStop()) break;
+        if (cfg.yara_scan_interval_seconds > 0 and yara.rules != null and yara_timer.read() / std.time.ns_per_s >= cfg.yara_scan_interval_seconds) {
+            yara_timer.reset();
+            scheduledYaraScan(alloc, &yara, &buf);
         }
 
         if (lifecycle.shouldStop()) break;
@@ -393,6 +423,10 @@ test "main module loads" {
     _ = iox;
     _ = entity;
     _ = @import("schema_check.zig");
+    _ = @import("yara.zig");
+    _ = @import("rule_pack.zig");
+    _ = @import("yara_scanner.zig");
+    _ = @import("yara_key.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Windows event log parsing and mapping are pure too.
@@ -403,6 +437,76 @@ test "main module loads" {
         _ = @import("platform/macos/dnslog.zig");
     }
     if (builtin.target.os.tag == .windows) _ = windows_service;
+}
+
+fn yaraRuleKey(text: ?[]const u8) ?std.crypto.sign.Ed25519.PublicKey {
+    const b64 = text orelse return null;
+    var raw: [32]u8 = undefined;
+    const dec = std.base64.standard.Decoder;
+    const n = dec.calcSizeForSlice(b64) catch return null;
+    if (n != raw.len) return null;
+    dec.decode(&raw, b64) catch return null;
+    return std.crypto.sign.Ed25519.PublicKey.fromBytes(raw) catch null;
+}
+
+fn refreshYaraPack(alloc: std.mem.Allocator, http: *transport.Client, yara: *yara_scanner.Scanner) void {
+    const pack = http.fetchYaraPack() catch |err| {
+        std.debug.print("yara pack fetch failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer alloc.free(pack);
+    yara.loadPack(pack) catch |err| {
+        // Unsigned, tampered or wrong-key packs land here; old rules stay.
+        std.debug.print("yara pack refused: {s}\n", .{@errorName(err)});
+    };
+}
+
+/// `yara_scan` response action: payload `{"path": "..."}`, a file or a folder.
+fn runYaraAction(alloc: std.mem.Allocator, http: *transport.Client, yara: *yara_scanner.Scanner, buf: *buffer.Buffer, action: transport.ResponseAction) void {
+    const report = struct {
+        fn send(h: *transport.Client, a: transport.ResponseAction, status: []const u8, msg: []const u8) void {
+            h.reportActionResult(a.id, a.execution_token, status, msg) catch |err| {
+                std.debug.print("yara_scan result report failed: {s}\n", .{@errorName(err)});
+            };
+        }
+    }.send;
+    if (yara.rules == null) return report(http, action, "failed", "no verified YARA rule pack on this agent");
+    const parsed = std.json.parseFromSlice(struct { path: []const u8 }, alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return report(http, action, "failed", "payload needs a path");
+    defer parsed.deinit();
+    const path = parsed.value.path;
+    if (path.len == 0 or path.len > 4096) return report(http, action, "failed", "payload needs a path");
+    const io = iox.current();
+    const is_dir = blk: {
+        var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch break :blk false;
+        d.close(io);
+        break :blk true;
+    };
+    const hits = (if (is_dir) yara.scanFolder(path, .response_action) else yara.scanPath(path, .response_action)) catch |err|
+        return report(http, action, "failed", @errorName(err));
+    const n = hits.len;
+    emitBatch(buf, "yara_match", hits, alloc);
+    var msg_buf: [64]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "scan finished, {d} match(es)", .{n}) catch "scan finished";
+    report(http, action, "succeeded", msg);
+}
+
+fn scheduledYaraScan(alloc: std.mem.Allocator, yara: *yara_scanner.Scanner, buf: *buffer.Buffer) void {
+    var env = yara_scanner.ProcessEnv{ .alloc = alloc };
+    defer env.deinit();
+    const folders = yara_scanner.scheduledFolders(alloc, &env) catch return;
+    defer {
+        for (folders) |f| alloc.free(f);
+        alloc.free(folders);
+    }
+    for (folders) |folder| {
+        if (lifecycle.shouldStop()) return;
+        const hits = yara.scanFolder(folder, .scheduled) catch |err| {
+            std.debug.print("yara scheduled scan of {s} failed: {s}\n", .{ folder, @errorName(err) });
+            continue;
+        };
+        emitBatch(buf, "yara_match", hits, alloc);
+    }
 }
 
 fn emitBatch(

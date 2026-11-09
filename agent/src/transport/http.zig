@@ -12,6 +12,8 @@ pub const HeartbeatPayload = struct {
 
 pub const HeartbeatResult = struct {
     rotated_jwt: ?[]u8 = null,
+    /// Latest signed YARA rule pack version for this tenant (0: none).
+    yara_pack_version: u64 = 0,
     actions: []ResponseAction = &.{},
 
     pub fn deinit(self: *HeartbeatResult, alloc: std.mem.Allocator) void {
@@ -106,6 +108,7 @@ pub const Client = struct {
         };
         const Parsed = struct {
             rotated_jwt: ?[]const u8 = null,
+            yara_pack_version: u64 = 0,
             actions: []const ParsedAction = &.{},
         };
         const parsed = std.json.parseFromSlice(Parsed, self.allocator, response, .{
@@ -113,7 +116,7 @@ pub const Client = struct {
         }) catch return error.InvalidHeartbeatResponse;
         defer parsed.deinit();
 
-        var result = HeartbeatResult{};
+        var result = HeartbeatResult{ .yara_pack_version = parsed.value.yara_pack_version };
         if (parsed.value.rotated_jwt) |jwt| {
             result.rotated_jwt = try self.allocator.dupe(u8, jwt);
         }
@@ -149,6 +152,12 @@ pub const Client = struct {
             result.actions = try actions.toOwnedSlice();
         }
         return result;
+    }
+
+    /// Fetch the tenant's signed YARA rule pack. The caller verifies it
+    /// (`rule_pack.verify`) before using it.
+    pub fn fetchYaraPack(self: *Client) ![]u8 {
+        return self.post("/api/agent/yara-rules", "{}");
     }
 
     pub fn reportActionResult(

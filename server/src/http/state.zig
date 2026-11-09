@@ -7,6 +7,13 @@ pub var peer_ip: []const u8 = "127.0.0.1";
 
 pub var agent_kp: ?Ed25519.KeyPair = null;
 
+/// Signs YARA rule packs for agents (#56). Set at startup from
+/// TAWNY_RULE_SIGNING_KEY like the JWT seed. Kept apart from `agent_kp`
+/// so a leaked JWT key can't sign rules. Issue #57 adds a server action key;
+/// that change can fold this key into it, keeping `rulePackKey` as the one
+/// accessor.
+pub var rule_kp: ?Ed25519.KeyPair = null;
+
 const RateBucket = struct {
     window_start: i64,
     count: u32,
@@ -61,6 +68,49 @@ pub fn configureAgentKey(io: std.Io, seed_text: ?[]const u8, dev: bool) !SeedSou
     defer std.crypto.secureZero(u8, &chosen.seed);
     agent_kp = try Ed25519.KeyPair.generateDeterministic(chosen.seed);
     return chosen.source;
+}
+
+pub const RuleKeyError = error{RuleSigningKeyMalformed};
+
+/// Rule-pack signing seed. TAWNY_RULE_SIGNING_KEY (64 hex characters) wins.
+/// When it is unset the seed is derived from the agent JWT seed with
+/// HKDF-SHA256 and a label of its own, so a deployment that only sets
+/// TAWNY_AGENT_JWT_SEED keeps the same rule key across restarts, and the two
+/// Ed25519 keys still differ. A malformed value is refused, never ignored.
+pub fn ruleSeed(rule_text: ?[]const u8, jwt_seed: [32]u8) RuleKeyError!struct { seed: [32]u8, derived: bool } {
+    const text = rule_text orelse "";
+    if (text.len == 0) {
+        const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
+        const prk = Hkdf.extract("tawny-rule-pack-v1", &jwt_seed);
+        var seed: [32]u8 = undefined;
+        Hkdf.expand(&seed, "tawny rule pack signing key", prk);
+        return .{ .seed = seed, .derived = true };
+    }
+    var seed: [32]u8 = undefined;
+    if (text.len != 64) return error.RuleSigningKeyMalformed;
+    _ = std.fmt.hexToBytes(&seed, text) catch return error.RuleSigningKeyMalformed;
+    return .{ .seed = seed, .derived = false };
+}
+
+/// Call after `configureAgentKey`.
+pub fn configureRuleKey(rule_text: ?[]const u8) !bool {
+    const jwt = agent_kp orelse return error.AgentKeyNotConfigured;
+    var jwt_seed = jwt.secret_key.seed();
+    defer std.crypto.secureZero(u8, &jwt_seed);
+    var chosen = try ruleSeed(rule_text, jwt_seed);
+    defer std.crypto.secureZero(u8, &chosen.seed);
+    rule_kp = try Ed25519.KeyPair.generateDeterministic(chosen.seed);
+    return chosen.derived;
+}
+
+/// Rule-pack signing key. Tests and one-off commands get a random key.
+pub fn rulePackKey(io: std.Io) !Ed25519.KeyPair {
+    if (rule_kp) |kp| return kp;
+    var seed: [32]u8 = undefined;
+    io.random(&seed);
+    defer std.crypto.secureZero(u8, &seed);
+    rule_kp = try Ed25519.KeyPair.generateDeterministic(seed);
+    return rule_kp.?;
 }
 
 /// Set from TAWNY_REQUIRE_SIGNED_BATCHES at startup. On unless set to 0, false or off.
@@ -177,6 +227,24 @@ test "principal and agent-events partitions do not collapse" {
     try std.testing.expect(!tooMany(io, "test-rule-imports", user_a, 1));
     try std.testing.expect(!tooMany(io, "test-hunts", user_a, 1));
     try std.testing.expect(!tooMany(io, "test-search", user_a, 1));
+}
+
+test "rule signing key: configured, derived, or refused" {
+    const jwt: [32]u8 = @splat(7);
+    try std.testing.expectError(error.RuleSigningKeyMalformed, ruleSeed("abc", jwt));
+    try std.testing.expectError(error.RuleSigningKeyMalformed, ruleSeed("zz00000000000000000000000000000000000000000000000000000000000000", jwt));
+    const a = try ruleSeed(null, jwt);
+    const b = try ruleSeed("", jwt);
+    try std.testing.expect(a.derived and b.derived);
+    try std.testing.expectEqualSlices(u8, &a.seed, &b.seed);
+    // Derived seed is not the JWT seed itself.
+    try std.testing.expect(!std.mem.eql(u8, &a.seed, &jwt));
+    const other_jwt: [32]u8 = @splat(8);
+    const c = try ruleSeed(null, other_jwt);
+    try std.testing.expect(!std.mem.eql(u8, &a.seed, &c.seed));
+    const set = try ruleSeed("00000000000000000000000000000000000000000000000000000000000000ff", jwt);
+    try std.testing.expect(!set.derived);
+    try std.testing.expectEqual(@as(u8, 0xff), set.seed[31]);
 }
 
 test "agent seed refuses missing and malformed values outside dev mode" {

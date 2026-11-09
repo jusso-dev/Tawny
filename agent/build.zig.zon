@@ -3,7 +3,14 @@
     .version = "0.1.0",
     .fingerprint = 0x2e7ba71c139fa190,
     .minimum_zig_version = "0.17.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // libyara 4.6.0 (BSD-3-Clause), only fetched with -Dyara=true.
+        .yara = .{
+            .lazy = true,
+            .url = "https://github.com/VirusTotal/yara/archive/6d47342e825e59f5d8f20874d0778332bcec83a6.tar.gz",
+            .hash = "N-V-__8AAGBmyQAlCDTQySvbjlAxtWVmZ5kulDPUU0qJmlqV",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
