@@ -40,9 +40,9 @@ Why auditd netlink:
 Costs we accept:
 
 - Audit adds per-syscall overhead on the audited syscalls. The rules are kept
-  narrow: native architecture only, `exit,always` on exec, connect (IPv4 and
-  IPv6 only where the kernel supports `saddr_fam`) and `exit_group`, plus
-  write watches on configured folders.
+  narrow: native architecture only, `exit,always` on exec, connect and
+  `exit_group`, plus write watches on `fim_paths`. Connects on Unix sockets
+  are recorded by the kernel and dropped by the agent.
 - 32-bit (compat) processes on a 64-bit kernel are not audited by these rules.
 - If the agent is killed with `SIGKILL` its rules stay loaded until the next
   start, and the kernel logs those records to the kernel log meanwhile. A clean

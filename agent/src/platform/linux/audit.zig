@@ -971,14 +971,23 @@ pub const Live = struct {
         self.rules = nativeRules(self.alloc, watch_dirs) catch |err|
             return if (err == error.OutOfMemory) error.OutOfMemory else error.UnsupportedArch;
         // Remove rules a crashed run left behind, then load ours.
-        for (self.rules) |r| _ = self.request(msg.del_rule, r) catch {};
-        for (self.rules) |r| self.request(msg.add_rule, r) catch |err| switch (err) {
-            error.DaemonPresent => {}, // EEXIST: the rule is already loaded
-            else => {
-                self.unloadRules();
-                return err;
-            },
-        };
+        for (self.rules) |r| self.request(msg.del_rule, r) catch {};
+        // The syscall rule (first) must load. A watch rule for a folder that
+        // is missing or refused is dropped and logged, not fatal.
+        for (self.rules, 0..) |*r, i| {
+            self.request(msg.add_rule, r.*) catch |err| switch (err) {
+                error.DaemonPresent => {}, // EEXIST: the rule is already loaded
+                else => {
+                    if (i == 0) {
+                        self.unloadRules();
+                        return err;
+                    }
+                    std.log.warn("audit: watch rule {d} not loaded: {s}", .{ i, @errorName(err) });
+                    self.alloc.free(r.*);
+                    r.* = &.{};
+                },
+            };
+        }
         var set = Status{ .mask = status_pid | status_backlog_limit, .pid = @intCast(std.os.linux.getpid()), .backlog_limit = @max(status.backlog_limit, 8192) };
         if (status.enabled == 0) {
             set.mask |= status_enabled;
@@ -993,7 +1002,7 @@ pub const Live = struct {
     }
 
     fn unloadRules(self: *Live) void {
-        for (self.rules) |r| self.sendOnly(msg.del_rule, r);
+        for (self.rules) |r| if (r.len > 0) self.sendOnly(msg.del_rule, r);
         for (self.rules) |r| self.alloc.free(r);
         if (self.rules.len > 0) self.alloc.free(self.rules);
         self.rules = &.{};

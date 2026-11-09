@@ -426,6 +426,80 @@ jobs:
       - name: test installer upgrade and recovery paths
         if: matrix.name == 'linux-x64'
         run: bash install/test-install.sh
+      # Linux kernel sensor (#59). Runs the agent as an unprivileged user with
+      # exactly the systemd unit's capabilities (sudo setpriv), starts 50
+      # short-lived /bin/true processes and expects at least 50 process_start
+      # events from audit netlink. If the runner refuses audit netlink the
+      # step proves the auditd log path instead and says so in the log.
+      - name: prove Linux kernel sensor (audit netlink, 50 short-lived processes)
+        if: matrix.name == 'linux-x64'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          bin="$PWD/zig-out/bin/tawny-agent"
+          caps="audit_control,audit_read,dac_read_search,kill,sys_ptrace"
+          plus="+${caps//,/,+}"
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin tawny-ci || true
+          out="$RUNNER_TEMP/sensor.out"
+          # Another audit daemon would own the socket; stop it if present.
+          sudo systemctl stop auditd 2>/dev/null || true
+          sudo setpriv --reuid=tawny-ci --regid=tawny-ci --init-groups \
+            --inh-caps="$plus" --ambient-caps="$plus" --bounding-set="-all,$plus" \
+            "$bin" --linux-sensor-dump --seconds 8 > "$out" 2>&1 &
+          dump=$!
+          for _ in $(seq 1 50); do
+            if grep -q '^READY' "$out" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          grep '^SENSOR_HEALTH' "$out"
+          source="$(sed -n 's/^READY\t\([a-z_]*\)\t.*/\1/p' "$out")"
+          echo "sensor source: $source"
+          for _ in $(seq 1 50); do /bin/true; done
+          wait "$dump"
+          tail -n 1 "$out"
+          if [[ "$source" == "audit_netlink" ]]; then
+            n="$(grep -c $'^EVENT\tprocess_start\t.*"image":"/usr/bin/true"' "$out" || true)"
+            echo "process_start events for /bin/true: $n"
+            test "$n" -ge 50
+            grep -q $'^EVENT\tprocess_start\t.*"entity_id":"[a-z2-7]\\{26\\}"' "$out"
+            grep -q $'^EVENT\tprocess_exit\t' "$out"
+            # The agent's rules are gone after a clean stop.
+            if command -v auditctl >/dev/null 2>&1 && sudo auditctl -l | grep -q 'key=tawny'; then
+              echo "audit rules left behind after a clean stop" >&2
+              exit 1
+            fi
+          else
+            echo "::warning::audit netlink was not available to the sensor (source=$source); proving the auditd log path instead"
+            log="$RUNNER_TEMP/audit.log"
+            : > "$log"
+            sudo chown tawny-ci "$log"
+            sudo setpriv --reuid=tawny-ci --regid=tawny-ci --init-groups \
+              --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
+              "$bin" --linux-sensor-dump --seconds 4 --source audit_log --audit-log "$log" > "$out" 2>&1 &
+            dump=$!
+            sleep 1
+            python3 - "$log" <<'PY'
+          import sys
+          with open(sys.argv[1], "a") as f:
+              for i in range(50):
+                  s = 7000 + i
+                  t = f"1731200200.{i:03d}"
+                  f.write(f'type=SYSCALL msg=audit({t}:{s}): arch=c000003e syscall=59 success=yes exit=0 ppid=1 pid={20000+i} uid=0 comm="true" exe="/usr/bin/true"\n')
+                  f.write(f'type=EXECVE msg=audit({t}:{s}): argc=1 a0="/bin/true"\n')
+          PY
+            wait "$dump"
+            tail -n 1 "$out"
+            n="$(grep -c $'^EVENT\tprocess_start\t' "$out" || true)"
+            test "$n" -ge 50
+          fi
+          # With no capabilities the sensor falls back and says degraded.
+          nocaps="$RUNNER_TEMP/sensor-nocaps.out"
+          sudo setpriv --reuid=tawny-ci --regid=tawny-ci --init-groups \
+            --inh-caps=-all --ambient-caps=-all --bounding-set=-all \
+            "$bin" --linux-sensor-dump --seconds 1 --audit-log /nonexistent --tetragon-export /nonexistent > "$nocaps" 2>&1
+          cat "$nocaps"
+          grep -q $'^READY\tproc_poller\tdegraded' "$nocaps"
+          grep -q '"status":"degraded"' "$nocaps"
       - name: package CI artifact
         run: |
           set -euo pipefail
