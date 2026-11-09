@@ -334,6 +334,28 @@ def signed_batch(agent_id: str, key: DeviceKey, events: list[dict], batch_id: st
     return body, signature
 
 
+def signed_batch_v2(agent_id: str, key: "DeviceKey | None", events: list[dict], batch_id: str, boot_id: str, sensor_version: str = "0.1.0") -> bytes:
+    """Schema 2 body signed over tawny-batch-v2, as agent/src/transport/http.zig builds it."""
+    parts: list[bytes] = []
+    lines = [f"tawny-batch-v2\n{agent_id}\n{batch_id}\n{boot_id}\n{sensor_version}\n".encode()]
+    for ev in events:
+        data = dumps(ev["data"])
+        parts.append(
+            b'{"event_id":"' + ev["event_id"].encode() + b'","event_type":' + dumps(ev["event_type"])
+            + b',"v":1,"ts":' + dumps(ev["ts"]) + b',"seq":' + str(ev["seq"]).encode() + b',"data":' + data + b"}"
+        )
+        lines.append(f"{ev['event_id']}|{ev['seq']}|{ev['event_type']}|1|{ev['ts']}|{hashlib.sha256(data).hexdigest()}\n".encode())
+    head = dumps({"schema": 2, "batch_id": batch_id, "agent": {"agent_id": agent_id, "sensor_version": sensor_version, "boot_id": boot_id}})
+    body = head[:-1] + b',"events":[' + b",".join(parts) + b"]"
+    if key is not None:
+        body += b',"signature":"' + key.sign(b"".join(lines)).encode() + b'"'
+    return body + b"}"
+
+
+def iso_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+
 def windows_agent() -> dict:
     global _windows
     if _windows is None:
@@ -647,6 +669,34 @@ class ContractTests(unittest.TestCase):
 
         code, _p, raw = post_events(agent, [event("system_info", {"x": 1})])
         self.assertEqual(code, 401, raw[:500])
+
+        # Schema 2 from the same agent, same key: accepted when signed over
+        # tawny-batch-v2, refused when boot_id or data is changed after signing.
+        boot = "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c"
+        v2_events = [
+            {"event_id": str(uuid.uuid4()), "event_type": "system_info", "ts": iso_now(), "seq": 3, "data": {"hostname": agent["hostname"], "n": 3}},
+        ]
+        body2 = signed_batch_v2(agent["agent_id"], key, v2_events, str(uuid.uuid4()), boot)
+        code, _p, raw = call("POST", "/api/agents/events", body2, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 202, raw[:500])
+        for before, after in ((boot.encode(), b"3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8d"), (b'"n":3', b'"n":4')):
+            v2_events[0]["event_id"] = str(uuid.uuid4())
+            fresh = signed_batch_v2(agent["agent_id"], key, v2_events, str(uuid.uuid4()), boot)
+            tampered2 = fresh.replace(before, after)
+            self.assertNotEqual(tampered2, fresh)
+            code, _p, raw = call("POST", "/api/agents/events", tampered2, auth="agent", bearer=agent["jwt"])
+            self.assertEqual(code, 401, raw[:500])
+        unsigned2 = signed_batch_v2(agent["agent_id"], None, v2_events, str(uuid.uuid4()), boot)
+        code, _p, raw = call("POST", "/api/agents/events", unsigned2, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 401, raw[:500])
+
+        # v1 and v2 rows for the same agent list together.
+        code, rows, raw = call("GET", f"/api/agents/{agent['agent_id']}/events?type=system_info&limit=50")
+        self.assertEqual(code, 200, raw[:500])
+        assert isinstance(rows, list)
+        seqs = sorted(row.get("sequence_number") for row in rows if isinstance(row, dict))
+        self.assertIn(1, seqs, raw[:800])
+        self.assertIn(3, seqs, raw[:800])
 
         code, rows, raw = call("GET", "/api/audit-logs?action=telemetry.signature_rejected&limit=500")
         self.assertEqual(code, 200, raw[:500])
@@ -1306,6 +1356,69 @@ level: high
             bearer=other["jwt"],
         )
         self.assertIn(code, (404, 401), raw[:500])
+
+    def test_v2_process_chain_builds_tree(self) -> None:
+        """Office -> PowerShell -> payload from server/fixtures as a v2 batch, plus a v1 launch, on one agent."""
+        agent = windows_agent()
+        fixture_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server", "fixtures", "process-chain-office.v2.json")
+        with open(fixture_path, encoding="utf-8") as handle:
+            batch = json.load(handle)
+        batch["agent"]["agent_id"] = agent["agent_id"]
+        batch["batch_id"] = str(uuid.uuid4())
+        # Entity ids are per agent; give this agent its own so reruns don't collide.
+        suffix = secrets.token_hex(2)
+        ids = {}
+        alphabet = "abcdefghijklmnopqrstuvwxyz234567"
+        for ev in batch["events"]:
+            ev["event_id"] = str(uuid.uuid4())
+            ev["seq"] = 1000 + ev["seq"]
+            ev["ts"] = iso_now()
+            for key in ("process", "parent"):
+                obj = ev["data"].get(key, {})
+                eid = obj.get("entity_id")
+                if eid:
+                    if eid not in ids:
+                        ids[eid] = eid[:22] + "".join(alphabet[int(c, 16) * 2] for c in suffix)
+                    obj["entity_id"] = ids[eid]
+        winword, powershell, payload = (ids[k] for k in ("7iyrf5zm6b5flyledskp3lodvm", "wxjmbxyyq7eybnyac2lfc654ka", "z64l2w3c4w3q2jhyq5jbnley3q"))
+        code, _p, raw = call("POST", "/api/agents/events", batch, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 202, raw[:500])
+
+        v1_code, _v1, v1_raw = post_events(agent, [event("process_launch", {"pid": 77, "ppid": 1, "uid": 0, "name": "legacy", "command_line": "legacy", "image_path": "/bin/legacy", "image_sha256": None, "signature": {"trusted": False, "signer": None}, "start_time_unix": now_s() - 5}, client_event_id=str(uuid.uuid4()))])
+        self.assertEqual(v1_code, 202, v1_raw[:500])
+
+        code, tree, raw = call("GET", f"/api/agents/{agent['agent_id']}/process-tree?entity_id={winword}")
+        self.assertEqual(code, 200, raw[:800])
+        assert isinstance(tree, dict)
+        self.assertEqual(tree["process"]["entity_id"], winword)
+        self.assertEqual(tree["ancestors"], [])
+        kids = [(c["entity_id"], c["depth"]) for c in tree["children"]]
+        self.assertEqual(kids, [(powershell, 1), (payload, 2)], raw[:800])
+
+        code, leaf, raw = call("GET", f"/api/agents/{agent['agent_id']}/process-tree?entity_id={payload}")
+        self.assertEqual(code, 200, raw[:800])
+        assert isinstance(leaf, dict)
+        self.assertEqual([a["entity_id"] for a in leaf["ancestors"]], [powershell, winword])
+        self.assertIsNotNone(leaf["process"]["end_time"])
+
+        code, recent, raw = call("GET", f"/api/agents/{agent['agent_id']}/process-tree")
+        self.assertEqual(code, 200, raw[:500])
+        assert isinstance(recent, dict)
+        images = [p.get("image") for p in recent["processes"]]
+        self.assertIn("/bin/legacy", images, raw[:800])
+
+        code, _p, raw = call("GET", f"/api/agents/{agent['agent_id']}/process-tree?entity_id=NOT-AN-ID")
+        self.assertEqual(code, 400, raw[:500])
+        code, _p, raw = call("GET", f"/api/agents/{agent['agent_id']}/process-tree?entity_id=aaaaaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(code, 404, raw[:500])
+        code, _p, raw = call("GET", f"/api/agents/{uuid.uuid4()}/process-tree?entity_id={winword}")
+        self.assertEqual(code, 404, raw[:500])
+
+        bad = dict(batch, batch_id=str(uuid.uuid4()))
+        bad["events"] = [dict(batch["events"][0], event_id=str(uuid.uuid4()), data={"parent": {"pid": 1}})]
+        code, _p, raw = call("POST", "/api/agents/events", bad, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 400, raw[:500])
+        self.assertIn("process.pid is required", raw)
 
     def test_revoked_agent_cannot_ingest(self) -> None:
         agent = enroll_host("rev", "windows", "11", "x64")

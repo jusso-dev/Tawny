@@ -3,14 +3,21 @@ const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 
 const spool_magic = "TWNYSP01";
-const record_magic = "EVT1";
+/// EVT1 records (older agents) carry no sequence; EVT2 records do.
+const record_magic_v1 = "EVT1";
+const record_magic = "EVT2";
 const spool_header_len: usize = 24;
 const record_header_len: usize = 12;
+/// id(16) + occurred_at(8) + type_len(2)
+const v1_fixed_body: usize = 26;
+/// id(16) + occurred_at(8) + sequence(8) + type_len(2)
+const v2_fixed_body: usize = 34;
 const max_record_bytes: usize = 768 * 1024;
 
 pub const Event = struct {
     client_event_id: [16]u8 = @splat(0),
-    /// Monotonic per-agent sequence assigned at push/load time for server integrity checks.
+    /// Durable per-agent sequence. Assigned at push, stored in the record and
+    /// kept across restarts (see `Buffer.next_sequence`).
     sequence: u64 = 0,
     event_type: []const u8,
     occurred_at: i64,
@@ -28,6 +35,9 @@ pub const Buffer = struct {
     pending_count: usize = 0,
     acknowledged_offset: u64 = spool_header_len,
     next_load_offset: u64 = spool_header_len,
+    /// Next sequence to hand out. Restored at replay from the `.seq` sidecar
+    /// (written before every acknowledgement) and from the sequences of the
+    /// records still in the spool, so it never goes back after a restart.
     next_sequence: u64 = 1,
     /// Logical end of spool file. Tracked in memory because Windows denies
     /// `File.stat` on handles opened for write (AccessDenied in Io.Threaded).
@@ -81,7 +91,8 @@ pub const Buffer = struct {
             id[8] = (id[8] & 0x3f) | 0x80;
         }
 
-        const record = try encodeRecord(self.allocator, id, ev.occurred_at, ev.event_type, ev.payload);
+        const seq = self.next_sequence;
+        const record = try encodeRecord(self.allocator, id, ev.occurred_at, seq, ev.event_type, ev.payload);
         defer self.allocator.free(record);
 
         try self.ensureSpool();
@@ -96,16 +107,12 @@ pub const Buffer = struct {
         try file.writePositionalAll(io, record, offset);
         try file.sync(io);
         self.spool_size = offset + record.len;
+        self.next_sequence = seq + 1;
 
         self.pending_count += 1;
         if (self.list.items.len < self.capacity) {
-            const seq = self.next_sequence;
-            self.next_sequence += 1;
             try self.appendOwned(id, seq, ev.occurred_at, ev.event_type, ev.payload, self.spool_size);
             self.next_load_offset = self.spool_size;
-        } else {
-            // Still advance sequence so disk-loaded events later get unique ids after restart path.
-            self.next_sequence += 1;
         }
     }
 
@@ -141,6 +148,9 @@ pub const Buffer = struct {
         if (acknowledged == 0) return;
 
         const next_ack = self.list.items[acknowledged - 1].spool_end;
+        // Sequence high-water mark first: once the ack moves, replay no longer
+        // sees the acknowledged records and their sequences.
+        try self.writeSequenceMark();
         try self.writeAcknowledgedOffset(next_ack);
         self.acknowledged_offset = next_ack;
         self.pending_count -= @min(acknowledged, self.pending_count);
@@ -156,6 +166,7 @@ pub const Buffer = struct {
         self.acknowledged_offset = spool_header_len;
         self.next_load_offset = spool_header_len;
         self.spool_size = spool_header_len;
+        self.next_sequence = @max(self.next_sequence, self.readSequenceMark());
 
         const io = iox.current();
         const file = std.Io.Dir.cwd().openFile(io, self.spool_path, .{}) catch |err| switch (err) {
@@ -186,13 +197,17 @@ pub const Buffer = struct {
         self.acknowledged_offset = if (ack_valid) stored_ack else spool_header_len;
         self.next_load_offset = self.acknowledged_offset;
 
+        // Sequences stored in the records win; older EVT1 records get fresh ones.
         var cursor: usize = @intCast(self.acknowledged_offset);
+        while (nextRecord(raw, &cursor)) |record| {
+            if (record.sequence) |s| self.next_sequence = @max(self.next_sequence, s + 1);
+        }
+        cursor = @intCast(self.acknowledged_offset);
         while (nextRecord(raw, &cursor)) |record| {
             if (!try std.json.validate(self.allocator, record.payload)) continue;
             self.pending_count += 1;
             if (self.list.items.len < self.capacity) {
-                const seq = self.next_sequence;
-                self.next_sequence += 1;
+                const seq = record.sequence orelse self.takeSequence();
                 try self.appendOwned(
                     record.id,
                     seq,
@@ -202,10 +217,49 @@ pub const Buffer = struct {
                     record.end,
                 );
                 self.next_load_offset = record.end;
-            } else {
-                self.next_sequence += 1;
             }
         }
+    }
+
+    fn takeSequence(self: *Buffer) u64 {
+        const seq = self.next_sequence;
+        self.next_sequence += 1;
+        return seq;
+    }
+
+    fn sequencePath(self: *Buffer) ![]u8 {
+        return self.allocator.print("{s}.seq", .{self.spool_path});
+    }
+
+    /// `<spool>.seq`: next_sequence as u64 LE followed by its complement.
+    fn writeSequenceMark(self: *Buffer) !void {
+        const path = try self.sequencePath();
+        defer self.allocator.free(path);
+        const io = iox.current();
+        var file = try std.Io.Dir.cwd().createFile(io, path, .{
+            .truncate = false,
+            .permissions = if (builtin.target.os.tag == .windows) .default_file else @fromBackingInt(@intCast(0o600)),
+        });
+        defer file.close(io);
+        var encoded: [16]u8 = undefined;
+        std.mem.writeInt(u64, encoded[0..8], self.next_sequence, .little);
+        std.mem.writeInt(u64, encoded[8..16], ~self.next_sequence, .little);
+        try file.writePositionalAll(io, &encoded, 0);
+        try file.sync(io);
+    }
+
+    fn readSequenceMark(self: *Buffer) u64 {
+        const path = self.sequencePath() catch return 1;
+        defer self.allocator.free(path);
+        const io = iox.current();
+        var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return 1;
+        defer file.close(io);
+        var encoded: [16]u8 = undefined;
+        const n = file.readPositionalAll(io, &encoded, 0) catch return 1;
+        if (n != encoded.len) return 1;
+        const value = std.mem.readInt(u64, encoded[0..8], .little);
+        if (value ^ std.mem.readInt(u64, encoded[8..16], .little) != std.math.maxInt(u64)) return 1;
+        return @max(value, 1);
     }
 
     fn loadMore(self: *Buffer) !void {
@@ -221,8 +275,7 @@ pub const Buffer = struct {
         while (self.list.items.len < self.capacity) {
             const record = nextRecord(raw, &cursor) orelse break;
             if (!try std.json.validate(self.allocator, record.payload)) continue;
-            const seq = self.next_sequence;
-            self.next_sequence += 1;
+            const seq = record.sequence orelse self.takeSequence();
             try self.appendOwned(
                 record.id,
                 seq,
@@ -351,9 +404,7 @@ pub const Buffer = struct {
             try std.Io.randomSecure(iox.current(), &id);
             id[6] = (id[6] & 0x0f) | 0x40;
             id[8] = (id[8] & 0x3f) | 0x80;
-            const seq = self.next_sequence;
-            self.next_sequence += 1;
-            try self.appendOwned(id, seq, occurred_at, event_type, payload, 0);
+            try self.appendOwned(id, self.takeSequence(), occurred_at, event_type, payload, 0);
         }
 
         const tmp_path = try self.allocator.print("{s}.tmp", .{self.spool_path});
@@ -373,6 +424,7 @@ pub const Buffer = struct {
                     self.allocator,
                     event.client_event_id,
                     event.occurred_at,
+                    event.sequence,
                     event.event_type,
                     event.payload,
                 );
@@ -393,6 +445,8 @@ pub const Buffer = struct {
 const ParsedRecord = struct {
     id: [16]u8,
     occurred_at: i64,
+    /// Null for EVT1 records written by older agents.
+    sequence: ?u64,
     event_type: []const u8,
     payload: []const u8,
     end: u64,
@@ -400,13 +454,16 @@ const ParsedRecord = struct {
 
 fn nextRecord(raw: []const u8, cursor: *usize) ?ParsedRecord {
     while (cursor.* + record_header_len <= raw.len) {
-        if (!std.mem.eql(u8, raw[cursor.*..][0..record_magic.len], record_magic)) {
+        const magic = raw[cursor.*..][0..record_magic.len];
+        const is_v2 = std.mem.eql(u8, magic, record_magic);
+        if (!is_v2 and !std.mem.eql(u8, magic, record_magic_v1)) {
             cursor.* += 1;
             continue;
         }
+        const fixed: usize = if (is_v2) v2_fixed_body else v1_fixed_body;
 
         const body_len = std.mem.readInt(u32, raw[cursor.* + 4 ..][0..4], .little);
-        if (body_len < 26 or body_len > max_record_bytes) {
+        if (body_len < fixed or body_len > max_record_bytes) {
             cursor.* += 1;
             continue;
         }
@@ -422,16 +479,17 @@ fn nextRecord(raw: []const u8, cursor: *usize) ?ParsedRecord {
             continue;
         }
 
-        const type_len = std.mem.readInt(u16, body[24..26], .little);
-        if (26 + type_len > body.len) {
+        const type_len = std.mem.readInt(u16, body[fixed - 2 ..][0..2], .little);
+        if (fixed + type_len > body.len) {
             cursor.* += 1;
             continue;
         }
         const parsed = ParsedRecord{
             .id = body[0..16].*,
             .occurred_at = std.mem.readInt(i64, body[16..24], .little),
-            .event_type = body[26 .. 26 + type_len],
-            .payload = body[26 + type_len ..],
+            .sequence = if (is_v2) std.mem.readInt(u64, body[24..32], .little) else null,
+            .event_type = body[fixed .. fixed + type_len],
+            .payload = body[fixed + type_len ..],
             .end = @intCast(end),
         };
         cursor.* = end;
@@ -445,20 +503,22 @@ fn encodeRecord(
     alloc: std.mem.Allocator,
     id: [16]u8,
     occurred_at: i64,
+    sequence: u64,
     event_type: []const u8,
     payload: []const u8,
 ) ![]u8 {
     try validateEventShape(event_type, payload);
-    const body_len = 26 + event_type.len + payload.len;
+    const body_len = v2_fixed_body + event_type.len + payload.len;
     const record = try alloc.alloc(u8, record_header_len + body_len);
     errdefer alloc.free(record);
     @memcpy(record[0..4], record_magic);
     std.mem.writeInt(u32, record[4..8], @intCast(body_len), .little);
     @memcpy(record[12..28], &id);
     std.mem.writeInt(i64, record[28..36], occurred_at, .little);
-    std.mem.writeInt(u16, record[36..38], @intCast(event_type.len), .little);
-    @memcpy(record[38 .. 38 + event_type.len], event_type);
-    @memcpy(record[38 + event_type.len ..], payload);
+    std.mem.writeInt(u64, record[36..44], sequence, .little);
+    std.mem.writeInt(u16, record[44..46], @intCast(event_type.len), .little);
+    @memcpy(record[46 .. 46 + event_type.len], event_type);
+    @memcpy(record[46 + event_type.len ..], payload);
     std.mem.writeInt(u32, record[8..12], std.hash.Crc32.hash(record[12..]), .little);
     return record;
 }
@@ -470,7 +530,7 @@ fn validateEventShape(event_type: []const u8, payload: []const u8) !void {
             return error.InvalidEventType;
         }
     }
-    if (26 + event_type.len + payload.len > max_record_bytes) return error.EventTooLarge;
+    if (v2_fixed_body + event_type.len + payload.len > max_record_bytes) return error.EventTooLarge;
 }
 
 fn makeHeader(acknowledged_offset: u64) [spool_header_len]u8 {
@@ -635,4 +695,88 @@ test "legacy spool converts and ignores malformed lines" {
     try b.replay();
     try std.testing.expectEqual(@as(usize, 2), b.totalLen());
     try std.testing.expect(!isZeroId(b.items()[0].client_event_id));
+}
+
+test "sequence survives a restart, including after everything is acknowledged" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const spill_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "seq.spool" },
+    );
+    defer std.testing.allocator.free(spill_path);
+
+    {
+        var b = try Buffer.init(std.testing.allocator, 8, spill_path, 1024 * 1024);
+        defer b.deinit();
+        try b.replay();
+        try b.push(.{ .event_type = "x", .occurred_at = 1, .payload = "{}" });
+        try b.push(.{ .event_type = "x", .occurred_at = 2, .payload = "{}" });
+        try b.push(.{ .event_type = "x", .occurred_at = 3, .payload = "{}" });
+        try std.testing.expectEqual(@as(u64, 1), b.items()[0].sequence);
+        try std.testing.expectEqual(@as(u64, 3), b.items()[2].sequence);
+        try b.acknowledgeFirst(1);
+    }
+    // Restart 1: unacknowledged records keep the sequence they were pushed with.
+    {
+        var b = try Buffer.init(std.testing.allocator, 8, spill_path, 1024 * 1024);
+        defer b.deinit();
+        try b.replay();
+        try std.testing.expectEqual(@as(usize, 2), b.len());
+        try std.testing.expectEqual(@as(u64, 2), b.items()[0].sequence);
+        try std.testing.expectEqual(@as(u64, 3), b.items()[1].sequence);
+        try b.push(.{ .event_type = "x", .occurred_at = 4, .payload = "{}" });
+        try std.testing.expectEqual(@as(u64, 4), b.items()[2].sequence);
+        try b.acknowledgeFirst(3);
+        try std.testing.expectEqual(@as(usize, 0), b.totalLen());
+    }
+    // Restart 2: the spool is empty, the sidecar still moves the sequence on.
+    {
+        var b = try Buffer.init(std.testing.allocator, 8, spill_path, 1024 * 1024);
+        defer b.deinit();
+        try b.replay();
+        try std.testing.expectEqual(@as(usize, 0), b.totalLen());
+        try b.push(.{ .event_type = "x", .occurred_at = 5, .payload = "{}" });
+        try std.testing.expectEqual(@as(u64, 5), b.items()[0].sequence);
+    }
+}
+
+test "EVT1 records from an older agent still replay" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const spill_path = try std.fs.path.join(
+        std.testing.allocator,
+        &.{ ".zig-cache", "tmp", &tmp.sub_path, "v1.spool" },
+    );
+    defer std.testing.allocator.free(spill_path);
+    const io = iox.current();
+    {
+        // Header plus one EVT1 record: id, occurred_at, type_len, type, payload.
+        const event_type = "system_info";
+        const payload = "{}";
+        var rec: [record_header_len + v1_fixed_body + event_type.len + payload.len]u8 = undefined;
+        @memcpy(rec[0..4], record_magic_v1);
+        std.mem.writeInt(u32, rec[4..8], v1_fixed_body + event_type.len + payload.len, .little);
+        @memset(rec[12..28], 0x11);
+        std.mem.writeInt(i64, rec[28..36], 7, .little);
+        std.mem.writeInt(u16, rec[36..38], event_type.len, .little);
+        @memcpy(rec[38 .. 38 + event_type.len], event_type);
+        @memcpy(rec[38 + event_type.len ..], payload);
+        std.mem.writeInt(u32, rec[8..12], std.hash.Crc32.hash(rec[12..]), .little);
+        var file = try std.Io.Dir.cwd().createFile(io, spill_path, .{ .truncate = true });
+        defer file.close(io);
+        const header = makeHeader(spool_header_len);
+        try file.writePositionalAll(io, &header, 0);
+        try file.writePositionalAll(io, &rec, spool_header_len);
+        try file.sync(io);
+    }
+    var b = try Buffer.init(std.testing.allocator, 8, spill_path, 1024 * 1024);
+    defer b.deinit();
+    try b.replay();
+    try std.testing.expectEqual(@as(usize, 1), b.len());
+    try std.testing.expectEqualStrings("system_info", b.items()[0].event_type);
+    try std.testing.expectEqual(@as(i64, 7), b.items()[0].occurred_at);
+    try std.testing.expectEqual(@as(u64, 1), b.items()[0].sequence);
+    try b.push(.{ .event_type = "x", .occurred_at = 8, .payload = "{}" });
+    try std.testing.expectEqual(@as(u64, 2), b.items()[1].sequence);
 }

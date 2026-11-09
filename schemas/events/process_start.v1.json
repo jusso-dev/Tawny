@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "process_start.v1.json",
+  "title": "PROCESS_START",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "process"
+  ],
+  "properties": {
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    },
+    "parent": {
+      "$ref": "common.v1.json#/$defs/parent"
+    }
+  }
+}

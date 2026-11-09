@@ -141,6 +141,11 @@ fn route(
             if (try stopLimited(request, io, web, policy_web_read)) return;
             return agents.listAgentEvents(allocator, conn, request, web, parts[2], target);
         }
+        if (parts.len == 4 and std.mem.eql(u8, parts[3], "process-tree") and method == .GET) {
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return agents.processTree(allocator, conn, request, web, parts[2], target);
+        }
         if (parts.len == 5 and std.mem.eql(u8, parts[3], "events") and std.mem.eql(u8, parts[4], "stream") and method == .GET) {
             const web = try needWeb(request, resolved) orelse return;
             return agents.streamAgentEvents(allocator, io, conn, request, web, parts[2], phase);

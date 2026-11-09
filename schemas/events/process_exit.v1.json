@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "process_exit.v1.json",
+  "title": "PROCESS_EXIT",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "process"
+  ],
+  "properties": {
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    },
+    "end_time": {
+      "$ref": "common.v1.json#/$defs/timestamp"
+    }
+  }
+}

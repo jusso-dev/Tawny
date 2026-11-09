@@ -164,6 +164,20 @@ def main() -> None:
             kind = wait_until("system_info", 40, saw_event)
             print(f"event_ok={kind}")
 
+            # Events arrive as signed schema 2 batches (the server requires
+            # signatures by default). agent_health is a v2-only type.
+            def saw_health() -> str:
+                status, body = call("GET", f"/api/agents/{agent_id}/events?type=agent_health&limit=5", None, cookie, csrf)
+                if status == 200 and '"boot_id"' in body and '"next_sequence"' in body:
+                    return "agent_health"
+                return ""
+
+            wait_until("agent_health", 40, saw_health)
+            status, body = call("GET", f"/api/agents/{agent_id}/process-tree", None, cookie, csrf)
+            if status != 200 or '"processes"' not in body:
+                raise SystemExit(f"process-tree status={status}")
+            print("schema_v2_ok")
+
             status, body = call(
                 "POST",
                 f"/api/agents/{agent_id}/actions",

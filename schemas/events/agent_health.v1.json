@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent_health.v1.json",
+  "title": "AGENT_HEALTH",
+  "type": "object",
+  "required": [
+    "sensor_version",
+    "buffer_depth",
+    "uptime_seconds"
+  ],
+  "properties": {
+    "sensor_version": {
+      "type": "string"
+    },
+    "buffer_depth": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptime_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "next_sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "boot_id": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sensor_health.v1.json",
+  "title": "Windows event log channel health",
+  "type": "object",
+  "required": [
+    "sensor",
+    "channel",
+    "state"
+  ],
+  "properties": {
+    "sensor": {
+      "type": "string"
+    },
+    "channel": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "ok",
+        "missing",
+        "access_denied",
+        "silent",
+        "failed",
+        "unknown"
+      ]
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "degraded"
+      ]
+    },
+    "counters": {
+      "type": "object"
+    }
+  }
+}

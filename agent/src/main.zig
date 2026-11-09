@@ -18,6 +18,7 @@ const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
 const windows_events = @import("collectors/windows_events.zig");
 const response_actions = @import("response_actions.zig");
+const entity = @import("entity.zig");
 const iox = @import("io_compat.zig");
 const lifecycle = @import("lifecycle.zig");
 const windows_service = if (builtin.target.os.tag == .windows) @import("platform/windows/service.zig") else struct {};
@@ -85,6 +86,15 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     );
     defer http.deinit();
     http.secret_store = cfg.secret_store;
+    http.sensor_version = AGENT_VERSION;
+    const boot_id = entity.readBootId();
+    http.boot_id = boot_id;
+
+    // pid -> entity table. The launch tracker's first pass (and on Windows a
+    // process snapshot) seeds it before any child is reported.
+    var entities = entity.Table.init(alloc, cfg.agent_id orelse "", &boot_id, entity.Table.default_capacity);
+    defer entities.deinit();
+    entity.seedFromSystem(&entities);
 
     var buf = try buffer.Buffer.init(
         alloc,
@@ -100,6 +110,19 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
 
     var process_tracker = process_events.Tracker.init(alloc);
     defer process_tracker.deinit();
+    process_tracker.entities = &entities;
+    // Baseline pass: record what is already running without reporting it as
+    // new launches, so parents are known when their children appear.
+    if (process_tracker.collectLaunches()) |baseline| {
+        for (baseline) |p| alloc.free(p);
+        alloc.free(baseline);
+        if (process_tracker.takeExits()) |gone| {
+            for (gone) |p| alloc.free(p);
+            alloc.free(gone);
+        } else |_| {}
+    } else |err| {
+        std.debug.print("process baseline failed: {s}\n", .{@errorName(err)});
+    }
 
     var fs_watcher = try fs_events.Watcher.init(alloc, cfg.fim_paths);
     defer fs_watcher.deinit();
@@ -111,6 +134,7 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     // Bookmarks live beside state.toml so a restart resumes each channel.
     var eventlog = try windows_events.Collector.init(alloc, std.fs.path.dirname(cfg.state_path) orelse ".");
     defer eventlog.deinit();
+    eventlog.setEntities(&entities);
 
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
@@ -140,9 +164,14 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     while (!lifecycle.shouldStop()) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
+            const uptime: i64 = @intCast(iox.timestamp() - start_time);
+            if (healthPayload(alloc, uptime, buf.totalLen(), buf.next_sequence, &boot_id)) |payload| {
+                defer alloc.free(payload);
+                queueEvent(&buf, "agent_health", payload);
+            } else |_| {}
             if (http.heartbeat(.{
                 .agent_version = AGENT_VERSION,
-                .uptime_seconds = @intCast(iox.timestamp() - start_time),
+                .uptime_seconds = uptime,
                 .buffer_depth = buf.totalLen(),
             })) |heartbeat_result| {
                 var heartbeat = heartbeat_result;
@@ -224,10 +253,13 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
             process_events_timer.reset();
             if (process_tracker.collectLaunches()) |launches| {
-                emitBatch(&buf, "process_launch", launches, alloc);
+                emitBatch(&buf, "process_start", launches, alloc);
             } else |err| {
                 std.debug.print("process_events collector failed: {s}\n", .{@errorName(err)});
             }
+            if (process_tracker.takeExits()) |exits| {
+                emitBatch(&buf, "process_exit", exits, alloc);
+            } else |_| {}
         }
 
         if (lifecycle.shouldStop()) break;
@@ -359,6 +391,8 @@ test "main module loads" {
     _ = response_actions;
     _ = lifecycle;
     _ = iox;
+    _ = entity;
+    _ = @import("schema_check.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Windows event log parsing and mapping are pure too.
@@ -389,6 +423,23 @@ fn emitBatch(
             break;
         };
     }
+}
+
+/// `agent_health` data (schemas/events/agent_health.v1.json).
+fn healthPayload(alloc: std.mem.Allocator, uptime: i64, depth: usize, next_sequence: u64, boot_id: []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{
+        .sensor_version = AGENT_VERSION,
+        .buffer_depth = depth,
+        .uptime_seconds = @max(uptime, 0),
+        .next_sequence = next_sequence,
+        .boot_id = boot_id,
+    }, .{});
+}
+
+test "agent_health payload matches its schema" {
+    const p = try healthPayload(std.testing.allocator, 5, 2, 9, entity.nil_uuid);
+    defer std.testing.allocator.free(p);
+    try @import("schema_check.zig").expectValid(std.testing.allocator, "agent_health", p);
 }
 
 fn queueEvent(buf: *buffer.Buffer, event_type: []const u8, payload: []const u8) void {

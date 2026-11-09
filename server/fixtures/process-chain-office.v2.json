@@ -1,0 +1,155 @@
+{
+  "schema": 2,
+  "batch_id": "00000000-0000-4000-8000-0000000cb001",
+  "agent": {
+    "agent_id": "00000000-0000-4000-8000-00000000f001",
+    "sensor_version": "0.1.0",
+    "boot_id": "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c"
+  },
+  "events": [
+    {
+      "event_id": "00000000-0000-4000-8000-0000000c0001",
+      "event_type": "process_start",
+      "v": 1,
+      "ts": "2026-11-09T01:00:00.100Z",
+      "seq": 1,
+      "sensor": "sysmon",
+      "data": {
+        "sensor": "sysmon",
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "event_id": 1,
+        "record_id": 1,
+        "process": {
+          "entity_id": "7iyrf5zm6b5flyledskp3lodvm",
+          "pid": 4100,
+          "start_time": "2026-11-09T01:00:00.100Z",
+          "image": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+          "name": "WINWORD.EXE",
+          "command_line": "\"WINWORD.EXE\" /n \"C:\\Users\\alice\\Downloads\\invoice.docm\"",
+          "user": {
+            "name": "alice",
+            "domain": "CORP"
+          }
+        },
+        "parent": {
+          "pid": 3000,
+          "image": "C:\\Windows\\explorer.exe",
+          "name": "explorer.exe"
+        }
+      }
+    },
+    {
+      "event_id": "00000000-0000-4000-8000-0000000c0002",
+      "event_type": "process_start",
+      "v": 1,
+      "ts": "2026-11-09T01:00:05.200Z",
+      "seq": 2,
+      "sensor": "sysmon",
+      "data": {
+        "sensor": "sysmon",
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "event_id": 1,
+        "record_id": 2,
+        "process": {
+          "entity_id": "wxjmbxyyq7eybnyac2lfc654ka",
+          "pid": 5200,
+          "start_time": "2026-11-09T01:00:05.200Z",
+          "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "name": "powershell.exe",
+          "command_line": "powershell.exe -nop -w hidden -enc SQBFAFgA",
+          "user": {
+            "name": "alice",
+            "domain": "CORP"
+          }
+        },
+        "parent": {
+          "entity_id": "7iyrf5zm6b5flyledskp3lodvm",
+          "pid": 4100,
+          "image": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+          "name": "WINWORD.EXE"
+        }
+      }
+    },
+    {
+      "event_id": "00000000-0000-4000-8000-0000000c0003",
+      "event_type": "process_start",
+      "v": 1,
+      "ts": "2026-11-09T01:00:09.300Z",
+      "seq": 3,
+      "sensor": "sysmon",
+      "data": {
+        "sensor": "sysmon",
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "event_id": 1,
+        "record_id": 3,
+        "process": {
+          "entity_id": "z64l2w3c4w3q2jhyq5jbnley3q",
+          "pid": 6300,
+          "start_time": "2026-11-09T01:00:09.300Z",
+          "image": "C:\\Users\\alice\\AppData\\Local\\Temp\\payload.exe",
+          "name": "payload.exe",
+          "command_line": "C:\\Users\\alice\\AppData\\Local\\Temp\\payload.exe",
+          "user": {
+            "name": "alice",
+            "domain": "CORP"
+          }
+        },
+        "parent": {
+          "entity_id": "wxjmbxyyq7eybnyac2lfc654ka",
+          "pid": 5200,
+          "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          "name": "powershell.exe"
+        }
+      }
+    },
+    {
+      "event_id": "00000000-0000-4000-8000-0000000c0004",
+      "event_type": "dns_query",
+      "v": 1,
+      "ts": "2026-11-09T01:00:10.000Z",
+      "seq": 4,
+      "sensor": "sysmon",
+      "data": {
+        "sensor": "sysmon",
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "event_id": 22,
+        "record_id": 4,
+        "process": {
+          "entity_id": "z64l2w3c4w3q2jhyq5jbnley3q",
+          "pid": 6300,
+          "image": "C:\\Users\\alice\\AppData\\Local\\Temp\\payload.exe",
+          "name": "payload.exe"
+        },
+        "dns": {
+          "query": "payload.example.net",
+          "status": 0,
+          "answers": [
+            "203.0.113.10"
+          ]
+        },
+        "qname": "payload.example.net"
+      }
+    },
+    {
+      "event_id": "00000000-0000-4000-8000-0000000c0005",
+      "event_type": "process_exit",
+      "v": 1,
+      "ts": "2026-11-09T01:00:30.000Z",
+      "seq": 5,
+      "sensor": "sysmon",
+      "data": {
+        "sensor": "sysmon",
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "event_id": 5,
+        "record_id": 5,
+        "process": {
+          "entity_id": "z64l2w3c4w3q2jhyq5jbnley3q",
+          "pid": 6300,
+          "image": "C:\\Users\\alice\\AppData\\Local\\Temp\\payload.exe",
+          "name": "payload.exe"
+        },
+        "end_time": "2026-11-09T01:00:30.000Z"
+      }
+    }
+  ]
+}

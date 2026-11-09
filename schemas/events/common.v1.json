@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.v1.json",
+  "title": "Common objects (target-edr section 2.2)",
+  "$defs": {
+    "entity_id": {
+      "type": "string",
+      "minLength": 26,
+      "maxLength": 26,
+      "pattern": "^[a-z2-7]{26}$",
+      "description": "base32(SHA-256(agent_id || pid_le32 || start_time_100ns_le64 || boot_id)[0..16]), RFC 4648 lower case, no padding."
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 19,
+      "description": "ISO 8601 UTC."
+    },
+    "user": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "sid": {
+          "type": "string"
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "hashes": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string"
+        },
+        "sha1": {
+          "type": "string"
+        },
+        "md5": {
+          "type": "string"
+        },
+        "imphash": {
+          "type": "string"
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "required": [
+        "pid"
+      ],
+      "properties": {
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        },
+        "guid": {
+          "type": "string",
+          "description": "Sysmon ProcessGuid, kept as an extra field."
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_time": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "image": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command_line": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "user": {
+          "$ref": "#/$defs/user"
+        },
+        "session_id": {
+          "type": "integer"
+        },
+        "integrity_level": {
+          "type": "string"
+        },
+        "elevated": {
+          "type": "boolean"
+        },
+        "hashes": {
+          "$ref": "#/$defs/hashes"
+        }
+      }
+    },
+    "parent": {
+      "type": "object",
+      "properties": {
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        },
+        "guid": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command_line": {
+          "type": "string"
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "extension": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer"
+        },
+        "hashes": {
+          "$ref": "#/$defs/hashes"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "src_ip": {
+          "type": "string"
+        },
+        "src_port": {
+          "type": "integer"
+        },
+        "dst_ip": {
+          "type": "string"
+        },
+        "dst_port": {
+          "type": "integer"
+        },
+        "direction": {
+          "enum": [
+            "inbound",
+            "outbound"
+          ]
+        }
+      }
+    },
+    "dns": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qtype": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "required": [
+        "key"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value_name": {
+          "type": "string"
+        },
+        "value_type": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string"
+        },
+        "data_truncated": {
+          "type": "boolean"
+        },
+        "operation": {
+          "type": "string"
+        }
+      }
+    },
+    "sensor_fields": {
+      "type": "object",
+      "description": "Windows event log provenance.",
+      "properties": {
+        "sensor": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "integer"
+        },
+        "record_id": {
+          "type": "integer"
+        },
+        "ts": {
+          "type": "string"
+        },
+        "rule_name": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

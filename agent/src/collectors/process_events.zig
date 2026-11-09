@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const iox = @import("../io_compat.zig");
 const privacy = @import("privacy.zig");
+const entity = @import("../entity.zig");
+const schema_check = @import("../schema_check.zig");
 const macos = if (builtin.target.os.tag == .macos) @import("../platform/macos.zig") else struct {};
 
 const max_launches_per_collection: usize = 2048;
@@ -12,9 +14,13 @@ const max_hash_cache_entries: usize = 1024;
 const linux_user_hz: u64 = 100;
 
 /// Diff-based process launch collector. Tracks live (pid, start time) pairs
-/// across invocations and emits a per-launch event for every pair that has
-/// appeared since the previous tick. The image SHA-256 is computed from the
-/// resolved executable path so the backend can pivot on hash.
+/// across invocations and emits a `process_start` event for every pair that
+/// has appeared since the previous tick. The image SHA-256 is computed from
+/// the resolved executable path so the backend can pivot on hash.
+///
+/// With an entity table, every live process is recorded in it on each pass
+/// before payloads are built, so `parent.entity_id` is filled even when the
+/// parent was listed after the child. The first pass is the start-up snapshot.
 ///
 /// Linux reads /proc; macOS uses libproc (proc_listallpids + PROC_PIDTBSDINFO
 /// for the start time, KERN_PROCARGS2 for argv). This is intentionally not a
@@ -28,6 +34,11 @@ pub const Tracker = struct {
     next: std.AutoHashMap(u32, u64),
     hashes: HashCache,
     linux_boot_time: ?u64 = null,
+    entities: ?*entity.Table = null,
+    /// `process_exit` payloads for processes gone since the previous pass.
+    /// The end time is when the pass noticed, so it is late by up to one
+    /// polling interval. Taken with `takeExits`.
+    exits: std.ArrayList([]u8) = .empty,
 
     pub fn init(alloc: std.mem.Allocator) Tracker {
         return .{
@@ -39,6 +50,8 @@ pub const Tracker = struct {
     }
 
     pub fn deinit(self: *Tracker) void {
+        for (self.exits.items) |e| self.allocator.free(e);
+        self.exits.deinit(self.allocator);
         self.seen.deinit();
         self.next.deinit();
         self.hashes.deinit();
@@ -59,10 +72,41 @@ pub const Tracker = struct {
             .macos => try self.collectMacos(&payloads),
             else => return payloads.toOwnedSlice(), // Windows exec capture is deferred to ETW work.
         }
-        // Processes that exited simply are not in `next`; no separate prune pass.
+        // Processes that exited are in `seen` but not in `next`.
+        if (self.entities != null) try self.noteExits();
         std.mem.swap(std.AutoHashMap(u32, u64), &self.seen, &self.next);
 
         return payloads.toOwnedSlice();
+    }
+
+    /// Caller owns the slice and each payload.
+    pub fn takeExits(self: *Tracker) ![][]u8 {
+        return self.exits.toOwnedSlice(self.allocator);
+    }
+
+    /// Start key (Linux clock ticks after boot, macOS microseconds) to 100 ns.
+    fn keyTo100ns(self: *const Tracker, key: u64) ?u64 {
+        return switch (builtin.target.os.tag) {
+            .linux => linuxStart100ns(self.linux_boot_time orelse return null, key),
+            .macos => if (key == 0) null else key * 10,
+            else => null,
+        };
+    }
+
+    fn noteExits(self: *Tracker) !void {
+        const t = self.entities.?;
+        const now: u64 = @as(u64, @intCast(@max(iox.timestamp(), 0))) * entity.ticks_per_second;
+        var it = self.seen.iterator();
+        while (it.next()) |kv| {
+            const pid = kv.key_ptr.*;
+            if (self.next.get(pid)) |still| if (still == kv.value_ptr.*) continue;
+            const start = self.keyTo100ns(kv.value_ptr.*) orelse continue;
+            const id = t.idFor(pid, start);
+            if (t.map.get(pid)) |e| if (e.start_100ns == entity.truncateMs(start)) t.forget(pid);
+            const payload = try buildExitEvent(self.allocator, id, pid, now);
+            errdefer self.allocator.free(payload);
+            try self.exits.append(self.allocator, payload);
+        }
     }
 
     /// Record (pid, start) for this pass. Returns true when it is a launch
@@ -82,18 +126,24 @@ pub const Tracker = struct {
 
         if (self.linux_boot_time == null) self.linux_boot_time = readLinuxBootTime() catch null;
 
+        const Fresh = struct { pid: u32, start: ?u64 };
+        var fresh = std.array_list.Managed(Fresh).init(self.allocator);
+        defer fresh.deinit();
+
         var iter = proc_dir.iterate();
         while (try iter.next(io)) |entry| {
             if (entry.kind != .directory) continue;
             const pid = std.fmt.parseInt(u32, entry.name, 10) catch continue;
             const start_time = readProcessStartTime(self.allocator, pid) catch 0;
-            if (!try self.observe(pid, start_time, payloads.items.len)) continue;
-
-            const start_unix: ?i64 = if (self.linux_boot_time) |boot|
-                (if (start_time > 0) @intCast(boot + start_time / linux_user_hz) else null)
-            else
-                null;
-            const payload = buildLinuxLaunchEvent(self.allocator, &self.hashes, pid, start_unix) catch continue;
+            const start_100ns = if (self.linux_boot_time) |boot| linuxStart100ns(boot, start_time) else null;
+            if (self.entities) |t| if (start_100ns) |s| {
+                _ = try t.observe(pid, s, "");
+            };
+            if (!try self.observe(pid, start_time, payloads.items.len + fresh.items.len)) continue;
+            try fresh.append(.{ .pid = pid, .start = start_100ns });
+        }
+        for (fresh.items) |f| {
+            const payload = buildLinuxLaunchEvent(self.allocator, &self.hashes, self.entities, f.pid, f.start) catch continue;
             payloads.append(payload) catch |err| {
                 self.allocator.free(payload);
                 return err;
@@ -110,13 +160,22 @@ pub const Tracker = struct {
         var reader: ?macos.DetailReader = null;
         defer if (reader) |*r| r.deinit();
 
+        var fresh = std.array_list.Managed(macos.libproc.Identity).init(self.allocator);
+        defer fresh.deinit();
         for (pids) |pid| {
             if (pid < 0) continue;
             const id = macos.libproc.identity(pid) orelse continue;
-            if (!try self.observe(id.pid, id.startKey(), payloads.items.len)) continue;
+            if (self.entities) |t| if (macosStart100ns(id.start_sec, id.start_usec)) |s| {
+                _ = try t.observe(id.pid, s, "");
+            };
+            if (!try self.observe(id.pid, id.startKey(), payloads.items.len + fresh.items.len)) continue;
+            try fresh.append(id);
+        }
 
+        for (fresh.items) |*id| {
             if (reader == null) reader = try macos.DetailReader.init(self.allocator);
-            const d = reader.?.read(pid, &id, true);
+            const d = reader.?.read(@intCast(id.pid), id, true);
+            const start = macosStart100ns(id.start_sec, id.start_usec);
             const payload = buildLaunchEvent(self.allocator, &self.hashes, .{
                 .pid = id.pid,
                 .ppid = id.ppid,
@@ -124,7 +183,9 @@ pub const Tracker = struct {
                 .name = d.name,
                 .command_line = d.command_line,
                 .image_path = d.image_path,
-                .start_time_unix = if (id.start_sec > 0) @intCast(id.start_sec) else null,
+                .start_100ns = start,
+                .entity_id = entityFor(self.entities, id.pid, start),
+                .parent_entity_id = parentFor(self.entities, id.ppid, start),
             }) catch continue;
             payloads.append(payload) catch |err| {
                 self.allocator.free(payload);
@@ -142,11 +203,43 @@ const LaunchFields = struct {
     /// Raw command line; scrubbed by privacy.sanitizeCommandLine here.
     command_line: []const u8,
     image_path: []const u8,
-    start_time_unix: ?i64,
+    /// Start time in 100 ns ticks since the Unix epoch.
+    start_100ns: ?u64,
+    entity_id: ?entity.Id = null,
+    parent_entity_id: ?entity.Id = null,
 };
 
-/// One payload shape for every platform:
-/// {pid, ppid, uid, name, command_line, image_path, image_sha256, signature, start_time_unix}
+/// `process_exit` data: {process{entity_id,pid},end_time}.
+fn buildExitEvent(alloc: std.mem.Allocator, id: entity.Id, pid: u32, end_100ns: u64) ![]u8 {
+    var buf: [24]u8 = undefined;
+    return std.fmt.allocPrint(alloc, "{{\"process\":{{\"entity_id\":\"{s}\",\"pid\":{d}}},\"end_time\":\"{s}\"}}", .{ &id, pid, entity.formatIso(&buf, end_100ns) });
+}
+
+fn linuxStart100ns(boot_unix: u64, start_ticks: u64) ?u64 {
+    if (start_ticks == 0) return null;
+    return boot_unix * entity.ticks_per_second + start_ticks * (entity.ticks_per_second / linux_user_hz);
+}
+
+fn macosStart100ns(sec: u64, usec: u64) ?u64 {
+    if (sec == 0) return null;
+    return sec * entity.ticks_per_second + usec * 10;
+}
+
+fn entityFor(table: ?*entity.Table, pid: u32, start: ?u64) ?entity.Id {
+    const t = table orelse return null;
+    return t.idFor(pid, start orelse return null);
+}
+
+fn parentFor(table: ?*entity.Table, ppid: u32, child_start: ?u64) ?entity.Id {
+    const t = table orelse return null;
+    if (ppid == 0) return null;
+    return t.parentOf(ppid, child_start);
+}
+
+/// `process_start` data (schemas/events/process_start.v1.json), the same on
+/// Linux and macOS:
+/// {process{entity_id,pid,start_time,name,image,command_line,user{uid},hashes{sha256}},
+///  parent{entity_id,pid}}. Fields that are unknown are left out.
 fn buildLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, f: LaunchFields) ![]u8 {
     const safe_command_line = try privacy.sanitizeCommandLine(alloc, f.command_line);
     defer alloc.free(safe_command_line);
@@ -155,31 +248,57 @@ fn buildLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, f: LaunchField
 
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    const w = &out.writer;
-
-    try w.print("{{\"pid\":{d},\"ppid\":{d},\"uid\":{d},\"name\":", .{ f.pid, f.ppid, f.uid });
-    try std.json.Stringify.value(f.name, .{}, w);
-    try w.writeAll(",\"command_line\":");
-    try std.json.Stringify.value(safe_command_line, .{}, w);
-    try w.writeAll(",\"image_path\":");
-    try std.json.Stringify.value(f.image_path, .{}, w);
+    var jw: std.json.Stringify = .{ .writer = &out.writer };
+    try jw.beginObject();
+    try jw.objectField("process");
+    try jw.beginObject();
+    if (f.entity_id) |id| {
+        try jw.objectField("entity_id");
+        try jw.write(&id);
+    }
+    try jw.objectField("pid");
+    try jw.write(f.pid);
+    if (f.start_100ns) |t| {
+        var buf: [24]u8 = undefined;
+        try jw.objectField("start_time");
+        try jw.write(entity.formatIso(&buf, t));
+    }
+    try jw.objectField("name");
+    try jw.write(f.name);
+    if (f.image_path.len > 0) {
+        try jw.objectField("image");
+        try jw.write(f.image_path);
+    }
+    try jw.objectField("command_line");
+    try jw.write(safe_command_line);
+    try jw.objectField("user");
+    try jw.beginObject();
+    try jw.objectField("uid");
+    try jw.write(f.uid);
+    try jw.endObject();
     if (digest) |d| {
         const hex = std.fmt.bytesToHex(d, .lower);
-        try w.print(",\"image_sha256\":\"{s}\"", .{hex});
-    } else {
-        try w.writeAll(",\"image_sha256\":null");
+        try jw.objectField("hashes");
+        try jw.beginObject();
+        try jw.objectField("sha256");
+        try jw.write(&hex);
+        try jw.endObject();
     }
-    try w.writeAll(",\"signature\":{\"trusted\":false,\"signer\":null}");
-    if (f.start_time_unix) |t| {
-        try w.print(",\"start_time_unix\":{d}", .{t});
-    } else {
-        try w.writeAll(",\"start_time_unix\":null");
+    try jw.endObject();
+    try jw.objectField("parent");
+    try jw.beginObject();
+    if (f.parent_entity_id) |id| {
+        try jw.objectField("entity_id");
+        try jw.write(&id);
     }
-    try w.writeByte('}');
+    try jw.objectField("pid");
+    try jw.write(f.ppid);
+    try jw.endObject();
+    try jw.endObject();
     return out.toOwnedSlice();
 }
 
-fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, pid: u32, start_time_unix: ?i64) ![]u8 {
+fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, table: ?*entity.Table, pid: u32, start_100ns: ?u64) ![]u8 {
     const name = readProcText(alloc, pid, "comm") catch try alloc.dupe(u8, "unknown");
     defer alloc.free(name);
     const trimmed_name = std.mem.trimEnd(u8, name, "\r\n");
@@ -190,14 +309,17 @@ fn buildLinuxLaunchEvent(alloc: std.mem.Allocator, hashes: *HashCache, pid: u32,
     const exe_path = readExeLink(alloc, pid) catch try alloc.dupe(u8, "");
     defer alloc.free(exe_path);
 
+    const ppid = readParentPid(alloc, pid) catch 0;
     return buildLaunchEvent(alloc, hashes, .{
         .pid = pid,
-        .ppid = readParentPid(alloc, pid) catch 0,
+        .ppid = ppid,
         .uid = readUid(alloc, pid) catch 0,
         .name = trimmed_name,
         .command_line = command_line,
         .image_path = exe_path,
-        .start_time_unix = start_time_unix,
+        .start_100ns = start_100ns,
+        .entity_id = entityFor(table, pid, start_100ns),
+        .parent_entity_id = parentFor(table, ppid, start_100ns),
     });
 }
 
@@ -413,6 +535,11 @@ test "launch diff keys on pid and start time" {
 test "launch payload shape is shared across platforms" {
     var hashes = HashCache.init(std.testing.allocator);
     defer hashes.deinit();
+    var table = entity.Table.init(std.testing.allocator, "0f8fad5b-d9cb-469f-a165-70867728950e", "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c", 8);
+    defer table.deinit();
+    const parent_start = 1729990000 * entity.ticks_per_second;
+    const start = 1730000000 * entity.ticks_per_second;
+    const parent_id = try table.observe(1, parent_start, "");
     const payload = try buildLaunchEvent(std.testing.allocator, &hashes, .{
         .pid = 42,
         .ppid = 1,
@@ -420,17 +547,38 @@ test "launch payload shape is shared across platforms" {
         .name = "curl",
         .command_line = "curl -H Authorization: Bearer abc https://example.com",
         .image_path = "",
-        .start_time_unix = 1730000000,
+        .start_100ns = start,
+        .entity_id = entityFor(&table, 42, start),
+        .parent_entity_id = parentFor(&table, 1, start),
     });
     defer std.testing.allocator.free(payload);
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
     defer parsed.deinit();
-    const obj = parsed.value.object;
-    for ([_][]const u8{ "pid", "ppid", "uid", "name", "command_line", "image_path", "image_sha256", "signature", "start_time_unix" }) |key| {
-        try std.testing.expect(obj.get(key) != null);
+    const proc = parsed.value.object.get("process").?.object;
+    for ([_][]const u8{ "entity_id", "pid", "start_time", "name", "command_line", "user" }) |key| {
+        try std.testing.expect(proc.get(key) != null);
     }
-    try std.testing.expect(std.mem.indexOf(u8, obj.get("command_line").?.string, "abc") == null);
-    try std.testing.expectEqual(@as(i64, 1730000000), obj.get("start_time_unix").?.integer);
+    try std.testing.expect(std.mem.indexOf(u8, proc.get("command_line").?.string, "abc") == null);
+    try std.testing.expectEqualStrings("2024-10-27T03:33:20.000Z", proc.get("start_time").?.string);
+    try std.testing.expectEqualStrings(&table.idFor(42, start), proc.get("entity_id").?.string);
+    const parent = parsed.value.object.get("parent").?.object;
+    try std.testing.expectEqualStrings(&parent_id, parent.get("entity_id").?.string);
+    try std.testing.expectEqual(@as(i64, 1), parent.get("pid").?.integer);
+    try schema_check.expectValid(std.testing.allocator, "process_start", payload);
+}
+
+test "exit payload matches its schema" {
+    const id = entity.compute("0f8fad5b-d9cb-469f-a165-70867728950e", 9, 1730000000 * entity.ticks_per_second, entity.nil_uuid);
+    const payload = try buildExitEvent(std.testing.allocator, id, 9, 1730000100 * entity.ticks_per_second);
+    defer std.testing.allocator.free(payload);
+    try std.testing.expect(std.mem.indexOf(u8, payload, &id) != null);
+    try schema_check.expectValid(std.testing.allocator, "process_exit", payload);
+}
+
+test "linux and macos start times convert to 100 ns ticks" {
+    try std.testing.expectEqual(@as(?u64, 1730000000 * entity.ticks_per_second + 250 * 100_000), linuxStart100ns(1730000000, 250));
+    try std.testing.expectEqual(@as(?u64, null), linuxStart100ns(1730000000, 0));
+    try std.testing.expectEqual(@as(?u64, 1730000000 * entity.ticks_per_second + 5000 * 10), macosStart100ns(1730000000, 5000));
 }
 
 test "launch diff sees a spawned /bin/sleep with full argv and start time" {
@@ -440,6 +588,10 @@ test "launch diff sees a spawned /bin/sleep with full argv and start time" {
 
     var t = Tracker.init(alloc);
     defer t.deinit();
+    const boot = entity.readBootId();
+    var table = entity.Table.init(alloc, "0f8fad5b-d9cb-469f-a165-70867728950e", &boot, entity.Table.default_capacity);
+    defer table.deinit();
+    t.entities = &table;
     const baseline = try t.collectLaunches();
     for (baseline) |p| alloc.free(p);
     alloc.free(baseline);
@@ -461,24 +613,29 @@ test "launch diff sees a spawned /bin/sleep with full argv and start time" {
     for (launches) |payload| {
         var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
         defer parsed.deinit();
-        const obj = parsed.value.object;
+        const obj = parsed.value.object.get("process").?.object;
         if (obj.get("pid").?.integer != child_pid) continue;
         found = true;
         try std.testing.expectEqualStrings("sleep", obj.get("name").?.string);
         try std.testing.expectEqualStrings("/bin/sleep 5", obj.get("command_line").?.string);
+        try std.testing.expectEqual(@as(usize, entity.len), obj.get("entity_id").?.string.len);
+        // The test runner was recorded in the table on the baseline pass.
+        const parent = parsed.value.object.get("parent").?.object;
+        try std.testing.expectEqual(@as(usize, entity.len), parent.get("entity_id").?.string.len);
+        try schema_check.expectValid(alloc, "process_start", payload);
         // Compare with wherever /bin/sleep really lives. usrmerge gives /usr/bin/sleep,
         // and Ubuntu 26.04 links it into Rust coreutils under /usr/lib/cargo/bin/coreutils/.
         var real_buf: [std.fs.max_path_bytes]u8 = undefined;
         const real_len = try std.Io.Dir.realPathFileAbsolute(std.testing.io, "/bin/sleep", &real_buf);
-        const image_path = obj.get("image_path").?.string;
+        const image_path = obj.get("image").?.string;
         if (!std.mem.eql(u8, image_path, real_buf[0..real_len]) and !std.mem.eql(u8, image_path, "/bin/sleep")) {
             std.debug.print("image_path={s} realpath(/bin/sleep)={s}\n", .{ image_path, real_buf[0..real_len] });
             return error.TestUnexpectedResult;
         }
-        try std.testing.expectEqual(@as(i64, @intCast(std.c.getpid())), obj.get("ppid").?.integer);
-        try std.testing.expect(obj.get("image_sha256").? == .string);
+        try std.testing.expectEqual(@as(i64, @intCast(std.c.getpid())), parent.get("pid").?.integer);
+        try std.testing.expect(obj.get("hashes").?.object.get("sha256").? == .string);
         // Spawned a moment ago: start time must be close to the wall clock.
-        const started = obj.get("start_time_unix").?.integer;
+        const started: i64 = @intCast(entity.parseIso(obj.get("start_time").?.string).? / entity.ticks_per_second);
         try std.testing.expect(@abs(started - iox.timestamp()) <= 60);
     }
     try std.testing.expect(found);
@@ -492,6 +649,6 @@ test "launch diff sees a spawned /bin/sleep with full argv and start time" {
     for (again) |payload| {
         var parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
         defer parsed.deinit();
-        try std.testing.expect(parsed.value.object.get("pid").?.integer != child_pid);
+        try std.testing.expect(parsed.value.object.get("process").?.object.get("pid").?.integer != child_pid);
     }
 }

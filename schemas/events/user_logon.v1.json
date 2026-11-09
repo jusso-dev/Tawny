@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "user_logon.v1.json",
+  "title": "USER_LOGON",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "user"
+  ],
+  "properties": {
+    "user": {
+      "$ref": "common.v1.json#/$defs/user"
+    },
+    "subject": {
+      "$ref": "common.v1.json#/$defs/user"
+    },
+    "logon": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "integer"
+        },
+        "type_name": {
+          "type": "string"
+        },
+        "elevated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "network": {
+      "$ref": "common.v1.json#/$defs/network"
+    },
+    "process": {
+      "$ref": "common.v1.json#/$defs/process"
+    }
+  }
+}

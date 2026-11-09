@@ -1,0 +1,32 @@
+{
+  "sensor": "sysmon",
+  "channel": "Microsoft-Windows-Sysmon/Operational",
+  "record_id": 1001,
+  "ts": "2026-11-09T01:00:05.2001234Z",
+  "event_id": 1,
+  "process": {
+    "entity_id": "wxjmbxyyq7eybnyac2lfc654ka",
+    "guid": "{6f2c1a4e-0000-0000-0000-000000000052}",
+    "pid": 5200,
+    "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "name": "powershell.exe",
+    "user": {
+      "name": "alice",
+      "domain": "CORP"
+    },
+    "start_time": "2026-11-09T01:00:05.200Z",
+    "command_line": "powershell.exe -nop -w hidden",
+    "cwd": "C:\\Users\\alice\\",
+    "integrity_level": "Medium",
+    "session_id": 1,
+    "hashes": {
+      "sha256": "0f343b0931126a20f133d67c2b018a3b5ab57a4f0b2f3d2b41b4d6f7f8e9a0b1"
+    }
+  },
+  "parent": {
+    "entity_id": "7iyrf5zm6b5flyledskp3lodvm",
+    "pid": 4100,
+    "image": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+    "name": "WINWORD.EXE"
+  }
+}

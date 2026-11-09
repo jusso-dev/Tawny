@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "service_create.v1.json",
+  "title": "SERVICE_CREATE",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "common.v1.json#/$defs/sensor_fields"
+    }
+  ],
+  "required": [
+    "service"
+  ],
+  "properties": {
+    "service": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image_path": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "start_type": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        }
+      }
+    },
+    "user": {
+      "$ref": "common.v1.json#/$defs/user"
+    }
+  }
+}

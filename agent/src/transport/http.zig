@@ -2,6 +2,7 @@ const std = @import("std");
 const buffer_mod = @import("buffer.zig");
 const iox = @import("../io_compat.zig");
 const keystore = @import("../keystore.zig");
+const entity = @import("../entity.zig");
 
 pub const HeartbeatPayload = struct {
     agent_version: []const u8,
@@ -37,6 +38,10 @@ pub const Client = struct {
     base_url: []const u8,
     jwt: []const u8,
     agent_id: []const u8 = "",
+    /// Sent in the v2 envelope and signed.
+    sensor_version: []const u8 = "0.0.0",
+    /// Boot id for this boot (entity id input), lower-case UUID text.
+    boot_id: [36]u8 = entity.nil_uuid.*,
     /// Plaintext seed location (legacy layout / keystore fallback).
     device_key_path: []const u8 = "",
     /// Keystore holding the device seed; plaintext-only unless set.
@@ -167,9 +172,6 @@ pub const Client = struct {
     pub fn flushEvents(self: *Client, buf: *buffer_mod.Buffer) !void {
         if (buf.len() == 0) return;
 
-        var body = std.array_list.Managed(u8).init(self.allocator);
-        defer body.deinit();
-
         // One batch id per flush attempt for server-side integrity correlation.
         var batch_id: [16]u8 = undefined;
         try std.Io.randomSecure(iox.current(), &batch_id);
@@ -178,74 +180,28 @@ pub const Client = struct {
         var batch_uuid: [36]u8 = undefined;
         formatUuid(batch_id, &batch_uuid);
 
-        // Build canonical string for Ed25519 device signature while emitting events.
-        var canonical = std.array_list.Managed(u8).init(self.allocator);
-        defer canonical.deinit();
-        try canonical.appendSlice("tawny-batch-v1\n");
-        try canonical.appendSlice(self.agent_id);
-        try canonical.append('\n');
-        try canonical.appendSlice(&batch_uuid);
-        try canonical.append('\n');
+        var batch = try buildBatchV2(self.allocator, .{
+            .agent_id = self.agent_id,
+            .batch_id = &batch_uuid,
+            .boot_id = &self.boot_id,
+            .sensor_version = self.sensor_version,
+        }, buf.items());
+        defer batch.deinit(self.allocator);
 
-        try body.appendSlice("{\"batch_id\":\"");
-        try body.appendSlice(&batch_uuid);
-        try body.appendSlice("\",\"events\":[");
-
-        var sent_count: usize = 0;
-        for (buf.items()[0..@min(buf.len(), 500)]) |ev| {
-            const estimated_len = 128 + ev.event_type.len + ev.payload.len;
-            if (sent_count > 0 and body.items.len + estimated_len > 900 * 1024) break;
-            if (sent_count > 0) try body.append(',');
-            var uuid: [36]u8 = undefined;
-            formatUuid(ev.client_event_id, &uuid);
-            try body.appendSlice("{\"client_event_id\":\"");
-            try body.appendSlice(&uuid);
-            try body.appendSlice("\",\"type\":");
-            var type_json: std.Io.Writer.Allocating = .init(self.allocator);
-            defer type_json.deinit();
-            try std.json.Stringify.value(ev.event_type, .{}, &type_json.writer);
-            try body.appendSlice(type_json.written());
-            try body.print(
-                \\,"occurred_at":{d},"sequence":{d},"payload":{s}}}
-            , .{ ev.occurred_at, ev.sequence, ev.payload });
-
-            // Canonical line: client_event_id|sequence|type|occurred_at|sha256(payload)
-            var digest: [32]u8 = undefined;
-            std.crypto.hash.sha2.Sha256.hash(ev.payload, &digest, .{});
-            try canonical.appendSlice(&uuid);
-            try canonical.append('|');
-            const meta = try self.allocator.print("{d}|{s}|{d}|", .{ ev.sequence, ev.event_type, ev.occurred_at });
-            defer self.allocator.free(meta);
-            try canonical.appendSlice(meta);
-            try appendHexLower(&canonical, &digest);
-            try canonical.append('\n');
-
-            sent_count += 1;
-        }
-        try body.appendSlice("]");
-
-        if (self.trySignBatch(canonical.items)) |sig_b64| {
+        if (self.trySignBatch(batch.canonical.items)) |sig_b64| {
             defer self.allocator.free(sig_b64);
-            try body.appendSlice(",\"signature\":\"");
-            try body.appendSlice(sig_b64);
-            try body.appendSlice("\"");
+            try batch.body.appendSlice(self.allocator, ",\"signature\":\"");
+            try batch.body.appendSlice(self.allocator, sig_b64);
+            try batch.body.appendSlice(self.allocator, "\"");
         }
-        try body.appendSlice("}");
+        try batch.body.appendSlice(self.allocator, "}");
 
-        const response = try self.post("/api/agents/events", body.items);
+        const response = try self.post("/api/agents/events", batch.body.items);
         defer self.allocator.free(response);
-        buf.acknowledgeFirst(sent_count) catch |err| {
+        buf.acknowledgeFirst(batch.sent) catch |err| {
             self.noteFailure();
             return err;
         };
-    }
-
-    fn appendHexLower(list: *std.array_list.Managed(u8), bytes: []const u8) !void {
-        const hex = "0123456789abcdef";
-        for (bytes) |b| {
-            try list.append(hex[b >> 4]);
-            try list.append(hex[b & 0xf]);
-        }
     }
 
     fn trySignBatch(self: *Client, canonical: []const u8) ?[]u8 {
@@ -401,6 +357,72 @@ fn buildActionResultBody(
     }, .{});
 }
 
+pub const BatchHeader = struct {
+    agent_id: []const u8,
+    batch_id: []const u8,
+    boot_id: []const u8,
+    sensor_version: []const u8,
+};
+
+pub const Batch = struct {
+    /// Body without the signature and closing brace.
+    body: std.ArrayList(u8) = .empty,
+    /// tawny-batch-v2 string to sign (server/src/crypto/batch_sig.zig).
+    canonical: std.ArrayList(u8) = .empty,
+    sent: usize = 0,
+
+    pub fn deinit(self: *Batch, alloc: std.mem.Allocator) void {
+        self.body.deinit(alloc);
+        self.canonical.deinit(alloc);
+    }
+};
+
+/// Schema 2 body (schemas/events/envelope.v2.json) and its canonical string:
+///
+///   tawny-batch-v2\n<agent_id>\n<batch_id>\n<boot_id>\n<sensor_version>\n
+///   <event_id>|<seq>|<event_type>|<v>|<ts>|<sha256 hex of data bytes>\n   (per event)
+///
+/// Up to 500 events and about 900 KiB per batch.
+pub fn buildBatchV2(alloc: std.mem.Allocator, h: BatchHeader, events: []const buffer_mod.Event) !Batch {
+    var b: Batch = .{};
+    errdefer b.deinit(alloc);
+    try b.canonical.print(alloc, "tawny-batch-v2\n{s}\n{s}\n{s}\n{s}\n", .{ h.agent_id, h.batch_id, h.boot_id, h.sensor_version });
+
+    var jw_out: std.Io.Writer.Allocating = .init(alloc);
+    defer jw_out.deinit();
+    try std.json.Stringify.value(.{
+        .schema = @as(u8, 2),
+        .batch_id = h.batch_id,
+        .agent = .{ .agent_id = h.agent_id, .sensor_version = h.sensor_version, .boot_id = h.boot_id },
+    }, .{}, &jw_out.writer);
+    const head = jw_out.written();
+    // Reopen the object to append the events array.
+    try b.body.appendSlice(alloc, head[0 .. head.len - 1]);
+    try b.body.appendSlice(alloc, ",\"events\":[");
+
+    for (events[0..@min(events.len, 500)]) |ev| {
+        const estimated_len = 160 + ev.event_type.len + ev.payload.len;
+        if (b.sent > 0 and b.body.items.len + estimated_len > 900 * 1024) break;
+        if (b.sent > 0) try b.body.append(alloc, ',');
+        var uuid: [36]u8 = undefined;
+        formatUuid(ev.client_event_id, &uuid);
+        var ts_buf: [24]u8 = undefined;
+        const ts = entity.formatIso(&ts_buf, @as(u64, @intCast(@max(ev.occurred_at, 0))) * entity.ticks_per_second);
+        // event_type is limited to [A-Za-z0-9_.-] by the buffer, so it needs no escaping.
+        try b.body.print(alloc, "{{\"event_id\":\"{s}\",\"event_type\":\"{s}\",\"v\":1,\"ts\":\"{s}\",\"seq\":{d},\"data\":{s}}}", .{
+            &uuid, ev.event_type, ts, ev.sequence, ev.payload,
+        });
+
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(ev.payload, &digest, .{});
+        const hex = std.fmt.bytesToHex(digest, .lower);
+        try b.canonical.print(alloc, "{s}|{d}|{s}|1|{s}|{s}\n", .{ &uuid, ev.sequence, ev.event_type, ts, &hex });
+        b.sent += 1;
+    }
+    try b.body.append(alloc, ']');
+    return b;
+}
+
 fn formatUuid(id: [16]u8, out: *[36]u8) void {
     const hex = std.fmt.bytesToHex(id, .lower);
     @memcpy(out[0..8], hex[0..8]);
@@ -482,4 +504,33 @@ test "heartbeat body escapes agent version" {
         "{\"agent_version\":\"0.1.0\\\",\\\"x\\\":\\\"\\\\\",\"uptime_seconds\":5,\"buffer_depth\":2}",
         body,
     );
+}
+
+test "v2 batch body and canonical string" {
+    const alloc = std.testing.allocator;
+    const id = [_]u8{ 0, 0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0xe1 };
+    const events = [_]buffer_mod.Event{
+        .{ .client_event_id = id, .sequence = 41, .event_type = "process_start", .occurred_at = 1760000000, .payload = "{\"process\":{\"pid\":10, \"name\":\"a \\\"b\\\"\"}}" },
+    };
+    var b = try buildBatchV2(alloc, .{
+        .agent_id = "00000000-0000-0000-0000-00000000b001",
+        .batch_id = "00000000-0000-0000-0000-00000000b002",
+        .boot_id = "3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c",
+        .sensor_version = "0.1.0",
+    }, &events);
+    defer b.deinit(alloc);
+    try b.body.append(alloc, '}');
+    try std.testing.expectEqualStrings(
+        "{\"schema\":2,\"batch_id\":\"00000000-0000-0000-0000-00000000b002\",\"agent\":{\"agent_id\":\"00000000-0000-0000-0000-00000000b001\",\"sensor_version\":\"0.1.0\",\"boot_id\":\"3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c\"},\"events\":[" ++
+            "{\"event_id\":\"00000000-0000-4000-8000-0000000000e1\",\"event_type\":\"process_start\",\"v\":1,\"ts\":\"2025-10-09T08:53:20.000Z\",\"seq\":41,\"data\":{\"process\":{\"pid\":10, \"name\":\"a \\\"b\\\"\"}}}]}",
+        b.body.items,
+    );
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(events[0].payload, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const want = try std.fmt.allocPrint(alloc, "tawny-batch-v2\n00000000-0000-0000-0000-00000000b001\n00000000-0000-0000-0000-00000000b002\n3c1c4b5e-6d2a-4f0e-9b7a-2d1e5f6a7b8c\n0.1.0\n00000000-0000-4000-8000-0000000000e1|41|process_start|1|2025-10-09T08:53:20.000Z|{s}\n", .{&hex});
+    defer alloc.free(want);
+    try std.testing.expectEqualStrings(want, b.canonical.items);
+    try std.testing.expectEqual(@as(usize, 1), b.sent);
+    try @import("../schema_check.zig").expectValidFile(alloc, "envelope.v2.json", b.body.items);
 }
