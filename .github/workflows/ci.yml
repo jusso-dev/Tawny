@@ -460,7 +460,10 @@ jobs:
           wait "$dump"
           tail -n 1 "$out"
           if [[ "$source" == "audit_netlink" ]]; then
-            n="$(grep -c $'^EVENT\tprocess_start\t.*"image":"/usr/bin/true"' "$out" || true)"
+            # /bin/true may resolve elsewhere (gnutrue on Ubuntu 26.04), so match the real path.
+            true_img="$(readlink -f /bin/true)"
+            n="$(grep -cF "\"image\":\"$true_img\"" "$out" || true)"
+            echo "/bin/true resolves to $true_img"
             echo "process_start events for /bin/true: $n"
             test "$n" -ge 50
             grep -q $'^EVENT\tprocess_start\t.*"entity_id":"[a-z2-7]\\{26\\}"' "$out"
