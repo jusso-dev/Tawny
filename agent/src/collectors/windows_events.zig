@@ -1602,15 +1602,23 @@ fn dumpWindows(alloc: std.mem.Allocator, state_dir: []const u8, since_seconds: u
         processor.sysmon_active = health.sysmonDelivering();
 
         var total: usize = 0;
+        var pull_failed = false;
         while (true) {
             for (xml_list.items) |x| alloc.free(x);
             xml_list.clearRetainingCapacity();
-            const pulled = try sub.pullWait(&xml_list, max_events_per_channel_tick, wait_ms);
+            const pulled = sub.pullWait(&xml_list, max_events_per_channel_tick, wait_ms) catch |err| {
+                // Report the Win32 code and keep going, so one bad channel
+                // doesn't hide the others.
+                std.debug.print("channel {s}: pull failed {s} (win32 {d}) after {d} events\n", .{ ch.path, @errorName(err), eventlog.lastError(), total });
+                for (xml_list.items) |x| try processor.handleXml(x, now, &items);
+                pull_failed = true;
+                break;
+            };
             for (xml_list.items) |x| try processor.handleXml(x, now, &items);
             total += pulled.count;
             if (pulled.count == 0) break;
         }
-        std.debug.print("channel {s}: ok, {d} events\n", .{ ch.path, total });
+        if (!pull_failed) std.debug.print("channel {s}: ok, {d} events\n", .{ ch.path, total });
         if (total > 0) try saveBookmark(alloc, state_dir, ch.path, &sub);
     }
     try processor.blocks.flushAll(&items);
