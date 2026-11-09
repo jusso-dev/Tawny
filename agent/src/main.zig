@@ -17,6 +17,7 @@ const inventory_collector = @import("collectors/inventory.zig");
 const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
 const windows_events = @import("collectors/windows_events.zig");
+const linux_sensor = @import("collectors/linux_sensor.zig");
 const response_actions = @import("response_actions.zig");
 const action_key = @import("action_key.zig");
 const action_journal = @import("action_journal.zig");
@@ -40,6 +41,9 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--eventlog-dump")) {
         return windows_events.dumpCommand(alloc, args[2..]);
+    }
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--linux-sensor-dump")) {
+        return linux_sensor.dumpCommand(alloc, args[2..]);
     }
     if (args.len >= 2 and @import("keystore_debug.zig").isDebugCommand(args[1])) {
         const code = @import("keystore_debug.zig").run(alloc, args[1..]);
@@ -153,6 +157,24 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         std.debug.print("process baseline failed: {s}\n", .{@errorName(err)});
     }
 
+    // Kernel events on Linux (#59): audit netlink, the auditd log or
+    // Tetragon. With one running the /proc poller becomes a 10 minute
+    // reconciliation pass; without one it stays the source and health says
+    // degraded.
+    var kernel_sensor = linux_sensor.Sensor.init(alloc);
+    defer kernel_sensor.deinit();
+    kernel_sensor.table = &entities;
+    if (builtin.target.os.tag == .linux) {
+        kernel_sensor.start(.{
+            .mode = cfg.linux_sensor,
+            .audit_log_path = cfg.audit_log_path,
+            .tetragon_export_path = cfg.tetragon_export_path,
+            .watch_dirs = cfg.fim_paths,
+        });
+        std.debug.print("linux sensor: {s} ({s}) {s}\n", .{ @tagName(kernel_sensor.source), kernel_sensor.status(), kernel_sensor.reason });
+    }
+    const process_poll_seconds = kernel_sensor.pollSeconds(cfg.process_events_interval_seconds);
+
     var fs_watcher = try fs_events.Watcher.init(alloc, cfg.fim_paths);
     defer fs_watcher.deinit();
 
@@ -250,17 +272,25 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     var update_timer = try iox.Timer.start();
     var first_update_check = true;
 
+    if (builtin.target.os.tag == .linux) {
+        if (kernel_sensor.healthPayload(alloc)) |p| {
+            defer alloc.free(p);
+            queueEvent(&buf, "sensor_health", p);
+        } else |_| {}
+    }
+
     while (!lifecycle.shouldStop()) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
             const uptime: i64 = @intCast(iox.timestamp() - start_time);
+            const sensors = sensorStatus(&kernel_sensor);
             if (healthPayloadFull(alloc, .{
                 .uptime = uptime,
                 .depth = buf.totalLen(),
                 .next_sequence = buf.next_sequence,
                 .boot_id = &boot_id,
                 .key_protection = cfg.secret_store.protection(),
-                .sensors = sensorStatus(&process_events_timer, process_tracker_last_event, cfg.process_events_interval_seconds),
+                .sensors = sensors.slice(),
                 .update = upd.health(),
             })) |payload| {
                 defer alloc.free(payload);
@@ -402,16 +432,36 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         }
 
         if (lifecycle.shouldStop()) break;
-        if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
+        if (builtin.target.os.tag == .linux and kernel_sensor.kernelActive()) {
+            if (kernel_sensor.collect()) |items| {
+                defer linux_sensor.freeItems(alloc, items);
+                for (items) |item| {
+                    buf.push(.{
+                        .event_type = item.event_type,
+                        .occurred_at = item.occurred_at,
+                        .payload = item.payload,
+                    }) catch |err| {
+                        std.debug.print("queue {s} failed: {s}\n", .{ item.event_type, @errorName(err) });
+                        break;
+                    };
+                }
+            } else |err| {
+                std.debug.print("linux sensor failed: {s}\n", .{@errorName(err)});
+            }
+        }
+
+        if (lifecycle.shouldStop()) break;
+        if (process_events_timer.read() / std.time.ns_per_s >= process_poll_seconds) {
             process_events_timer.reset();
             if (process_tracker.collectLaunches()) |launches| {
-                if (launches.len > 0) process_tracker_last_event = iox.timestamp();
-                emitBatch(&buf, "process_start", launches, alloc);
+                const fresh = dropReported(&kernel_sensor, "process_start", launches, alloc);
+                if (fresh.len > 0) process_tracker_last_event = iox.timestamp();
+                emitBatch(&buf, "process_start", fresh, alloc);
             } else |err| {
                 std.debug.print("process_events collector failed: {s}\n", .{@errorName(err)});
             }
             if (process_tracker.takeExits()) |exits| {
-                emitBatch(&buf, "process_exit", exits, alloc);
+                emitBatch(&buf, "process_exit", dropReported(&kernel_sensor, "process_exit", exits, alloc), alloc);
             } else |_| {}
         }
 
@@ -595,16 +645,62 @@ fn acceptOwnKeyWrite(alloc: std.mem.Allocator, mon: *tamper.Monitor, state_path:
 
 /// Per-sensor status for agent_health. Windows channels report their own
 /// sensor_health; here the launch tracker reports running with its last event
-/// age.
-fn sensorStatus(timer: *iox.Timer, last_event: i64, interval: u32) [1]SensorEntry {
-    _ = timer;
-    _ = interval;
+/// age, and on Linux the kernel source reports which one is active, its
+/// status and its event rate.
+const SensorList = struct {
+    items: [2]SensorEntry,
+    len: usize,
+    fn slice(self: *const SensorList) []const SensorEntry {
+        return self.items[0..self.len];
+    }
+};
+
+fn sensorStatus(kernel: *linux_sensor.Sensor) SensorList {
     const now = iox.timestamp();
-    return .{.{
-        .name = "process_events",
-        .status = "running",
-        .last_event_age_seconds = if (last_event == 0) null else @max(now - last_event, 0),
-    }};
+    const age = struct {
+        fn of(n: i64, last: i64) ?i64 {
+            return if (last == 0) null else @max(n - last, 0);
+        }
+    }.of;
+    var out = SensorList{ .items = .{
+        .{ .name = "process_events", .status = "running", .last_event_age_seconds = age(now, process_tracker_last_event) },
+        .{ .name = "linux_kernel", .status = "unknown" },
+    }, .len = 1 };
+    if (builtin.target.os.tag == .linux) {
+        out.len = 2;
+        out.items[1] = .{
+            .name = "linux_kernel",
+            .status = kernel.status(),
+            .last_event_age_seconds = age(now, kernel.last_event),
+            .source = @tagName(kernel.source),
+            .events_per_minute = kernel.takeRate(),
+        };
+    }
+    return out;
+}
+
+/// Drop reconciliation payloads the kernel source already reported. Frees
+/// what it drops; returns the same slice, shortened.
+fn dropReported(kernel: *const linux_sensor.Sensor, event_type: []const u8, payloads: [][]u8, alloc: std.mem.Allocator) [][]u8 {
+    var keep: usize = 0;
+    for (payloads) |p| {
+        if (kernel.alreadyReported(event_type, p)) {
+            alloc.free(p);
+            continue;
+        }
+        payloads[keep] = p;
+        keep += 1;
+    }
+    // emitBatch frees the slice; shrink in place keeps the allocation.
+    if (alloc.resize(payloads, keep)) return payloads[0..keep];
+    const out = alloc.alloc([]u8, keep) catch {
+        for (payloads[0..keep]) |p| alloc.free(p);
+        alloc.free(payloads);
+        return &.{};
+    };
+    @memcpy(out, payloads[0..keep]);
+    alloc.free(payloads);
+    return out;
 }
 
 /// Quarantine directory. `%ProgramData%\Tawny\Quarantine` on Windows,
@@ -762,9 +858,13 @@ test "main module loads" {
     _ = @import("keystore_debug.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
+    // Linux audit and Tetragon parsing and mapping are pure.
+    _ = @import("platform/linux/audit.zig");
+    _ = @import("platform/linux/tetragon.zig");
     // Windows event log parsing and mapping are pure too.
     _ = @import("platform/windows/evtxml.zig");
     _ = windows_events;
+    _ = linux_sensor;
     if (builtin.target.os.tag == .macos) {
         _ = @import("platform/macos/fsevents.zig");
         _ = @import("platform/macos/dnslog.zig");
@@ -871,6 +971,9 @@ pub const SensorEntry = struct {
     name: []const u8,
     status: []const u8,
     last_event_age_seconds: ?i64 = null,
+    /// Linux kernel source (#59): which one is active and its event rate.
+    source: ?[]const u8 = null,
+    events_per_minute: ?u64 = null,
 };
 
 pub const HealthInput = struct {
@@ -879,7 +982,7 @@ pub const HealthInput = struct {
     next_sequence: u64,
     boot_id: []const u8,
     key_protection: ?[]const u8 = null,
-    sensors: [1]SensorEntry = .{.{ .name = "process_events", .status = "unknown" }},
+    sensors: []const SensorEntry = &.{.{ .name = "process_events", .status = "unknown" }},
     update: ?updater.HealthState = null,
 };
 
@@ -891,7 +994,7 @@ fn healthPayloadFull(alloc: std.mem.Allocator, in: HealthInput) ![]u8 {
         .next_sequence = in.next_sequence,
         .boot_id = in.boot_id,
         .key_protection = in.key_protection,
-        .sensors = &in.sensors,
+        .sensors = in.sensors,
         .update = in.update,
     }, .{ .emit_null_optional_fields = false });
 }
@@ -906,7 +1009,10 @@ test "agent_health payload matches its schema" {
         .next_sequence = 9,
         .boot_id = entity.nil_uuid,
         .key_protection = "dpapi",
-        .sensors = .{.{ .name = "process_events", .status = "running", .last_event_age_seconds = 3 }},
+        .sensors = &.{
+            .{ .name = "process_events", .status = "running", .last_event_age_seconds = 3 },
+            .{ .name = "linux_kernel", .status = "degraded", .source = "proc_poller", .events_per_minute = 0 },
+        },
         .update = .{ .state = .idle, .ring = "50", .bucket = 42 },
     });
     defer std.testing.allocator.free(full);

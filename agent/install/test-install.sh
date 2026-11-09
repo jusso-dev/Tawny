@@ -106,4 +106,68 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   done
 fi
 
+if [[ "$(uname -s)" == "Linux" ]]; then
+  # The dry run prints the systemd unit. It must keep User=tawny and every
+  # hardening line, and grant exactly the documented capabilities (#59).
+  unit_out="$test_dir/tawny-agent.service"
+  bash "$installer" \
+    --install-dir "$install_dir" \
+    --config-path "$config_path" \
+    --state-dir "$state_dir" \
+    --binary-path "$local_binary" \
+    --sha256 "$sha256" \
+    --skip-attestation \
+    --dry-run | sed -n 's/^\[dry-run\]   //p' > "$unit_out"
+  expected_caps="CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_DAC_READ_SEARCH CAP_KILL CAP_SYS_PTRACE"
+  for key in AmbientCapabilities CapabilityBoundingSet; do
+    lines="$(grep -c "^${key}=" "$unit_out" || true)"
+    if [[ "$lines" != "1" ]]; then
+      echo "unit has $lines ${key}= lines, want 1" >&2
+      exit 1
+    fi
+    got="$(sed -n "s/^${key}=//p" "$unit_out" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/ $//')"
+    if [[ "$got" != "$expected_caps" ]]; then
+      echo "unit ${key} is '$got', want '$expected_caps'" >&2
+      exit 1
+    fi
+  done
+  for expected in \
+    'User=tawny' \
+    'Group=tawny' \
+    'UMask=0027' \
+    'NoNewPrivileges=true' \
+    'PrivateDevices=true' \
+    'PrivateTmp=true' \
+    'ProtectClock=true' \
+    'ProtectControlGroups=true' \
+    'ProtectHome=read-only' \
+    'ProtectKernelLogs=true' \
+    'ProtectKernelModules=true' \
+    'ProtectKernelTunables=true' \
+    'ProtectSystem=strict' \
+    "ReadWritePaths=\"$state_dir\"" \
+    'LockPersonality=true' \
+    'MemoryDenyWriteExecute=true' \
+    'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' \
+    'RestrictNamespaces=true' \
+    'RestrictRealtime=true' \
+    'RestrictSUIDSGID=true' \
+    'SystemCallArchitectures=native'; do
+    if ! grep -Fx -- "$expected" "$unit_out" >/dev/null; then
+      echo "unit missing: $expected" >&2
+      exit 1
+    fi
+  done
+  if grep -E '^(User|Group)=root|^(PermissionsStartOnly|Privileged)' "$unit_out" >/dev/null; then
+    echo "unit runs with root privileges" >&2
+    exit 1
+  fi
+  if command -v systemd-analyze >/dev/null 2>&1; then
+    systemd-analyze verify "$unit_out" 2>&1 | grep -iE 'capabilit|unknown (key|lvalue)' && {
+      echo "systemd-analyze rejected the capability lines" >&2
+      exit 1
+    }
+  fi
+fi
+
 printf 'installer smoke tests passed\n'

@@ -1,0 +1,18 @@
+1300 audit(1731200000.123:4567): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c8 a1=55d0e0 a2=55d100 a3=8 items=2 ppid=4100 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="curl" exe="/usr/bin/curl" subj=unconfined key="tawny"
+1309 audit(1731200000.123:4567): argc=3 a0="curl" a1="-s" a2=68747470733A2F2F6578616D706C652E636F6D2F612062
+1307 audit(1731200000.123:4567): cwd="/home/alice"
+1302 audit(1731200000.123:4567): item=0 name="/usr/bin/curl" inode=393551 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+1302 audit(1731200000.123:4567): item=1 name="/lib64/ld-linux-x86-64.so.2" inode=393220 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+1327 audit(1731200000.123:4567): proctitle=6375726C002D73
+1320 audit(1731200000.123:4567):
+1400 audit(1731200000.200:4568): apparmor="STATUS" operation="profile_load"
+1300 audit(1731200000.240:4569): arch=c000003e syscall=42 success=yes exit=0 a0=5 a1=7ffd2a10 a2=10 a3=0 items=0 ppid=4100 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="curl" exe="/usr/bin/curl" subj=unconfined key="tawny"
+1306 audit(1731200000.240:4569): saddr=020001BB5DB8D70E0000000000000000
+1327 audit(1731200000.240:4569): proctitle=6375726C
+1320 audit(1731200000.240:4569):
+1300 audit(1731200000.250:4570): arch=c000003e syscall=42 success=no exit=-115 a0=6 a1=7ffd2a20 a2=1c a3=0 items=0 ppid=4100 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="curl" exe="/usr/bin/curl" subj=unconfined key="tawny"
+1306 audit(1731200000.250:4570): saddr=0A0001BB0000000020010DB800000000000000000000001000000000
+1320 audit(1731200000.250:4570):
+1300 audit(1731200000.900:4571): arch=c000003e syscall=231 a0=0 a1=e7 a2=3c a3=7f items=0 ppid=4100 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="curl" exe="/usr/bin/curl" subj=unconfined key="tawny"
+1327 audit(1731200000.900:4571): proctitle=6375726C
+1320 audit(1731200000.900:4571):
