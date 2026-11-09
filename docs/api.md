@@ -360,8 +360,13 @@ Poll `GET /api/agents/{id}/actions` for the outcome; actions are delivered on
 the agent's next heartbeat and finish as `succeeded`, `failed`, `cancelled` or
 `expired`. Process control, quarantine and restore run on Windows; quarantine
 and restore also run on Linux and macOS. Host isolation (`isolate_host`,
-`isolate`) and `release` report `failed` with a clear reason until WFP and
-nftables isolation land.
+`isolate`) and `release` run on Windows through WFP: isolation permits
+loopback, the resolved server IPs, configured DNS resolvers and an optional
+admin allowlist, blocks everything else, survives a reboot, and releases itself
+when its `max_duration_seconds` deadline (default 24 h) passes with no renewal.
+The `isolate_host` payload accepts `max_duration_seconds`, `server_ips`,
+`dns_resolvers`, `admin_allowlist` and `nonce`. On Linux and macOS isolation
+reports `failed` with a clear reason until nftables isolation lands (#59).
 
 ### GET `/api/agents/{id}/actions` and `/api/agents/{id}/actions/{actionId}`
 

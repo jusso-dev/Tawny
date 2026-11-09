@@ -44,6 +44,10 @@ pub fn main(init: std.process.Init) !void {
         if (code != 0) std.process.exit(code);
         return;
     }
+    // Break-glass: tawny-agent release --code <code>
+    if (args.len == 4 and std.mem.eql(u8, args[1], "release") and std.mem.eql(u8, args[2], "--code")) {
+        return releaseCodeCommand(alloc, args[3]);
+    }
 
     if (builtin.target.os.tag == .windows) {
         // Under the SCM this blocks until the service stops; ServiceMain runs
@@ -173,6 +177,10 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     const quarantine_dir = quarantineDir(alloc, cfg.state_path) catch try alloc.dupe(u8, "quarantine");
     defer alloc.free(quarantine_dir);
 
+    // Reconcile WFP isolation with the journal at start, so a crash never
+    // leaves stray filters and an expired deadline releases itself (#57 §9.3).
+    reconcileIsolation(alloc, &cfg);
+
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
     var mcp = mcp_collector.Scanner.init(alloc);
@@ -247,11 +255,16 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
                             .public_key = action_pub,
                             .journal = j,
                             .quarantine_dir = quarantine_dir,
+                            .state_path = cfg.state_path,
+                            .backend_url = cfg.backend_url,
                         }, action);
                     } else {
                         std.debug.print("response action {s} skipped: no journal\n", .{action.id});
                     }
                 }
+                // Enforce the isolation deadline: if it passed with no renewal,
+                // release ourselves.
+                enforceIsolationDeadline(alloc, &cfg);
             } else |err| {
                 std.debug.print("heartbeat failed: {s}\n", .{@errorName(err)});
             }
@@ -450,6 +463,95 @@ fn quarantineDir(alloc: std.mem.Allocator, state_path: []const u8) ![]u8 {
     }
     const state_dir = std.fs.path.dirname(state_path) orelse ".";
     return std.fs.path.join(alloc, &.{ state_dir, "quarantine" });
+}
+
+const wfp = @import("platform/windows/wfp.zig");
+
+/// At start, reconcile WFP filters with the stored isolation state. If the
+/// deadline has passed, or there is no isolation on record, remove any stray
+/// Tawny filters. If still isolated and the filters are gone (a crash), re-add
+/// them from the stored inputs.
+fn reconcileIsolation(alloc: std.mem.Allocator, cfg: *config_mod.Config) void {
+    if (builtin.target.os.tag != .windows) return;
+    const loaded = wfp.loadState(alloc, cfg.state_path);
+    if (loaded == null) {
+        // No record: clear anything stray so a crash never leaves isolation on.
+        if (wfp.countFilters()) |n| {
+            if (n > 0) wfp.release() catch {};
+        } else |_| {}
+        return;
+    }
+    const s = loaded.?;
+    defer s.deinit();
+    if (!s.value.isolated) {
+        wfp.release() catch {};
+        wfp.clearState(alloc, cfg.state_path);
+        return;
+    }
+    if (wfp.deadlinePassed(s.value.started_unix, s.value.max_duration_seconds, iox.timestamp())) {
+        std.log.info("isolation deadline passed; releasing", .{});
+        wfp.release() catch {};
+        wfp.clearState(alloc, cfg.state_path);
+        return;
+    }
+    // Still isolated within the deadline: ensure the filters are present.
+    const n = wfp.countFilters() catch 0;
+    if (n == 0) {
+        std.log.info("re-applying isolation filters after restart", .{});
+        wfp.isolate(alloc, .{
+            .server_ips = s.value.server_ips,
+            .dns_resolvers = s.value.dns_resolvers,
+            .admin_allowlist = s.value.admin_allowlist,
+        }) catch |err| std.debug.print("re-isolate failed: {s}\n", .{@errorName(err)});
+    }
+}
+
+/// On each heartbeat, release isolation if its deadline has passed with no
+/// server renewal.
+fn enforceIsolationDeadline(alloc: std.mem.Allocator, cfg: *config_mod.Config) void {
+    if (builtin.target.os.tag != .windows) return;
+    const loaded = wfp.loadState(alloc, cfg.state_path) orelse return;
+    defer loaded.deinit();
+    if (!loaded.value.isolated) return;
+    if (wfp.deadlinePassed(loaded.value.started_unix, loaded.value.max_duration_seconds, iox.timestamp())) {
+        std.log.info("isolation deadline passed; releasing", .{});
+        wfp.release() catch {};
+        wfp.clearState(alloc, cfg.state_path);
+    }
+}
+
+/// Break-glass: `tawny-agent release --code <code>`. The code is
+/// HMAC-SHA256(secret, agent_id|nonce). The per-agent secret comes from
+/// TAWNY_ISOLATION_SECRET (shown in the UI); the nonce is the one recorded when
+/// isolation started. On a valid code the agent releases WFP isolation offline.
+fn releaseCodeCommand(alloc: std.mem.Allocator, code: []const u8) !void {
+    var cfg = try config_mod.load(alloc);
+    defer cfg.deinit();
+    const agent_id = cfg.agent_id orelse {
+        std.debug.print("release: this host is not enrolled\n", .{});
+        return;
+    };
+    const secret = @import("env.zig").getEnvVarOwned(alloc, "TAWNY_ISOLATION_SECRET") catch null;
+    defer if (secret) |s| alloc.free(s);
+    if (secret == null or secret.?.len == 0) {
+        std.debug.print("release: TAWNY_ISOLATION_SECRET is not set; cannot verify the break-glass code\n", .{});
+        return;
+    }
+    const loaded = wfp.loadState(alloc, cfg.state_path) orelse {
+        std.debug.print("release: no isolation on record\n", .{});
+        return;
+    };
+    defer loaded.deinit();
+    if (!wfp.verifyReleaseCode(secret.?, agent_id, loaded.value.nonce, code)) {
+        std.debug.print("release: break-glass code did not verify\n", .{});
+        return;
+    }
+    wfp.release() catch |err| {
+        std.debug.print("release: {s}\n", .{@errorName(err)});
+        return;
+    };
+    wfp.clearState(alloc, cfg.state_path);
+    std.debug.print("release: isolation released by break-glass code\n", .{});
 }
 
 fn scrubEnrollmentToken(alloc: std.mem.Allocator, config_path: []const u8) void {

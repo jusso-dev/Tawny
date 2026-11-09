@@ -622,11 +622,18 @@ agent verifies it before acting, with a local journal for dedupe and restart
 replay. Windows kill, suspend and resume work with the identity guard and the
 critical-process refusal list. Quarantine and restore work on Windows, Linux
 and macOS (XOR obfuscation, SDDL on Windows, owner-only elsewhere). WFP
-isolation has the filter-building plan, the auto-release deadline, the
-reconcile-on-start design and the break-glass release code as pure, tested
-logic; the live FwpmEngine integration and the `tawny-agent release --code`
-CLI are not wired yet, and `isolate_host`/`release` report `failed` until then.
-Linux nftables isolation lands in #59.
+isolation is live on Windows through `fwpuclnt`: `isolate_host` opens the
+engine and adds persistent filters in the fixed Tawny sublayer (permit
+loopback, the resolved server IPs, configured DNS resolvers and an optional
+admin allowlist; block everything else on the four ALE layers), then probes
+the server and a blocked address. `release` deletes the sublayer, its filters
+and the provider. The agent stores the deadline (default 24 h) and releases
+itself when it passes, checked on each heartbeat and reconciled at start so a
+crash never leaves stray filters. Break-glass `tawny-agent release --code`
+verifies an HMAC of the agent id and the isolation nonce with a per-agent
+secret (`TAWNY_ISOLATION_SECRET`); the server-side UI that shows that secret is
+not in this change. DHCP and DNS-by-hostname permits are simplified to address
+permits for now. Linux nftables isolation lands in #59.
 
 ## 10. Agent identity, protection, updates, health
 

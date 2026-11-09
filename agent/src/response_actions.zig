@@ -12,6 +12,7 @@ const action_sig = @import("action_sig.zig");
 const action_key = @import("action_key.zig");
 const journal_mod = @import("action_journal.zig");
 const quarantine = @import("quarantine.zig");
+const wfp = @import("platform/windows/wfp.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 const process_control = if (builtin.target.os.tag == .windows)
     @import("platform/windows/process_control.zig")
@@ -25,6 +26,10 @@ pub const Context = struct {
     public_key: ?Ed25519.PublicKey,
     journal: *journal_mod.Journal,
     quarantine_dir: []const u8,
+    /// Where isolation state is stored (`<state_path>.wfp`).
+    state_path: []const u8 = "",
+    /// Agent backend URL, for resolving server IPs and the verify probe.
+    backend_url: []const u8 = "",
 };
 
 const Result = struct {
@@ -99,15 +104,99 @@ fn dispatch(ctx: Context, action: transport.ResponseAction) Result {
     if (std.mem.eql(u8, t, "quarantine_file")) return quarantineAction(ctx, action);
     if (std.mem.eql(u8, t, "restore_file")) return restoreAction(ctx, action);
     if (std.mem.eql(u8, t, "isolate_host") or std.mem.eql(u8, t, "isolate"))
-        return fail(isolate_unsupported_message);
-    if (std.mem.eql(u8, t, "release"))
-        return fail("release is not supported on this agent build");
+        return isolateAction(ctx, action);
+    if (std.mem.eql(u8, t, "release") or std.mem.eql(u8, t, "release_host"))
+        return releaseAction(ctx);
     return fail("unknown response action");
 }
 
-/// The message the Linux e2e agent returns for isolate_host until #59 adds
-/// nftables isolation. Contract tests assert on this exact string.
-pub const isolate_unsupported_message = "isolate_host is not supported on linux yet (nftables isolation lands in #59)";
+const IsolatePayload = struct {
+    max_duration_seconds: ?i64 = null,
+    nonce: ?[]const u8 = null,
+    server_ips: []const []const u8 = &.{},
+    dns_resolvers: []const []const u8 = &.{},
+    admin_allowlist: []const []const u8 = &.{},
+};
+
+/// Resolve the backend host to IPv4 strings so the server stays reachable
+/// while isolated. Appends to `list`. Best-effort: a host that resolves to IPv6
+/// only is skipped (documented limit).
+fn resolveServerIps(ctx: Context, list: *std.ArrayList([]const u8)) void {
+    const url = ctx.backend_url;
+    const after = if (std.mem.indexOf(u8, url, "://")) |i| url[i + 3 ..] else url;
+    var host_port = after;
+    if (std.mem.indexOfScalar(u8, host_port, '/')) |i| host_port = host_port[0..i];
+    var host = host_port;
+    if (std.mem.lastIndexOfScalar(u8, host_port, ':')) |i| host = host_port[0..i];
+    if (host.len == 0) return;
+    // If the host is already a dotted IPv4, keep it verbatim.
+    if (wfp.parseIpv4(host) != null) {
+        if (ctx.alloc.dupe(u8, host)) |d| list.append(ctx.alloc, d) catch ctx.alloc.free(d) else |_| {}
+        return;
+    }
+    const addr = std.Io.net.IpAddress.resolve(iox.current(), host, 443) catch return;
+    switch (addr) {
+        .ip4 => |v| {
+            const b = v.bytes;
+            const text = std.fmt.allocPrint(ctx.alloc, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }) catch return;
+            list.append(ctx.alloc, text) catch ctx.alloc.free(text);
+        },
+        .ip6 => {}, // IPv6-only hosts are skipped (documented limit).
+    }
+}
+
+fn isolateAction(ctx: Context, action: transport.ResponseAction) Result {
+    if (builtin.target.os.tag != .windows) {
+        return fail("isolate_host is not supported on " ++ @tagName(builtin.target.os.tag) ++ " yet");
+    }
+    const parsed = std.json.parseFromSlice(IsolatePayload, ctx.alloc, action.payload, .{ .ignore_unknown_fields = true }) catch
+        return fail("invalid isolate payload");
+    defer parsed.deinit();
+    const p = parsed.value;
+
+    var ips: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ips.items) |ip| ctx.alloc.free(ip);
+        ips.deinit(ctx.alloc);
+    }
+    resolveServerIps(ctx, &ips);
+    for (p.server_ips) |s| {
+        if (ctx.alloc.dupe(u8, s)) |d| ips.append(ctx.alloc, d) catch ctx.alloc.free(d) else |_| {}
+    }
+
+    wfp.isolate(ctx.alloc, .{
+        .server_ips = ips.items,
+        .dns_resolvers = p.dns_resolvers,
+        .admin_allowlist = p.admin_allowlist,
+    }) catch |err| return fail(@errorName(err));
+
+    const max_dur = p.max_duration_seconds orelse wfp.default_max_duration_seconds;
+    wfp.saveState(ctx.alloc, ctx.state_path, .{
+        .isolated = true,
+        .started_unix = iox.timestamp(),
+        .max_duration_seconds = max_dur,
+        .nonce = p.nonce orelse "",
+        .server_ips = ips.items,
+        .dns_resolvers = p.dns_resolvers,
+        .admin_allowlist = p.admin_allowlist,
+    }) catch {};
+
+    // Verify: the server should still be reachable, a blocked address not.
+    const server_ok = if (ips.items.len > 0) wfp.tcpReachable(ips.items[0], 443, 3000) else true;
+    const blocked_ok = wfp.tcpReachable("192.0.2.1", 443, 1500); // TEST-NET, should fail
+    const msg = std.fmt.allocPrint(ctx.alloc, "isolated; server_reachable={}, blocked_unreachable={}", .{ server_ok, !blocked_ok }) catch
+        return ok("isolated");
+    return .{ .status = "succeeded", .message = msg, .owned = true };
+}
+
+fn releaseAction(ctx: Context) Result {
+    if (builtin.target.os.tag != .windows) {
+        return fail("release is not supported on " ++ @tagName(builtin.target.os.tag) ++ " yet");
+    }
+    wfp.release() catch |err| return fail(@errorName(err));
+    wfp.clearState(ctx.alloc, ctx.state_path);
+    return ok("isolation released");
+}
 
 const ProcessOp = enum { kill, do_suspend, do_resume };
 

@@ -258,6 +258,23 @@ jobs:
           if ($before -ne $after) { throw "restore hash mismatch: $before vs $after" }
           Write-Host "quarantine and restore round-trip OK"
 
+      # Live WFP: adds one block filter for a TEST-NET address (192.0.2.1),
+      # never a block-all, so it cannot cut the runner off. Confirms the filter
+      # is present, a routable address stays reachable (no over-block), then
+      # releases and confirms the sublayer is empty. Admin is required to open
+      # the filter engine; GitHub's windows runner user is an administrator.
+      - name: prove live WFP add, probe and release (safe, no block-all)
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
+          & $agent --wfp-selftest | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "wfp-selftest exit $LASTEXITCODE" }
+          Write-Host "live WFP add/probe/release OK"
+
       # --eventlog-dump reads, maps and bookmarks the channels. A second and
       # third dump with the same state dir check that a restart neither
       # repeats nor skips events. Sysmon is not installed on the runner.
