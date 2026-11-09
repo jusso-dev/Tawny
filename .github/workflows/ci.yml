@@ -200,6 +200,10 @@ jobs:
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = "Stop"
+          # The agent exits non-zero on purpose for a refused critical process.
+          # Govern flow by $LASTEXITCODE, not PowerShell 7.4's native-command
+          # error propagation, which would otherwise throw on that exit.
+          $PSNativeCommandUseErrorActionPreference = $false
           $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
 
           # Kill by PID plus start time. Start a long-running ping we own.
