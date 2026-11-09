@@ -5,6 +5,35 @@ const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const match = @import("../detect/match.zig");
 const package_exposure = @import("../detect/package_exposure.zig");
+const ast = @import("../detect/ast.zig");
+
+/// Compiled rule expressions, parsed once per drain. Keyed by rule id and
+/// updated_at so an edited rule is parsed again.
+const RuleCache = struct {
+    arena: std.heap.ArenaAllocator,
+    map: std.StringHashMapUnmanaged(?ast.Node) = .empty,
+
+    fn init(gpa: std.mem.Allocator) RuleCache {
+        return .{ .arena = .init(gpa) };
+    }
+
+    fn deinit(self: *RuleCache) void {
+        self.arena.deinit();
+    }
+
+    /// Parsed expression, or null when the stored JSON is unusable.
+    fn get(self: *RuleCache, rule_id: []const u8, updated_at: []const u8, json_text: []const u8) !?ast.Node {
+        const a = self.arena.allocator();
+        const key = try std.mem.concat(a, u8, &.{ rule_id, "@", updated_at });
+        const gop = try self.map.getOrPut(a, key);
+        if (gop.found_existing) return gop.value_ptr.*;
+        gop.value_ptr.* = blk: {
+            const v = std.json.parseFromSliceLeaky(std.json.Value, a, json_text, .{}) catch break :blk null;
+            break :blk ast.parseExpr(a, v) catch null;
+        };
+        return gop.value_ptr.*;
+    }
+};
 
 const DetectJob = struct {
     event_id: []const u8,
@@ -63,6 +92,8 @@ pub fn drain(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn) !u32 {
         for (claimed) |row| row.deinit(allocator);
         allocator.free(claimed);
     }
+    var cache = RuleCache.init(allocator);
+    defer cache.deinit();
     var done: u32 = 0;
     for (claimed) |row| {
         const qid = row.cols[0] orelse continue;
@@ -99,7 +130,7 @@ pub fn drain(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn) !u32 {
             done += 1;
             continue;
         }
-        evaluateRules(allocator, io, conn, tenant, job.agent_id, job.hostname, job.event_type, ev[0].cols[0].?, job.event_id, job.received_at) catch {
+        evaluateRules(allocator, io, conn, &cache, tenant, job.agent_id, job.hostname, job.event_type, ev[0].cols[0].?, job.event_id, job.received_at) catch {
             try failJob(conn, qid, "evaluate failed");
             continue;
         };
@@ -124,6 +155,7 @@ fn evaluateRules(
     allocator: std.mem.Allocator,
     io: std.Io,
     conn: *pg.Conn,
+    cache: *RuleCache,
     tenant_id: []const u8,
     agent_id: []const u8,
     hostname: []const u8,
@@ -134,7 +166,7 @@ fn evaluateRules(
 ) !void {
     const rules = try conn.exec(allocator,
         \\SELECT id::text, name, severity, operator, payload_path, match_value, mitre_techniques::text,
-        \\       format, source_definition
+        \\       format, source_definition, compiled_expression_json::text, updated_at::text
         \\FROM alert_rules
         \\WHERE tenant_id = $1::uuid AND is_enabled
         \\AND (event_type IS NULL OR event_type = $2)
@@ -169,6 +201,14 @@ fn evaluateRules(
         if (std.mem.eql(u8, format, "package_exposure")) {
             const definition = row.cols[8] orelse continue;
             if (!package_exposure.matches(allocator, definition, payload)) continue;
+        } else if (std.mem.eql(u8, format, "sigma") and row.cols[9] != null) {
+            // Compiled Sigma AST. Older Sigma rows without one use the
+            // single predicate below.
+            const expr = (try cache.get(row.cols[0].?, row.cols[10] orelse "", row.cols[9].?)) orelse {
+                std.debug.print("detect: rule {s} has an unusable compiled expression, skipped\n", .{row.cols[0] orelse "?"});
+                continue;
+            };
+            if (!ast.eval(.{ .allocator = allocator }, expr, root)) continue;
         } else {
             switch (match.evaluate(root, .{ .operator = row.cols[3], .path = row.cols[4], .want = row.cols[5] })) {
                 .match => {},
@@ -598,6 +638,88 @@ test "package exposure inventory alerts only after drain" {
     try std.testing.expectEqualStrings("1", hit_alerts);
     try std.testing.expectEqualStrings("0", miss_alerts);
     try std.testing.expect(finished >= 2);
+    try conn.execSimple("ROLLBACK");
+}
+
+const sigma_agent = "00000000-0000-0000-0000-00000000da01";
+const sigma_rule = "00000000-0000-0000-0000-00000000da02";
+
+test "compiled sigma rule with several selections alerts only on the full match" {
+    const url = std.testing.environ.getPosix("TAWNY_DATABASE_URL") orelse return;
+    if (url.len == 0) return;
+    const sigma = @import("../detect/sigma.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const conn = try pg.Conn.connect(allocator, io, url);
+    defer {
+        conn.close();
+        allocator.destroy(conn);
+    }
+    try conn.execSimple("BEGIN");
+    errdefer conn.execSimple("ROLLBACK") catch {};
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const map = try arena.create(sigma.FieldMap);
+    map.* = try sigma.FieldMap.load(arena);
+    const compiled = try sigma.compile(arena, map,
+        \\title: office spawns encoded powershell
+        \\logsource: {product: windows, category: process_creation}
+        \\detection:
+        \\  parent:
+        \\    ParentImage|endswith: '\WINWORD.EXE'
+        \\  child:
+        \\    Image|endswith: '\powershell.exe'
+        \\    CommandLine|windash|contains: ' -enc '
+        \\  filter:
+        \\    CommandLine|contains: 'sigma-db-allowed'
+        \\  condition: parent and child and not filter
+    );
+    try std.testing.expect(compiled.status == .supported);
+
+    try exec(conn,
+        \\INSERT INTO agents (
+        \\  id, tenant_id, hostname, operating_system, os_version, agent_version,
+        \\  architecture, enrolled_at, status
+        \\) VALUES ($1, $2, 'sigma-host', 'windows', 'test', '0', 'x64', now(), 'online')
+    , &.{ .{ .text = sigma_agent }, .{ .text = default_tenant } });
+    try exec(conn,
+        \\INSERT INTO alert_rules (
+        \\  id, tenant_id, name, format, severity, operator, event_type,
+        \\  compiled_expression_json, compile_status, created_at, updated_at
+        \\) VALUES ($1, $2, 'sigma-db-rule', 'sigma', 'high', 'exists', 'process_start', $3::jsonb, 'supported', now(), now())
+    , &.{ .{ .text = sigma_rule }, .{ .text = default_tenant }, .{ .text = compiled.expr_json } });
+
+    const payloads = [_][]const u8{
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell /enc AAAA\"},\"parent\":{\"image\":\"C:\\\\Office\\\\WINWORD.EXE\"}}",
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell -enc AAAA\"},\"parent\":{\"image\":\"C:\\\\x\\\\explorer.exe\"}}",
+        "{\"process\":{\"image\":\"C:\\\\x\\\\powershell.exe\",\"command_line\":\"powershell -enc sigma-db-allowed\"},\"parent\":{\"image\":\"C:\\\\Office\\\\WINWORD.EXE\"}}",
+    };
+    const want = [_][]const u8{ "1", "0", "0" };
+    try exec(conn, "UPDATE work_queue SET locked_until = now() + interval '1 hour' WHERE kind = 'detect'", &.{});
+    var ids: [payloads.len][]u8 = undefined;
+    for (payloads, 0..) |pl, i| {
+        const rows = try conn.exec(allocator,
+            \\INSERT INTO telemetry_events (received_at, tenant_id, agent_id, event_type, occurred_at, payload)
+            \\VALUES (now(), $1, $2, 'process_start', now(), $3::jsonb)
+            \\RETURNING id::text, received_at::text
+        , &.{ .{ .text = default_tenant }, .{ .text = sigma_agent }, .{ .text = pl } });
+        defer {
+            for (rows) |row| row.deinit(allocator);
+            allocator.free(rows);
+        }
+        ids[i] = try allocator.dupe(u8, rows[0].cols[0].?);
+        try enqueue(allocator, conn, default_tenant, sigma_agent, "sigma-host", "process_start", rows[0].cols[0].?, rows[0].cols[1].?);
+    }
+    defer for (ids) |id| allocator.free(id);
+    _ = try drain(allocator, io, conn);
+    for (ids, 0..) |id, i| {
+        const n = try scalar(allocator, conn, "SELECT count(*)::text FROM alerts WHERE telemetry_event_id = $1::bigint AND alert_rule_id = $2::uuid", &.{ .{ .text = id }, .{ .text = sigma_rule } });
+        defer allocator.free(n);
+        std.debug.print("sigma_db event={d} alerts={s}\n", .{ i, n });
+        try std.testing.expectEqualStrings(want[i], n);
+    }
     try conn.execSimple("ROLLBACK");
 }
 

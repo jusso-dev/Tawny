@@ -5,6 +5,7 @@ const match = @import("../detect/match.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const exposure_import = @import("../detect/exposure_import.zig");
+const sigma = @import("../detect/sigma.zig");
 
 fn ruleResponseJson(allocator: std.mem.Allocator, cols: []const ?[]u8) ![]u8 {
     // id name format external_id description event_type severity operator payload_path match_value source_definition is_enabled mitre created updated
@@ -153,14 +154,14 @@ pub fn importSigma(
     };
     defer parsed.deinit();
 
-    var imported = importSigmaYaml(allocator, parsed.value.rule_yaml) catch |err| {
-        const msg = switch (err) {
-            error.UnsupportedModifierRe => "Unsupported Sigma field modifier 're'.",
-            else => "Sigma rule could not be imported.",
-        };
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const imported = try importSigmaYaml(arena_state.allocator(), parsed.value.rule_yaml);
+    if (imported.status == .rejected) {
+        const msg = try std.fmt.allocPrint(allocator, "Sigma rule rejected: {s}", .{imported.reason});
+        defer allocator.free(msg);
         return util.problem(request, allocator, .bad_request, msg);
-    };
-    defer imported.deinit(allocator);
+    }
 
     var id_buf: [36]u8 = undefined;
     const id = util.newUuid(io, &id_buf);
@@ -168,28 +169,37 @@ pub fn importSigma(
     var tbuf: [32]u8 = undefined;
     const now_s = util.formatRfc3339(&tbuf, now);
     const enabled = if (parsed.value.is_enabled orelse true) "true" else "false";
-    const mitre = try util.pgArrayText(allocator, imported.mitre.items);
+    const mitre = try util.pgArrayText(allocator, imported.mitre);
     defer allocator.free(mitre);
+    const notes = try util.pgArrayText(allocator, imported.notes);
+    defer allocator.free(notes);
+    const description = try sigmaDescription(arena_state.allocator(), imported);
+    const single = imported.single;
 
     try conn.execNoRows(
         \\INSERT INTO alert_rules (id, tenant_id, name, format, external_id, description, event_type, severity, operator,
-        \\  payload_path, match_value, source_definition, is_enabled, mitre_techniques, created_at, updated_at)
-        \\VALUES ($1::uuid, $2::uuid, $3, 'sigma', $4, $5, $6, $7, $8, $9, $10, $11, $12::boolean, $13::text[], $14::timestamptz, $14::timestamptz)
+        \\  payload_path, match_value, source_definition, is_enabled, mitre_techniques, created_at, updated_at,
+        \\  compiled_expression_json, compile_status, compile_notes)
+        \\VALUES ($1::uuid, $2::uuid, $3, 'sigma', $4, $5, $6, $7, $8, $9, $10, $11, $12::boolean, $13::text[], $14::timestamptz, $14::timestamptz,
+        \\  $15::jsonb, $16, $17::text[])
     , &.{
         .{ .text = id },
         .{ .text = web.tenant_id },
         .{ .text = imported.title },
         if (imported.external_id) |e| .{ .text = e } else .{ .null = {} },
-        if (imported.description) |d| .{ .text = d } else .{ .null = {} },
+        if (description) |d| .{ .text = d } else .{ .null = {} },
         if (imported.event_type) |e| .{ .text = e } else .{ .null = {} },
         .{ .text = imported.severity },
-        if (imported.operator) |o| .{ .text = o } else .{ .text = "exists" },
-        if (imported.payload_path) |p| .{ .text = p } else .{ .null = {} },
-        if (imported.match_value) |m| .{ .text = m } else .{ .null = {} },
+        .{ .text = if (single) |s| s.operator else "exists" },
+        if (single) |s| .{ .text = s.path } else .{ .null = {} },
+        if (single != null and single.?.value.len > 0) .{ .text = single.?.value } else .{ .null = {} },
         .{ .text = parsed.value.rule_yaml },
         .{ .text = enabled },
         .{ .text = mitre },
         .{ .text = now_s },
+        .{ .text = imported.expr_json },
+        .{ .text = @tagName(imported.status) },
+        .{ .text = notes },
     });
     try audit.add(allocator, io, conn, web.tenant_id, web.user_id, "alert_rule.import_sigma", id, null);
     const rows = try conn.exec(allocator, rule_select ++ " WHERE id = $1::uuid", &.{.{ .text = id }});
@@ -202,186 +212,24 @@ pub fn importSigma(
     try util.respondJson(request, .created, json);
 }
 
-const SigmaImported = struct {
-    title: []u8,
-    external_id: ?[]u8 = null,
-    description: ?[]u8 = null,
-    event_type: ?[]u8 = null,
-    severity: []u8,
-    operator: ?[]u8 = null,
-    payload_path: ?[]u8 = null,
-    match_value: ?[]u8 = null,
-    mitre: std.ArrayList([]u8),
-
-    fn deinit(self: *SigmaImported, allocator: std.mem.Allocator) void {
-        allocator.free(self.title);
-        if (self.external_id) |e| allocator.free(e);
-        if (self.description) |d| allocator.free(d);
-        if (self.event_type) |e| allocator.free(e);
-        allocator.free(self.severity);
-        if (self.operator) |o| allocator.free(o);
-        if (self.payload_path) |p| allocator.free(p);
-        if (self.match_value) |m| allocator.free(m);
-        for (self.mitre.items) |m| allocator.free(m);
-        self.mitre.deinit(allocator);
-    }
-};
-
-pub fn importSigmaYaml(allocator: std.mem.Allocator, yaml: []const u8) !SigmaImported {
-    if (std.mem.indexOf(u8, yaml, "|re:") != null or std.mem.indexOf(u8, yaml, "|re :") != null) {
-        return error.UnsupportedModifierRe;
-    }
-    // Also catch `processes.name|re:`
-    var line_it = std.mem.splitScalar(u8, yaml, '\n');
-    while (line_it.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t");
-        if (std.mem.indexOf(u8, trimmed, "|re")) |idx| {
-            const after = trimmed[idx + 3 ..];
-            if (after.len == 0 or after[0] == ':' or after[0] == ' ') return error.UnsupportedModifierRe;
-        }
-    }
-
-    var result: SigmaImported = .{
-        .title = try allocator.dupe(u8, "untitled"),
-        .severity = try allocator.dupe(u8, "medium"),
-        .mitre = .empty,
-    };
-    errdefer result.deinit(allocator);
-
-    var in_detection = false;
-    var in_logsource = false;
-    var in_tags = false;
-    var selection_count: usize = 0;
-    var condition_is_selection = false;
-
-    line_it = std.mem.splitScalar(u8, yaml, '\n');
-    while (line_it.next()) |raw_line| {
-        const line = std.mem.trimEnd(u8, raw_line, "\r");
-        if (line.len == 0) continue;
-        const indent = blk: {
-            var i: usize = 0;
-            while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
-            break :blk i;
-        };
-        const content = std.mem.trim(u8, line[indent..], " \t");
-
-        if (indent == 0) {
-            in_detection = false;
-            in_logsource = false;
-            in_tags = false;
-            if (std.mem.startsWith(u8, content, "title:")) {
-                allocator.free(result.title);
-                result.title = try allocator.dupe(u8, trimScalar(content["title:".len..]));
-            } else if (std.mem.startsWith(u8, content, "id:")) {
-                result.external_id = try allocator.dupe(u8, trimScalar(content["id:".len..]));
-            } else if (std.mem.startsWith(u8, content, "description:")) {
-                result.description = try allocator.dupe(u8, trimScalar(content["description:".len..]));
-            } else if (std.mem.startsWith(u8, content, "level:")) {
-                allocator.free(result.severity);
-                result.severity = try allocator.dupe(u8, mapSeverity(trimScalar(content["level:".len..])));
-            } else if (std.mem.eql(u8, content, "detection:")) {
-                in_detection = true;
-            } else if (std.mem.eql(u8, content, "logsource:")) {
-                in_logsource = true;
-            } else if (std.mem.eql(u8, content, "tags:")) {
-                in_tags = true;
-            }
-            continue;
-        }
-
-        if (in_tags and std.mem.startsWith(u8, content, "- ")) {
-            const tag = trimScalar(content[2..]);
-            if (std.ascii.startsWithIgnoreCase(tag, "attack.t")) {
-                const id = tag[std.mem.indexOfScalar(u8, tag, '.').? + 1 ..];
-                const upper = try allocator.dupe(u8, id);
-                for (upper) |*c| c.* = std.ascii.toUpper(c.*);
-                try result.mitre.append(allocator, upper);
-            }
-        }
-
-        if (in_logsource) {
-            if (std.mem.startsWith(u8, content, "category:") or std.mem.startsWith(u8, content, "product:") or std.mem.startsWith(u8, content, "service:")) {
-                const val = trimScalar(content[std.mem.indexOfScalar(u8, content, ':').? + 1 ..]);
-                if (std.ascii.findIgnoreCase(val, "process") != null) {
-                    result.event_type = try allocator.dupe(u8, "process_snapshot");
-                } else if (std.ascii.findIgnoreCase(val, "network") != null) {
-                    result.event_type = try allocator.dupe(u8, "network_snapshot");
-                } else if (std.ascii.findIgnoreCase(val, "file") != null or std.ascii.findIgnoreCase(val, "fim") != null) {
-                    result.event_type = try allocator.dupe(u8, "file_integrity");
-                }
-            }
-        }
-
-        if (in_detection) {
-            if (std.mem.startsWith(u8, content, "condition:")) {
-                const cond = trimScalar(content["condition:".len..]);
-                condition_is_selection = std.mem.eql(u8, cond, "selection");
-            } else if (std.mem.indexOfScalar(u8, content, ':')) |colon| {
-                const key = std.mem.trim(u8, content[0..colon], " \t");
-                const val = trimScalar(content[colon + 1 ..]);
-                if (std.mem.eql(u8, key, "condition")) continue;
-                // Named selection header (`selection:`) — count selections, not fields.
-                if (val.len == 0 and std.mem.indexOfScalar(u8, key, '|') == null) {
-                    selection_count += 1;
-                    continue;
-                }
-                if (std.mem.indexOfScalar(u8, key, '|')) |pipe| {
-                    const field = key[0..pipe];
-                    const mod = key[pipe + 1 ..];
-                    if (std.mem.eql(u8, mod, "re")) return error.UnsupportedModifierRe;
-                    const op = if (std.mem.eql(u8, mod, "contains")) "contains" else if (std.mem.eql(u8, mod, "exists")) "exists" else if (std.mem.eql(u8, mod, "gt")) "greater_than" else if (std.mem.eql(u8, mod, "lt")) "less_than" else "equals";
-                    if (result.operator == null) result.operator = try allocator.dupe(u8, op);
-                    if (result.payload_path == null) result.payload_path = try allocator.dupe(u8, normalizeField(field));
-                    if (result.match_value == null and val.len > 0) result.match_value = try allocator.dupe(u8, val);
-                } else if (indent > 2) {
-                    if (result.operator == null) result.operator = try allocator.dupe(u8, "equals");
-                    if (result.payload_path == null) result.payload_path = try allocator.dupe(u8, normalizeField(key));
-                    if (result.match_value == null and val.len > 0) result.match_value = try allocator.dupe(u8, val);
-                }
-            }
-        }
-    }
-
-    if (!condition_is_selection or selection_count != 1) {
-        // Multi-selection: clear predicate fields
-        if (result.operator) |o| {
-            allocator.free(o);
-            result.operator = null;
-        }
-        if (result.payload_path) |p| {
-            allocator.free(p);
-            result.payload_path = null;
-        }
-        if (result.match_value) |m| {
-            allocator.free(m);
-            result.match_value = null;
-        }
-    }
-    if (result.event_type == null) {
-        result.event_type = try allocator.dupe(u8, "process_snapshot");
-    }
-    return result;
+/// Sigma rules under DRL 1.1 ask that match messages keep the author. The
+/// author goes at the end of the stored description, which alerts link to.
+fn sigmaDescription(arena: std.mem.Allocator, c: sigma.Compiled) !?[]const u8 {
+    const author = c.author orelse return c.description;
+    if (c.description) |d| return try std.fmt.allocPrint(arena, "{s}\n\nSigma rule author: {s}", .{ d, author });
+    return try std.fmt.allocPrint(arena, "Sigma rule author: {s}", .{author});
 }
 
-fn trimScalar(s: []const u8) []const u8 {
-    return std.mem.trim(u8, s, " \t\"'");
+/// Compile a Sigma rule with the embedded field map. Output lives in `arena`.
+pub fn importSigmaYaml(arena: std.mem.Allocator, yaml_text: []const u8) !sigma.Compiled {
+    const map = try sigmaFieldMap(arena);
+    return sigma.compile(arena, map, yaml_text);
 }
 
-fn mapSeverity(level: []const u8) []const u8 {
-    if (std.ascii.eqlIgnoreCase(level, "critical")) return "critical";
-    if (std.ascii.eqlIgnoreCase(level, "high")) return "high";
-    if (std.ascii.eqlIgnoreCase(level, "medium")) return "medium";
-    if (std.ascii.eqlIgnoreCase(level, "low")) return "low";
-    if (std.ascii.eqlIgnoreCase(level, "informational")) return "low";
-    return "medium";
-}
-
-fn normalizeField(field: []const u8) []const u8 {
-    if (std.mem.eql(u8, field, "Image") or std.mem.eql(u8, field, "process.name") or std.mem.eql(u8, field, "process.executable"))
-        return "processes.name";
-    if (std.mem.eql(u8, field, "CommandLine") or std.mem.eql(u8, field, "process.command_line"))
-        return "processes.command_line";
-    return field;
+fn sigmaFieldMap(arena: std.mem.Allocator) !*const sigma.FieldMap {
+    const map = try arena.create(sigma.FieldMap);
+    map.* = sigma.FieldMap.load(arena) catch return error.BadFieldMap;
+    return map;
 }
 
 pub fn updateRule(
@@ -1058,24 +906,28 @@ fn knownSeverity(value: []const u8) bool {
     return std.mem.eql(u8, value, "low") or std.mem.eql(u8, value, "medium") or std.mem.eql(u8, value, "high") or std.mem.eql(u8, value, "critical");
 }
 
-test "sigma rejects re modifier" {
-    const allocator = std.testing.allocator;
-    const yaml =
+test "sigma rejects an re pattern the engine can't run" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const out = try importSigmaYaml(arena_state.allocator(),
         \\title: bad
         \\detection:
         \\  selection:
-        \\    processes.name|re: x
+        \\    processes.name|re: '(x)\1'
         \\  condition: selection
         \\level: high
-    ;
-    try std.testing.expectError(error.UnsupportedModifierRe, importSigmaYaml(allocator, yaml));
+    );
+    try std.testing.expectEqual(sigma.Status.rejected, out.status);
+    try std.testing.expect(std.mem.indexOf(u8, out.reason, "Unsupported Sigma field modifier 're'") != null);
 }
 
 test "sigma contains process_creation" {
-    const allocator = std.testing.allocator;
-    const yaml =
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const yaml_text =
         \\title: sus
         \\id: 11111111-1111-1111-1111-111111111111
+        \\author: Example Author
         \\logsource:
         \\  product: windows
         \\  category: process_creation
@@ -1085,14 +937,15 @@ test "sigma contains process_creation" {
         \\  condition: selection
         \\level: high
     ;
-    var imported = try importSigmaYaml(allocator, yaml);
-    defer imported.deinit(allocator);
+    const imported = try importSigmaYaml(arena_state.allocator(), yaml_text);
     try std.testing.expectEqualStrings("sus", imported.title);
     try std.testing.expectEqualStrings("process_snapshot", imported.event_type.?);
-    try std.testing.expectEqualStrings("processes.name", imported.payload_path.?);
-    try std.testing.expectEqualStrings("contains", imported.operator.?);
-    try std.testing.expectEqualStrings("suspicious.exe", imported.match_value.?);
+    try std.testing.expectEqualStrings("processes.name", imported.single.?.path);
+    try std.testing.expectEqualStrings("contains", imported.single.?.operator);
+    try std.testing.expectEqualStrings("suspicious.exe", imported.single.?.value);
     try std.testing.expectEqualStrings("high", imported.severity);
+    const desc = (try sigmaDescription(arena_state.allocator(), imported)).?;
+    try std.testing.expectEqualStrings("Sigma rule author: Example Author", desc);
 }
 
 test "exposure import persists a normalized npm rule" {

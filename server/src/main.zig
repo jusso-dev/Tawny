@@ -446,6 +446,11 @@ comptime {
     _ = @import("detect/package_exposure.zig");
     _ = @import("detect/match.zig");
     _ = @import("detect/exposure_import.zig");
+    _ = @import("detect/yaml.zig");
+    _ = @import("detect/regex.zig");
+    _ = @import("detect/ast.zig");
+    _ = @import("detect/sigma.zig");
+    _ = @import("detect/sigma_compat.zig");
     _ = @import("routes/hunts.zig");
     _ = @import("routes/feeds.zig");
     _ = @import("routes/lookup.zig");

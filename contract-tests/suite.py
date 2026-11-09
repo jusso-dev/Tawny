@@ -801,13 +801,16 @@ level: high
         rule_yaml = f"""title: {uniq("badmod")}
 detection:
   selection:
-    processes.name|re: suspicious.exe
+    processes.name|re: '(suspicious)\\1.exe'
   condition: selection
 level: high
 """
+        # `re` compiles now (#56); a backreference is still outside the
+        # RE2-safe subset, so the whole rule is refused.
         code, _parsed, raw = call("POST", "/api/alert-rules/sigma", {"rule_yaml": rule_yaml})
         self.assertEqual(code, 400, raw[:800])
         self.assertIn("Unsupported Sigma field modifier 're'", raw)
+        self.assertIn("backreferences", raw)
 
     def test_stix_ioc_creates_alert(self) -> None:
         agent = windows_agent()

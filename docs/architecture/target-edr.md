@@ -450,6 +450,19 @@ severity, attack[], entity_ids[], event_ids[], explanation}`.
   counts (imported/supported/rejected by reason) to
   `docs/sigma-compatibility.md`; regression = test failure.
 
+**Status (#56).** Built in `server/src/detect/sigma.zig` (compiler),
+`yaml.zig` (YAML subset), `regex.zig` (linear-time `re` with a step limit)
+and `ast.zig` (AST, JSON form, evaluator over `match.zig` paths). The AST is
+stored in `alert_rules.compiled_expression_json` with `compile_status` and
+`compile_notes` (migration 0005). The pinned snapshot is
+`rules/windows/process_creation` only (`rules/sigma/sigmahq/`, DRL 1.1);
+other `rules/windows` folders need event types the agent does not send yet.
+The `sigma-compat` CI job fails when the compiled count drops below
+`rules/sigma/sigmahq/baseline-supported.txt`. Not built: `N of` with N
+above 1, aggregations and `timeframe` (use a Tawny threshold rule),
+correlation rules, `fieldref`. `wide` is only accepted with `base64` or
+`base64offset`.
+
 ### IOC index
 
 Indicators move out of `AlertRules` into an `Indicators` table (type, value,
