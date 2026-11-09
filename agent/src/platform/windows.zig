@@ -195,11 +195,15 @@ test "enumerated processes carry command lines and start times" {
     const me = std.os.windows.GetCurrentProcessId();
     var found = false;
     for (procs) |p| {
-        // Never the name copied into the command line.
-        if (p.command_line.len > 0) try std.testing.expect(!std.mem.eql(u8, p.command_line, p.name));
+        // Other processes can legitimately have a command line equal to their
+        // name (started as plain "svchost.exe"), so only check this process.
         if (p.pid != me) continue;
         found = true;
         try std.testing.expect(p.command_line.len > 0);
+        // The test binary runs with arguments, so a real read never equals the
+        // bare name the old code copied in.
+        try std.testing.expect(!std.mem.eql(u8, p.command_line, p.name));
+        try std.testing.expect(std.mem.indexOf(u8, p.command_line, "--") != null);
         try std.testing.expect(p.start_time_unix.? > 1_600_000_000);
         try std.testing.expect(std.ascii.endsWithIgnoreCase(p.image_path.?, ".exe"));
     }
