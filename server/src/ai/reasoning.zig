@@ -395,6 +395,9 @@ fn persistInvestigation(
     }
     try hypotheses_json.append(allocator, ']');
 
+    var confidence_buf: [16]u8 = undefined;
+    const confidence_text = try std.fmt.bufPrint(&confidence_buf, "{d}", .{@as(i32, @intFromFloat(result.confidence))});
+
     try conn.execNoRows(
         \\INSERT INTO security_investigations (
         \\  id, tenant_id, observation_id, status, hypotheses, evidence, tool_calls,
@@ -411,12 +414,12 @@ fn persistInvestigation(
         .{ .text = tenant_id },
         .{ .text = observation_id },
         .{ .text = status_str },
-        .{ .text = try hypotheses_json.toOwnedSlice(allocator) },
-        .{ .text = try std.fmt.allocPrint(allocator, "{d}", .{@as(i32, @intFromFloat(result.confidence))}) },
+        .{ .text = hypotheses_json.items },
+        .{ .text = confidence_text },
         .{ .text = result.verdict },
         .{ .text = result.severity },
-        .{ .text = try attack_json.toOwnedSlice(allocator) },
-        .{ .text = try actions_json.toOwnedSlice(allocator) },
+        .{ .text = attack_json.items },
+        .{ .text = actions_json.items },
         .{ .text = result.rationale },
         .{ .text = config.model_name },
         .{ .text = "local" },
@@ -478,8 +481,8 @@ fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, text:
 fn appendJsonValue(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, value: std.json.Value) !void {
     switch (value) {
         .string => try appendJsonString(buf, allocator, value.string),
-        .integer => |n| try buf.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{d}", .{n})),
-        .float => |n| try buf.appendSlice(allocator, try std.fmt.allocPrint(allocator, "{d}", .{n})),
+        .integer => |n| try buf.print(allocator, "{d}", .{n}),
+        .float => |n| try buf.print(allocator, "{d}", .{n}),
         .number_string => |s| try buf.appendSlice(allocator, s),
         .bool => |b| try buf.appendSlice(allocator, if (b) "true" else "false"),
         .null => try buf.appendSlice(allocator, "null"),
@@ -556,4 +559,40 @@ test "generate fingerprint differs for different features" {
     const fp2 = try generateFingerprint(allocator, "{\"a\":2}");
     defer allocator.free(fp2);
     try std.testing.expect(!std.mem.eql(u8, fp1, fp2));
+}
+
+test "fingerprint of mixed numeric and nested values is stable and frees temporaries" {
+    // std.testing.allocator fails this test if the numeric branches leak again.
+    const allocator = std.testing.allocator;
+    const features = "{\"count\":42,\"ratio\":0.25,\"list\":[1,2.5,\"x\"],\"nested\":{\"n\":-7,\"f\":1e3}}";
+    const fp1 = try generateFingerprint(allocator, features);
+    defer allocator.free(fp1);
+    const fp2 = try generateFingerprint(allocator, features);
+    defer allocator.free(fp2);
+    try std.testing.expectEqualStrings(fp1, fp2);
+}
+
+test "fingerprint numeric formatting matches canonical output" {
+    const allocator = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try appendJsonValue(&buf, allocator, .{ .integer = 2 });
+    try buf.append(allocator, ',');
+    try appendJsonValue(&buf, allocator, .{ .float = 0.25 });
+    try std.testing.expectEqualStrings("2,0.25", buf.items);
+}
+
+test "fingerprint distinguishes different numbers" {
+    const allocator = std.testing.allocator;
+    const one = try generateFingerprint(allocator, "{\"a\":1}");
+    defer allocator.free(one);
+    const one_again = try generateFingerprint(allocator, "{\"a\":1}");
+    defer allocator.free(one_again);
+    const one_float = try generateFingerprint(allocator, "{\"a\":1.5}");
+    defer allocator.free(one_float);
+    const two = try generateFingerprint(allocator, "{\"a\":2}");
+    defer allocator.free(two);
+    try std.testing.expectEqualStrings(one, one_again);
+    try std.testing.expect(!std.mem.eql(u8, one, one_float));
+    try std.testing.expect(!std.mem.eql(u8, one, two));
 }

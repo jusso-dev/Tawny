@@ -197,6 +197,8 @@ fn createFindingFromResult(
     try actions_json.append(allocator, ']');
 
     const confidence_val: f32 = @floatCast(result.confidence);
+    var confidence_buf: [32]u8 = undefined;
+    const confidence_text = try std.fmt.bufPrint(&confidence_buf, "{d}", .{confidence_val});
 
     try conn.execNoRows(
         \\INSERT INTO security_findings (
@@ -213,11 +215,11 @@ fn createFindingFromResult(
         .{ .text = tenant_id },
         .{ .text = fingerprint },
         .{ .text = result.verdict },
-        .{ .text = try std.fmt.allocPrint(allocator, "{d}", .{confidence_val}) },
+        .{ .text = confidence_text },
         .{ .text = result.severity },
-        .{ .text = try attack_json.toOwnedSlice(allocator) },
+        .{ .text = attack_json.items },
         .{ .text = job.features_json },
-        .{ .text = try actions_json.toOwnedSlice(allocator) },
+        .{ .text = actions_json.items },
         .{ .text = result.status },
         .{ .text = now },
     });
@@ -260,16 +262,20 @@ pub fn enqueue(
     });
 
     // Enqueue for processing
+    // The escaped temporaries live in an arena so none of them outlive this call.
+    var escape_arena = std.heap.ArenaAllocator.init(allocator);
+    defer escape_arena.deinit();
+    const scratch = escape_arena.allocator();
     const payload = try std.fmt.allocPrint(allocator,
         \\{{"id":{s},"tenant_id":{s},"agent_id":{s},"hostname":{s},"observation_type":{s},"features_json":{s},"observables_json":{s}}}
     , .{
-        try util.escapeJson(allocator, id),
-        try util.escapeJson(allocator, tenant_id),
-        try util.escapeJson(allocator, agent_id),
-        try util.escapeJson(allocator, hostname),
-        try util.escapeJson(allocator, observation_type),
-        try util.escapeJson(allocator, features_json),
-        try util.escapeJson(allocator, observables_json),
+        try util.escapeJson(scratch, id),
+        try util.escapeJson(scratch, tenant_id),
+        try util.escapeJson(scratch, agent_id),
+        try util.escapeJson(scratch, hostname),
+        try util.escapeJson(scratch, observation_type),
+        try util.escapeJson(scratch, features_json),
+        try util.escapeJson(scratch, observables_json),
     });
     defer allocator.free(payload);
 

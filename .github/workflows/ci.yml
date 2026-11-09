@@ -59,6 +59,8 @@ jobs:
           tar -xJf "$archive" -C "$zig_dir" --strip-components=1
           echo "$zig_dir" >> "$GITHUB_PATH"
           "$zig_dir/zig" version
+      # Fuzz tests stay in this run too. A leak logged by any earlier test makes the
+      # fuzz runner panic with "error logs detected", so read the first [SafeAllocator] line.
       - name: zig test
         run: zig test src/main.zig -lc
       - name: contract suite
