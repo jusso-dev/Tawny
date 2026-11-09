@@ -1976,11 +1976,12 @@ def make_user(role: str, prefix: str) -> tuple[str, str, str]:
 def admin_call(method: str, path: str, body: dict) -> tuple[int, object | None, str]:
     """Admin write that waits out the 30 per minute web-admin-mutate limit
     the rest of the suite may have used up."""
-    for _ in range(3):
+    for _ in range(4):
         code, parsed, raw = call(method, path, body)
         if code != 429:
             return code, parsed, raw
-        time.sleep(21)
+        # The limiter uses fixed one-minute windows: 3 waits cover a full one.
+        time.sleep(22)
     return code, parsed, raw
 
 
@@ -2057,11 +2058,11 @@ class RoleAndIncidentContractTests(unittest.TestCase):
             # The analyst cannot approve; an admin can.
             code, _b, raw = self.as_role("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", a_cookie, a_csrf)
             self.assertEqual(code, 403, raw[:300])
-            code, ok, raw = call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
+            code, ok, raw = admin_call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
             self.assertEqual(code, 200, raw[:300])
             assert isinstance(ok, dict)
             self.assertEqual(ok.get("status"), "pending")
-            code, _b, raw = call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
+            code, _b, raw = admin_call("POST", f"/api/agents/{agent['agent_id']}/actions/{action['id']}/approve", {})
             self.assertEqual(code, 409, raw[:300])
         finally:
             admin_call("PUT", "/api/settings/tenant", {"analyst_destructive_needs_approval": False})
@@ -2253,7 +2254,6 @@ class RoleAndIncidentContractTests(unittest.TestCase):
             self.assertEqual(st, 400, body[:300])
 
             # Password sign-in limited to break-glass admins.
-            _vid, _vc, _vx = make_user("viewer", "glass")
             email = f"{uniq('glassuser')}@tawny.local"
             code, _u, raw = admin_call("POST", "/api/users", {"email": email, "password": "glass-password1", "role": "analyst"})
             self.assertEqual(code, 201, raw[:300])
