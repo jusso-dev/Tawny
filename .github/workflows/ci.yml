@@ -441,6 +441,8 @@ jobs:
           plus="+${caps//,/,+}"
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin tawny-ci || true
           out="$RUNNER_TEMP/sensor.out"
+          # On any failure, show the agent's own output (panics land there).
+          trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "--- sensor output ($out) ---"; cat "$out" 2>/dev/null || true; fi' EXIT
           # Another audit daemon would own the socket; stop it if present.
           sudo systemctl stop auditd 2>/dev/null || true
           sudo setpriv --reuid=tawny-ci --regid=tawny-ci --init-groups \
