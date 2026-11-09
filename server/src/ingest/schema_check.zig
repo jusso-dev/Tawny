@@ -207,6 +207,7 @@ pub const schema_types = [_][]const u8{
     "process_start",          "process_exit",  "network_connect", "dns_query",
     "file_create",            "registry_set",  "user_logon",      "service_create",
     "powershell_script_block", "agent_health", "sensor_health",
+    "agent_tamper",
 };
 
 test "golden payloads match their schemas" {

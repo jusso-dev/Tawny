@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent_tamper.v1.json",
+  "title": "AGENT_TAMPER",
+  "type": "object",
+  "required": [
+    "check",
+    "detail"
+  ],
+  "properties": {
+    "check": {
+      "enum": [
+        "unexpected_stop",
+        "binary_changed",
+        "config_changed",
+        "identity_changed",
+        "sysmon_stopped",
+        "defender_exclusion"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "path": {
+      "type": "string"
+    },
+    "expected_sha256": {
+      "type": "string"
+    },
+    "actual_sha256": {
+      "type": "string"
+    },
+    "service": {
+      "type": "string"
+    },
+    "exclusion": {
+      "type": "string"
+    }
+  }
+}

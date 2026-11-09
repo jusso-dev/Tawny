@@ -272,6 +272,9 @@ fn pascalEvent(event_type: []const u8) []const u8 {
     if (std.mem.eql(u8, event_type, "sensor_health")) return "SensorHealth";
     if (std.mem.eql(u8, event_type, "agent_health")) return "AgentHealth";
     if (std.mem.eql(u8, event_type, "yara_match")) return "YaraMatch";
+    if (std.mem.eql(u8, event_type, "agent_tamper")) return "AgentTamper";
+    if (std.mem.eql(u8, event_type, "agent_silent")) return "AgentSilent";
+    if (std.mem.eql(u8, event_type, "sensor_silent")) return "SensorSilent";
     return event_type;
 }
 

@@ -26,6 +26,88 @@
     },
     "boot_id": {
       "type": "string"
+    },
+    "key_protection": {
+      "enum": [
+        "keychain",
+        "dpapi",
+        "tpm",
+        "file"
+      ]
+    },
+    "sensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "status": {
+            "enum": [
+              "running",
+              "degraded",
+              "stopped",
+              "silent",
+              "failed",
+              "missing",
+              "unknown"
+            ]
+          },
+          "last_event_age_seconds": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "update": {
+      "type": "object",
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "disabled_no_release_key",
+            "idle",
+            "checking",
+            "downloading",
+            "staged",
+            "restarting",
+            "health_check",
+            "committed",
+            "rolled_back",
+            "refused",
+            "failed"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "ring": {
+          "enum": [
+            "canary",
+            "internal",
+            "10",
+            "50",
+            "100"
+          ]
+        },
+        "bucket": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
     }
   }
 }

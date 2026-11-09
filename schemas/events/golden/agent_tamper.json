@@ -1,0 +1,4 @@
+{
+  "check": "unexpected_stop",
+  "detail": "The agent started without the clean shutdown marker from its last run."
+}

@@ -29,6 +29,10 @@ const Row = struct {
     platform: []const u8,
     url: []const u8,
     sha256: [64]u8,
+    /// Signed release manifest and its minisign signature, when the release
+    /// carries `<asset stem>.manifest.json` and `.manifest.json.minisig`.
+    manifest: ?[]u8 = null,
+    signature: ?[]u8 = null,
 };
 
 pub const ParsedAsset = struct {
@@ -135,7 +139,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn, options: Op
     }
 
     var rows: std.ArrayList(Row) = .empty;
-    defer rows.deinit(allocator);
+    defer {
+        for (rows.items) |r| {
+            if (r.manifest) |m| allocator.free(m);
+            if (r.signature) |g| allocator.free(g);
+        }
+        rows.deinit(allocator);
+    }
     for (copied.items) |asset| {
         if (std.ascii.endsWithIgnoreCase(asset.name, ".sha256")) continue;
         const parsed_name = parseAsset(asset.name) orelse continue;
@@ -152,12 +162,30 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn, options: Op
             std.debug.print("skipping release asset {s}: invalid sha256 sidecar\n", .{asset.name});
             continue;
         };
-        try rows.append(allocator, .{
+        var row: Row = .{
             .version = parsed_name.version,
             .platform = parsed_name.platform,
             .url = asset.url,
             .sha256 = sha,
-        });
+        };
+        // Optional signed manifest (#58). Stored as published; the agent
+        // verifies it with its compiled-in key, the server never trusts it.
+        var man_buf: [256]u8 = undefined;
+        if (manifestName(&man_buf, asset.name, "")) |mname| {
+            var sig_buf: [256]u8 = undefined;
+            const sname = manifestName(&sig_buf, asset.name, ".minisig").?;
+            if (findAsset(copied.items, mname)) |murl| if (findAsset(copied.items, sname)) |surl| {
+                row.manifest = fetchSmall(allocator, io, murl, options.allow_private) catch null;
+                row.signature = fetchSmall(allocator, io, surl, options.allow_private) catch null;
+                if (row.manifest == null or row.signature == null) {
+                    if (row.manifest) |m| allocator.free(m);
+                    if (row.signature) |g| allocator.free(g);
+                    row.manifest = null;
+                    row.signature = null;
+                }
+            };
+        }
+        try rows.append(allocator, row);
     }
     if (rows.items.len == 0) return 0;
 
@@ -182,28 +210,125 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, conn: *pg.Conn, options: Op
     }
 
     var released_buf: [32]u8 = undefined;
+    var now_buf: [32]u8 = undefined;
     const released = if (published.len > 0) published else util.formatRfc3339(&released_buf, options.now_unix);
     for (rows.items) |row| {
         var sha_text: [64]u8 = row.sha256;
+        // New releases start in the canary ring; promote() widens it.
         try conn.execNoRows(
-            \\INSERT INTO agent_releases (version, platform, download_url, sha256, released_at, is_latest)
-            \\VALUES ($1, $2, $3, $4, $5::timestamptz, true)
+            \\INSERT INTO agent_releases (version, platform, download_url, sha256, released_at, is_latest,
+            \\  ring, ring_opened_at, manifest, manifest_signature)
+            \\VALUES ($1, $2, $3, $4, $5::timestamptz, true, 'canary', $6::timestamptz, $7, $8)
             \\ON CONFLICT (platform, version) DO UPDATE SET
             \\  download_url = EXCLUDED.download_url,
             \\  sha256 = EXCLUDED.sha256,
             \\  released_at = EXCLUDED.released_at,
-            \\  is_latest = true
+            \\  is_latest = true,
+            \\  manifest = COALESCE(EXCLUDED.manifest, agent_releases.manifest),
+            \\  manifest_signature = COALESCE(EXCLUDED.manifest_signature, agent_releases.manifest_signature)
         , &.{
             .{ .text = row.version },
             .{ .text = row.platform },
             .{ .text = row.url },
             .{ .text = &sha_text },
             .{ .text = released },
+            .{ .text = util.formatRfc3339(&now_buf, options.now_unix) },
+            if (row.manifest) |m| .{ .text = m } else .{ .null = {} },
+            if (row.signature) |g| .{ .text = g } else .{ .null = {} },
         });
     }
     if (nested) try conn.execSimple("RELEASE SAVEPOINT tawny_release_check") else try conn.execSimple("COMMIT");
     std.debug.print("updated {d} latest tawny agent release rows.\n", .{rows.items.len});
     return @intCast(rows.items.len);
+}
+
+/// `tawny-agent-1.2.3-windows-x64.exe` -> `tawny-agent-1.2.3-windows-x64.manifest.json<suffix>`.
+pub fn manifestName(buf: *[256]u8, asset_name: []const u8, suffix: []const u8) ?[]const u8 {
+    const stem = if (std.ascii.endsWithIgnoreCase(asset_name, ".exe")) asset_name[0 .. asset_name.len - 4] else asset_name;
+    return std.fmt.bufPrint(buf, "{s}.manifest.json{s}", .{ stem, suffix }) catch null;
+}
+
+fn fetchSmall(allocator: std.mem.Allocator, io: std.Io, url: []const u8, allow_private: bool) ![]u8 {
+    var res = try http_get.get(allocator, io, url, &.{}, "tawny-release-check/1.0", allow_private, 16 * 1024);
+    defer res.deinit(allocator);
+    if (res.status < 200 or res.status >= 300) return error.ReleaseHttp;
+    return allocator.dupe(u8, res.body);
+}
+
+// ---------------------------------------------------------------------------
+// Ring promotion (#58, target-edr §10 "Updates")
+
+pub const rings = [_][]const u8{ "canary", "internal", "10", "50", "100" };
+
+pub const PromotionPolicy = struct {
+    /// How long a ring must run the release before the next ring opens.
+    soak_seconds: i64 = 24 * 3600,
+    /// Highest share of agents in the current ring that may have rolled back
+    /// (or reported a failed update) for promotion to go ahead.
+    max_failure_ratio: f64 = 0.05,
+    /// Agents in the ring that must report the version (committed) first.
+    /// Rings with fewer agents promote on soak time alone.
+    min_reports: u32 = 1,
+};
+
+pub fn nextRing(ring: []const u8) ?[]const u8 {
+    for (rings, 0..) |r, i| if (std.mem.eql(u8, r, ring)) {
+        return if (i + 1 < rings.len) rings[i + 1] else null;
+    };
+    return null;
+}
+
+pub const Verdict = enum { promote, wait_soak, wait_reports, hold_failures, at_widest };
+
+/// Pure promotion gate.
+pub fn gate(ring: []const u8, opened_at: i64, now: i64, committed: u32, failed: u32, p: PromotionPolicy) Verdict {
+    if (nextRing(ring) == null) return .at_widest;
+    if (now - opened_at < p.soak_seconds) return .wait_soak;
+    const total = committed + failed;
+    if (total > 0) {
+        const ratio = @as(f64, @floatFromInt(failed)) / @as(f64, @floatFromInt(total));
+        if (ratio > p.max_failure_ratio) return .hold_failures;
+    }
+    if (committed < p.min_reports and total > 0) return .wait_reports;
+    return .promote;
+}
+
+/// Promote every latest release whose ring has soaked without too many
+/// failures. Counts come from agents' reported update state. Returns how
+/// many rows moved.
+pub fn promote(allocator: std.mem.Allocator, conn: *pg.Conn, now_unix: i64, policy: PromotionPolicy) !u32 {
+    const rows = try conn.exec(allocator,
+        \\SELECT r.platform, r.version, r.ring, extract(epoch FROM r.ring_opened_at)::bigint::text,
+        \\  (SELECT count(*) FROM agents a WHERE (a.operating_system || '-' || a.architecture) = r.platform
+        \\     AND a.update_version = r.version AND a.update_state = 'committed')::text,
+        \\  (SELECT count(*) FROM agents a WHERE (a.operating_system || '-' || a.architecture) = r.platform
+        \\     AND a.update_version = r.version AND a.update_state IN ('rolled_back', 'failed'))::text
+        \\FROM agent_releases r WHERE r.is_latest AND r.ring <> '100'
+    , &.{});
+    defer {
+        for (rows) |r| r.deinit(allocator);
+        allocator.free(rows);
+    }
+    var moved: u32 = 0;
+    var nbuf: [32]u8 = undefined;
+    const now_s = util.formatRfc3339(&nbuf, now_unix);
+    for (rows) |row| {
+        const ring = row.cols[2] orelse continue;
+        const opened = std.fmt.parseInt(i64, row.cols[3] orelse "0", 10) catch 0;
+        const ok = std.fmt.parseInt(u32, row.cols[4] orelse "0", 10) catch 0;
+        const bad = std.fmt.parseInt(u32, row.cols[5] orelse "0", 10) catch 0;
+        const verdict = gate(ring, opened, now_unix, ok, bad, policy);
+        if (verdict == .hold_failures) {
+            std.debug.print("release {s} {s} held in ring {s}: {d} of {d} agents rolled back or failed\n", .{ row.cols[1].?, row.cols[0].?, ring, bad, ok + bad });
+        }
+        if (verdict != .promote) continue;
+        try conn.execNoRows(
+            \\UPDATE agent_releases SET ring = $3, ring_opened_at = $4::timestamptz
+            \\WHERE platform = $1 AND version = $2
+        , &.{ .{ .text = row.cols[0].? }, .{ .text = row.cols[1].? }, .{ .text = nextRing(ring).? }, .{ .text = now_s } });
+        moved += 1;
+    }
+    return moved;
 }
 
 fn findAsset(assets: []const Asset, name: []const u8) ?[]const u8 {
@@ -304,6 +429,19 @@ const release_py =
     \\        pass
     \\ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 ;
+
+test "ring promotion waits for the soak, holds on failures, stops at 100" {
+    const p: PromotionPolicy = .{ .soak_seconds = 100, .max_failure_ratio = 0.05, .min_reports = 1 };
+    try std.testing.expectEqual(Verdict.wait_soak, gate("canary", 0, 50, 0, 0, p));
+    try std.testing.expectEqual(Verdict.promote, gate("canary", 0, 100, 0, 0, p));
+    try std.testing.expectEqual(Verdict.promote, gate("10", 0, 200, 40, 2, p));
+    try std.testing.expectEqual(Verdict.hold_failures, gate("10", 0, 200, 10, 2, p));
+    try std.testing.expectEqual(Verdict.at_widest, gate("100", 0, 200, 0, 0, p));
+    try std.testing.expectEqualStrings("internal", nextRing("canary").?);
+    try std.testing.expectEqualStrings("100", nextRing("50").?);
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("tawny-agent-1.2.3-windows-x64.manifest.json.minisig", manifestName(&buf, "tawny-agent-1.2.3-windows-x64.exe", ".minisig").?);
+}
 
 test "release check upserts agent assets and ignores bad sidecars" {
     const url = std.testing.environ.getPosix("TAWNY_DATABASE_URL") orelse return;

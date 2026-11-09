@@ -24,6 +24,8 @@ const yara_scanner = @import("yara_scanner.zig");
 const entity = @import("entity.zig");
 const iox = @import("io_compat.zig");
 const lifecycle = @import("lifecycle.zig");
+const tamper = @import("tamper.zig");
+const updater = @import("updater.zig");
 const windows_service = if (builtin.target.os.tag == .windows) @import("platform/windows/service.zig") else struct {};
 
 const AGENT_VERSION = "0.1.0";
@@ -38,6 +40,16 @@ pub fn main(init: std.process.Init) !void {
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--eventlog-dump")) {
         return windows_events.dumpCommand(alloc, args[2..]);
+    }
+    if (args.len >= 2 and @import("keystore_debug.zig").isDebugCommand(args[1])) {
+        const code = @import("keystore_debug.zig").run(alloc, args[1..]);
+        if (code != 0) std.process.exit(code);
+        return;
+    }
+    if (args.len >= 2 and updater.isDebugCommand(args[1])) {
+        const code = updater.debugCommand(alloc, args[1..]);
+        if (code != 0) std.process.exit(code);
+        return;
     }
     if (args.len >= 2 and @import("response_debug.zig").isDebugCommand(args[1])) {
         const code = @import("response_debug.zig").run(alloc, args[1..]);
@@ -72,6 +84,11 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         return err;
     };
     defer cfg.deinit();
+
+    // Was the agent enrolled before this start? Only then can a missing clean
+    // shutdown marker mean anything.
+    const enrolled_before = cfg.agent_id != null;
+    const start_kind = lifecycle.consumeMarker(alloc, cfg.state_path, enrolled_before);
 
     if (cfg.agent_id == null) {
         std.debug.print("not enrolled; running enrollment...\n", .{});
@@ -206,11 +223,46 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         std.debug.print("system collector failed: {s}\n", .{@errorName(err)});
     }
 
+    // Tamper checks (#58). The last run's missing marker is reported first.
+    if (start_kind == .unexpected) {
+        if (tamper.payload(alloc, .unexpected_stop, "The agent started without the clean shutdown marker from its last run.", .{})) |p| {
+            defer alloc.free(p);
+            queueEvent(&buf, "agent_tamper", p);
+        } else |_| {}
+    }
+    var tamper_mon = tamper.Monitor{ .alloc = alloc };
+    defer tamper_mon.deinit();
+    watchTamperFiles(alloc, &tamper_mon, &cfg, device_key_path);
+    var tamper_timer = try iox.Timer.start();
+
+    // Signed self-update (#58). Off while update_key.zig holds the
+    // placeholder; health then says disabled_no_release_key.
+    const exe_path = std.process.executablePathAlloc(iox.current(), alloc) catch try alloc.dupeSentinel(u8, "", 0);
+    defer alloc.free(exe_path);
+    var upd = updater.Updater.init(alloc, cfg.state_path, exe_path, AGENT_VERSION, updater.platformName(), cfg.agent_id orelse "");
+    if (upd.startCheck(iox.timestamp())) |o| {
+        if (o == .restart_now) {
+            std.debug.print("update: rolled back to the previous binary; restarting\n", .{});
+            lifecycle.requestStopFor(.update_restart);
+        }
+    } else |err| std.debug.print("update state unreadable: {s}\n", .{@errorName(err)});
+    if (updater.expectedBinaryHash(alloc, upd.key, cfg.state_path, AGENT_VERSION)) |h| tamper_mon.expectBinary(h);
+    var update_timer = try iox.Timer.start();
+    var first_update_check = true;
+
     while (!lifecycle.shouldStop()) {
         if (heartbeat_timer.read() / std.time.ns_per_s >= cfg.heartbeat_interval_seconds) {
             heartbeat_timer.reset();
             const uptime: i64 = @intCast(iox.timestamp() - start_time);
-            if (healthPayload(alloc, uptime, buf.totalLen(), buf.next_sequence, &boot_id)) |payload| {
+            if (healthPayloadFull(alloc, .{
+                .uptime = uptime,
+                .depth = buf.totalLen(),
+                .next_sequence = buf.next_sequence,
+                .boot_id = &boot_id,
+                .key_protection = cfg.secret_store.protection(),
+                .sensors = sensorStatus(&process_events_timer, process_tracker_last_event, cfg.process_events_interval_seconds),
+                .update = upd.health(),
+            })) |payload| {
                 defer alloc.free(payload);
                 queueEvent(&buf, "agent_health", payload);
             } else |_| {}
@@ -221,10 +273,14 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
             })) |heartbeat_result| {
                 var heartbeat = heartbeat_result;
                 defer heartbeat.deinit(alloc);
+                if (upd.onHeartbeat(true, iox.timestamp())) |_| {} else |err| {
+                    std.debug.print("update commit failed: {s}\n", .{@errorName(err)});
+                }
                 if (heartbeat.rotated_jwt) |rotated| {
                     persistRotatedJwt(alloc, &cfg, &http, rotated) catch |err| {
                         std.debug.print("jwt rotation persist failed: {s}\n", .{@errorName(err)});
                     };
+                    tamper_mon.acceptOwnWrite(cfg.state_path);
                 }
                 if (heartbeat.yara_pack_version > yara.pack_version and yara.public_key != null) {
                     refreshYaraPack(alloc, &http, &yara);
@@ -234,6 +290,7 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
                 if (action_pub == null) {
                     if (heartbeat.action_public_key) |k| {
                         action_key.pin(alloc, cfg.state_path, k) catch {};
+                        acceptOwnKeyWrite(alloc, &tamper_mon, cfg.state_path, ".actionkey");
                         if (action_key.load(alloc, cfg.state_path)) |pinned| {
                             if (action_pub_text) |old| alloc.free(old);
                             action_pub_text = pinned;
@@ -267,7 +324,23 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
                 enforceIsolationDeadline(alloc, &cfg);
             } else |err| {
                 std.debug.print("heartbeat failed: {s}\n", .{@errorName(err)});
+                if (upd.onHeartbeat(false, iox.timestamp())) |o| {
+                    if (o == .restart_now) lifecycle.requestStopFor(.update_restart);
+                } else |_| {}
             }
+        }
+
+        if (lifecycle.shouldStop()) break;
+        if (upd.key != null and (first_update_check or update_timer.read() / std.time.ns_per_s >= update_interval_seconds)) {
+            first_update_check = false;
+            update_timer.reset();
+            var fetch_ctx = UpdateFetch{ .http = &http, .ring = @tagName(upd.ring()) };
+            if (upd.check(fetch_ctx.fetcher())) |o| {
+                if (o == .restart_now) {
+                    std.debug.print("update: new binary in place; restarting through the service manager\n", .{});
+                    lifecycle.requestStopFor(.update_restart);
+                }
+            } else |err| std.debug.print("update check failed: {s}\n", .{@errorName(err)});
         }
 
         if (lifecycle.shouldStop()) break;
@@ -332,6 +405,7 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         if (process_events_timer.read() / std.time.ns_per_s >= cfg.process_events_interval_seconds) {
             process_events_timer.reset();
             if (process_tracker.collectLaunches()) |launches| {
+                if (launches.len > 0) process_tracker_last_event = iox.timestamp();
                 emitBatch(&buf, "process_start", launches, alloc);
             } else |err| {
                 std.debug.print("process_events collector failed: {s}\n", .{@errorName(err)});
@@ -434,6 +508,16 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         }
 
         if (lifecycle.shouldStop()) break;
+        if (tamper_timer.read() / std.time.ns_per_s >= tamper_interval_seconds) {
+            tamper_timer.reset();
+            if (tamper_mon.check()) |found| {
+                emitBatch(&buf, "agent_tamper", found, alloc);
+            } else |err| {
+                std.debug.print("tamper check failed: {s}\n", .{@errorName(err)});
+            }
+        }
+
+        if (lifecycle.shouldStop()) break;
         const retry_ready = http.backoff_seconds == 0 or
             flush_retry_timer.read() / std.time.ns_per_s >= http.backoff_seconds;
         if (buf.len() > 0 and retry_ready) {
@@ -449,6 +533,78 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
         iox.sleep(1 * std.time.ns_per_s);
     }
     std.debug.print("tawny-agent stopping\n", .{});
+    // Clean shutdown (#58): flush what we can, tell the server, then leave the
+    // marker so the next start does not report an unexpected stop.
+    const why = lifecycle.reason();
+    if (buf.len() > 0) http.flushEvents(&buf) catch {};
+    const uptime_end: i64 = @intCast(iox.timestamp() - start_time);
+    http.sendShutdownNotice(AGENT_VERSION, uptime_end, buf.totalLen(), why.text()) catch |err| {
+        std.debug.print("shutdown notice not sent: {s}\n", .{@errorName(err)});
+    };
+    lifecycle.writeMarker(alloc, cfg.state_path, why);
+    // After an update swap or rollback, exit non-zero so the service manager
+    // starts the binary now in place (SCM failure actions, systemd
+    // Restart=on-failure, launchd KeepAlive).
+    if (why == .update_restart) return error.UpdateRestart;
+}
+
+/// How often the agent asks for a signed release.
+const update_interval_seconds: u64 = 6 * 3600;
+
+const UpdateFetch = struct {
+    http: *transport.Client,
+    ring: []const u8,
+
+    fn release(ctx: *anyopaque, _: std.mem.Allocator, platform: []const u8) anyerror!?[]u8 {
+        const self: *UpdateFetch = @ptrCast(@alignCast(ctx));
+        return self.http.updateCheck(platform, self.ring);
+    }
+    fn download(ctx: *anyopaque, _: std.mem.Allocator, url: []const u8, max: u64) anyerror![]u8 {
+        const self: *UpdateFetch = @ptrCast(@alignCast(ctx));
+        return self.http.download(url, max);
+    }
+    fn fetcher(self: *UpdateFetch) updater.Fetcher {
+        return .{ .ctx = self, .release = release, .download = download };
+    }
+};
+
+/// How often the tamper monitor runs. The binary is hashed every fifth run.
+const tamper_interval_seconds: u64 = 60;
+
+/// Last time the launch tracker reported a new process (0: none yet).
+var process_tracker_last_event: i64 = 0;
+
+fn watchTamperFiles(alloc: std.mem.Allocator, mon: *tamper.Monitor, cfg: *const config_mod.Config, device_key_path: []const u8) void {
+    if (std.process.executablePathAlloc(iox.current(), alloc)) |exe| {
+        defer alloc.free(exe);
+        mon.watch(.binary, exe) catch {};
+    } else |_| {}
+    mon.watch(.config, cfg.config_path) catch {};
+    mon.watch(.identity, cfg.state_path) catch {};
+    mon.watch(.identity, device_key_path) catch {};
+    const action_key_path = alloc.print("{s}.actionkey", .{cfg.state_path}) catch return;
+    defer alloc.free(action_key_path);
+    mon.watch(.identity, action_key_path) catch {};
+}
+
+fn acceptOwnKeyWrite(alloc: std.mem.Allocator, mon: *tamper.Monitor, state_path: []const u8, suffix: []const u8) void {
+    const path = alloc.print("{s}{s}", .{ state_path, suffix }) catch return;
+    defer alloc.free(path);
+    mon.acceptOwnWrite(path);
+}
+
+/// Per-sensor status for agent_health. Windows channels report their own
+/// sensor_health; here the launch tracker reports running with its last event
+/// age.
+fn sensorStatus(timer: *iox.Timer, last_event: i64, interval: u32) [1]SensorEntry {
+    _ = timer;
+    _ = interval;
+    const now = iox.timestamp();
+    return .{.{
+        .name = "process_events",
+        .status = "running",
+        .last_event_age_seconds = if (last_event == 0) null else @max(now - last_event, 0),
+    }};
 }
 
 /// Quarantine directory. `%ProgramData%\Tawny\Quarantine` on Windows,
@@ -597,6 +753,13 @@ test "main module loads" {
     _ = @import("platform/windows/wfp.zig");
     _ = @import("platform/windows/process_control.zig");
     _ = @import("response_debug.zig");
+    _ = tamper;
+    _ = @import("minisign.zig");
+    _ = @import("update_key.zig");
+    _ = updater;
+    _ = @import("platform/windows/scm.zig");
+    _ = @import("platform/windows/dpapi.zig");
+    _ = @import("keystore_debug.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Windows event log parsing and mapping are pure too.
@@ -701,19 +864,55 @@ fn emitBatch(
 
 /// `agent_health` data (schemas/events/agent_health.v1.json).
 fn healthPayload(alloc: std.mem.Allocator, uptime: i64, depth: usize, next_sequence: u64, boot_id: []const u8) ![]u8 {
+    return healthPayloadFull(alloc, .{ .uptime = uptime, .depth = depth, .next_sequence = next_sequence, .boot_id = boot_id });
+}
+
+pub const SensorEntry = struct {
+    name: []const u8,
+    status: []const u8,
+    last_event_age_seconds: ?i64 = null,
+};
+
+pub const HealthInput = struct {
+    uptime: i64,
+    depth: usize,
+    next_sequence: u64,
+    boot_id: []const u8,
+    key_protection: ?[]const u8 = null,
+    sensors: [1]SensorEntry = .{.{ .name = "process_events", .status = "unknown" }},
+    update: ?updater.HealthState = null,
+};
+
+fn healthPayloadFull(alloc: std.mem.Allocator, in: HealthInput) ![]u8 {
     return std.json.Stringify.valueAlloc(alloc, .{
         .sensor_version = AGENT_VERSION,
-        .buffer_depth = depth,
-        .uptime_seconds = @max(uptime, 0),
-        .next_sequence = next_sequence,
-        .boot_id = boot_id,
-    }, .{});
+        .buffer_depth = in.depth,
+        .uptime_seconds = @max(in.uptime, 0),
+        .next_sequence = in.next_sequence,
+        .boot_id = in.boot_id,
+        .key_protection = in.key_protection,
+        .sensors = &in.sensors,
+        .update = in.update,
+    }, .{ .emit_null_optional_fields = false });
 }
 
 test "agent_health payload matches its schema" {
     const p = try healthPayload(std.testing.allocator, 5, 2, 9, entity.nil_uuid);
     defer std.testing.allocator.free(p);
     try @import("schema_check.zig").expectValid(std.testing.allocator, "agent_health", p);
+    const full = try healthPayloadFull(std.testing.allocator, .{
+        .uptime = 5,
+        .depth = 2,
+        .next_sequence = 9,
+        .boot_id = entity.nil_uuid,
+        .key_protection = "dpapi",
+        .sensors = .{.{ .name = "process_events", .status = "running", .last_event_age_seconds = 3 }},
+        .update = .{ .state = .idle, .ring = "50", .bucket = 42 },
+    });
+    defer std.testing.allocator.free(full);
+    try @import("schema_check.zig").expectValid(std.testing.allocator, "agent_health", full);
+    try std.testing.expect(std.mem.indexOf(u8, full, "\"key_protection\":\"dpapi\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, full, "\"state\":\"idle\"") != null);
 }
 
 fn queueEvent(buf: *buffer.Buffer, event_type: []const u8, payload: []const u8) void {

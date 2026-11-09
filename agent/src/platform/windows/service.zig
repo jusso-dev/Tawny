@@ -116,7 +116,9 @@ fn serviceMain(_: u32, _: ?[*]?[*:0]u16) callconv(WINAPI) void {
 fn controlHandler(control: u32, _: u32, _: ?*anyopaque, _: ?*anyopaque) callconv(WINAPI) u32 {
     switch (control) {
         SERVICE_CONTROL_STOP, SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_PRESHUTDOWN => {
-            lifecycle.requestStop();
+            // The run loop writes the clean shutdown marker and sends the
+            // shutdown notice once it sees the flag (#58).
+            lifecycle.requestStopFor(if (control == SERVICE_CONTROL_STOP) .service_stop else .system_shutdown);
             reportStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, stop_wait_hint_ms);
             return NO_ERROR;
         },

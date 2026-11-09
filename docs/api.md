@@ -78,6 +78,70 @@ If the JWT is close to expiry (within the rotation window, 15 minutes by default
 
 The response also has `yara_pack_version`, the version of the tenant's YARA rule pack (0 when there are no YARA rules). An agent with a lower version fetches the pack.
 
+**Clean shutdown notice (#58).** As the agent stops for the service manager
+or a signal it sends one more heartbeat with `"shutdown": true` and
+`"shutdown_reason"` (`service_stop`, `system_shutdown`, `signal` or
+`update_restart`, at most 64 characters). The server records
+`clean_shutdown_at`, audits `agent.clean_shutdown`, and replies `{"actions":[]}`
+with no rotated token. The next normal heartbeat clears the notice. An agent
+that goes `offline` (15 minutes) without the notice raises an `Agent silent`
+alert, which its next heartbeat closes (status `resolved`). Revoked agents
+never raise it.
+
+**Server-raised alerts.** `Agent silent`, `Sensor silent` and `Agent tamper`
+alerts hang off one disabled rule per tenant (external ids
+`tawny-system:agent-silent`, `tawny-system:sensor-silent`,
+`tawny-system:agent-tamper`) and go to the usual sinks. `Agent silent` and
+`Sensor silent` from the periodic job are anchored on a server-written event
+of type `agent_silent` or `sensor_silent` with confidence `server_observed`.
+
+- `agent_tamper` (schemas/events/agent_tamper.v1.json): one alert per event.
+  `check` is `unexpected_stop`, `binary_changed`, `config_changed`,
+  `identity_changed`, `sysmon_stopped` or `defender_exclusion`.
+- `sensor_health` (per Windows channel) and `agent_health.sensors`
+  (`[{name, status, last_event_age_seconds}]`) update per-sensor status. A
+  sensor that was running and then reports stopped, failed, missing or
+  access denied raises `Sensor silent`. For the continuous sensors (Sysmon and
+  Security) the agent's own 15 minute `silent` state does too, and so does the
+  server when `agent_health` shows no event for 15 minutes while the agent is
+  still online. Delivering again closes the alert.
+- `agent_health` also carries `key_protection` (`keychain`, `dpapi`, `tpm` or
+  `file`) and `update` (`{state, version, ring, bucket, reason}`), stored on
+  the agent row as `key_protection`, `update_state` and `update_version`.
+
+### POST `/api/agent/update-check`
+
+Auth: Agent JWT. Body `{"platform": "windows-x64"}` (a `ring` field from the
+agent is ignored). The server picks the agent's ring: the `agents.update_ring`
+override when set, else the bucket, `sha256(lower-case agent id)` first four
+bytes big-endian mod 100, with buckets 0 to 9 in ring `10`, 10 to 49 in `50`
+and the rest in `100`. `canary` and `internal` are only reached by override.
+
+Response `200` when the latest release for the platform carries a signed
+manifest and is open to the agent's ring (ring order canary, internal, 10,
+50, 100; a release open to ring R is offered to R and every earlier ring):
+
+```json
+{ "manifest": "{\"version\":\"0.2.0\",...}", "signature": "untrusted comment: ...", "download_url": "https://...", "agent_ring": "50" }
+```
+
+`204` when nothing signed is offered. The server passes the manifest bytes on
+and never trusts them; the agent verifies the minisign signature with its
+compiled-in release key. The agent refuses every update while that key is the
+placeholder (`update.state` = `disabled_no_release_key`).
+
+Manifest: `{version, platform, sha256, size, min_from_version, ring, rollback}`,
+signed as a file by `minisign -S` (prehashed `ED`; the legacy `Ed` form is
+also accepted). The release job publishes `<asset stem>.manifest.json` and
+`.manifest.json.minisig` beside each binary; the release sync stores them in
+`agent_releases.manifest` and `manifest_signature`.
+
+**Rings and promotion.** The release sync inserts new releases in ring
+`canary`. Every hour the server moves a latest release to the next ring when
+it has been in its ring for the soak period (24 hours) and no more than 5% of
+agents that reported that version are `rolled_back` or `failed`. Releases
+synced before #58 start in `100`.
+
 ### POST `/api/agent/yara-rules`
 
 Auth: Agent JWT. Body `{}`. Returns the tenant's enabled YARA rules as one signed pack:
@@ -280,7 +344,9 @@ Auth: web user (Admin). Revokes.
 
 Auth: session cookie or `twny_` API token. Anonymous and agent JWT requests are
 401. Returns the current `is_latest` row for that platform
-(`version`, `platform`, `download_url`, `sha256`, `released_at`). Unknown
+(`version`, `platform`, `download_url`, `sha256`, `released_at`, `ring`).
+Optional `ring=canary|internal|10|50|100` returns the release only when it is
+already open to that ring (else 404); any other value is 400. Unknown
 platform is 404 `No release is published for that platform.` A missing
 `platform` query is 400 `platform is required.` Enrolled agents still receive
 `latest_agent_version`, `download_url`, and `sha256` on heartbeat.

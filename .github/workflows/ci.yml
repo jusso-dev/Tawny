@@ -368,6 +368,61 @@ jobs:
           if ((Select-Events $third "powershell_script_block" $m2).Count -eq 0) { throw "event after restart was lost: $m2" }
           if ((Select-Events $third "powershell_script_block" $m1).Count -ne 0) { throw "restart replayed $m1" }
           Write-Host "event log telemetry and bookmarks OK"
+      # Signed self-update (#58): a key made for the run signs manifests, and
+      # the real file operations run good, bad signature, bad hash, downgrade
+      # and failed-health-check rollback in a temp install. On Windows this
+      # includes renaming a file the way the running exe is renamed.
+      - name: prove signed update paths (good, bad signature, bad hash, downgrade, rollback)
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          bin="zig-out/bin/tawny-agent${{ matrix.binary_ext }}"
+          out="$("$bin" --update-selftest "$RUNNER_TEMP/tawny-update-selftest" 2>&1)"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -F "result=ok"
+          printf '%s\n' "$out" | grep -F "release_key=placeholder (updates disabled)"
+      # DPAPI keystore (#58): round trip, plaintext seed migrated and removed,
+      # no plaintext in the protected file. The hosted runner has no TPM, so
+      # key_protection is expected to be dpapi. Then the service DACL from
+      # install.ps1 is applied to a throwaway service and read back.
+      - name: prove Windows DPAPI keystore and service DACL
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "tawny-keystore-selftest"
+          Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+          $out = & $agent --keystore-selftest $dir 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "keystore selftest exit $LASTEXITCODE" }
+          foreach ($want in @("backend=windows_dpapi", "round_trip=ok", "plaintext_removed=true", "result=ok")) {
+            if (-not $out.Contains($want)) { throw "keystore selftest output lacks $want" }
+          }
+          if (-not ($out -match "key_protection=(dpapi|tpm)")) { throw "no key_protection in output" }
+          if (Test-Path -LiteralPath (Join-Path $dir "state.toml.devicekey")) { throw "plaintext seed left behind" }
+
+          # Service DACL: same SDDL as install.ps1, on a stopped dummy service.
+          $match = Select-String -Path (Join-Path $PWD "install\install.ps1") -Pattern '^\$script:TawnyServiceSddl = "(.+)"$'
+          if (-not $match) { throw "TawnyServiceSddl not found in install.ps1" }
+          $sddl = $match.Matches[0].Groups[1].Value
+          $svc = "TawnyCiAclProbe"
+          & sc.exe delete $svc 2>&1 | Out-Null
+          & sc.exe create $svc binPath= "`"$agent`"" start= demand | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sc create exit $LASTEXITCODE" }
+          try {
+            & sc.exe sdset $svc $sddl | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "sc sdset exit $LASTEXITCODE" }
+            $got = (& sc.exe sdshow $svc | Out-String).Trim()
+            Write-Host "sdshow: $got"
+            if ($got -match "\(A;;[A-Z]*(RP|WP|SD|DC)[A-Z]*;;;(IU|SU|AU)\)") { throw "non-admin principals can still start, stop, change or delete the service" }
+            if (-not ($got -match "\(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA\)")) { throw "Administrators lost full control" }
+            Write-Host "service DACL OK"
+          } finally {
+            & sc.exe delete $svc | Out-Null
+          }
       - name: test installer upgrade and recovery paths
         if: matrix.name == 'linux-x64'
         run: bash install/test-install.sh

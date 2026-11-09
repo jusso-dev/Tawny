@@ -11,6 +11,7 @@ const ingest_v2 = @import("../ingest/v2.zig");
 const ingest_entity = @import("../ingest/entity.zig");
 const legacy = @import("../ingest/legacy.zig");
 const process_store = @import("../ingest/process_store.zig");
+const agent_alerts = @import("../jobs/agent_alerts.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub fn createEnrollmentToken(
@@ -352,6 +353,9 @@ pub fn heartbeat(
         agent_version: []const u8,
         uptime_seconds: i64,
         buffer_depth: i64,
+        /// Clean shutdown notice (#58): sent once as the agent stops.
+        shutdown: bool = false,
+        shutdown_reason: []const u8 = "",
     };
     var parsed = std.json.parseFromSlice(Req, allocator, body, .{ .ignore_unknown_fields = true }) catch {
         return util.problem(request, allocator, .bad_request, "Invalid heartbeat body.");
@@ -392,6 +396,18 @@ pub fn heartbeat(
 
     if (!std.mem.eql(u8, prev_status, "online") or !std.mem.eql(u8, prev_ver, parsed.value.agent_version)) {
         try audit.add(allocator, io, conn, agent.tenant_id, null, "agent.heartbeat_change", agent.agent_id, null);
+    }
+
+    // Clean shutdown notice, or a normal heartbeat that closes Agent silent.
+    {
+        const reason = parsed.value.shutdown_reason;
+        const safe_reason = if (reason.len <= 64 and !util.hasControlChars(reason)) reason else "";
+        try agent_alerts.onHeartbeat(allocator, conn, agent.tenant_id, agent.agent_id, parsed.value.shutdown, safe_reason, now_s);
+        if (parsed.value.shutdown) {
+            try audit.add(allocator, io, conn, agent.tenant_id, null, "agent.clean_shutdown", agent.agent_id, null);
+            // A stopping agent gets no actions and no rotated token.
+            return util.respondJson(request, .ok, "{\"actions\":[]}");
+        }
     }
 
     // Expire stale actions
@@ -740,6 +756,43 @@ fn loadIngestAgent(allocator: std.mem.Allocator, conn: *pg.Conn, request: *std.h
     };
 }
 
+/// #58 hooks: sensor status from sensor_health and agent_health, update and
+/// key state from agent_health, and an alert for every agent_tamper. Errors
+/// are logged, never fatal to ingest.
+fn onHardeningEvent(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    agent: auth.AgentAuth,
+    hostname: []const u8,
+    ev: IngestEvent,
+    anchor: agent_alerts.Anchor,
+    now: i64,
+) !void {
+    const eq = std.mem.eql;
+    const t = ev.event_type;
+    if (eq(u8, t, "agent_tamper")) {
+        agent_alerts.onTamper(allocator, io, conn, agent.tenant_id, agent.agent_id, hostname, ev.payload, anchor, now) catch |err| {
+            std.debug.print("agent_tamper alert failed: {s}\n", .{@errorName(err)});
+        };
+        return;
+    }
+    if (!eq(u8, t, "sensor_health") and !eq(u8, t, "agent_health")) return;
+    if (eq(u8, t, "agent_health")) {
+        var nbuf: [32]u8 = undefined;
+        agent_alerts.recordHealth(conn, agent.tenant_id, agent.agent_id, ev.payload, util.formatRfc3339(&nbuf, now)) catch |err| {
+            std.debug.print("agent_health record failed: {s}\n", .{@errorName(err)});
+        };
+    }
+    const reports = try agent_alerts.sensorReports(allocator, t, ev.payload);
+    defer allocator.free(reports);
+    for (reports) |r| {
+        agent_alerts.recordSensor(allocator, io, conn, agent.tenant_id, agent.agent_id, hostname, r, anchor, now) catch |err| {
+            std.debug.print("sensor status {s} failed: {s}\n", .{ r.sensor, @errorName(err) });
+        };
+    }
+}
+
 /// Store a batch of either schema: dedupe, insert, process entities, detect
 /// queue, sequence bookkeeping. Both schemas end here, so v1 and v2 agents
 /// ingest side by side.
@@ -845,6 +898,7 @@ fn storeBatch(
         }
         inserted += 1;
         try detect.enqueue(allocator, conn, agent.tenant_id, agent.agent_id, ctx.hostname, ev.event_type, event_id, recv_at);
+        try onHardeningEvent(allocator, io, conn, agent, ctx.hostname, ev, .{ .event_id = event_id, .received_at = recv_at }, now);
     }
 
     if (!rollback) {
