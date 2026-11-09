@@ -57,3 +57,5 @@ coverage/
 
 # Zig 0.17 unpacks fetched packages into the project
 zig-pkg/
+# Test fixtures named *.log are inputs, not logs.
+!agent/src/platform/linux/testdata/*.log
