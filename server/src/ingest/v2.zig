@@ -130,6 +130,7 @@ pub fn checkData(event_type: []const u8, d: std.json.Value) ?[]const u8 {
     if (eq(u8, event_type, "agent_health")) {
         return if (get(d, "sensor_version") != null and get(d, "buffer_depth") != null and get(d, "uptime_seconds") != null) null else "agent_health fields are required.";
     }
+    if (eq(u8, event_type, "agent_tamper")) return if (needString(d, "check") and needString(d, "detail")) null else "check and detail are required.";
     return null;
 }
 

@@ -8,6 +8,7 @@ const detect = @import("jobs/detect.zig");
 const deliver = @import("jobs/deliver.zig");
 const purge = @import("jobs/purge.zig");
 const stale = @import("jobs/stale.zig");
+const agent_alerts = @import("jobs/agent_alerts.zig");
 const hunts = @import("jobs/hunts.zig");
 const threat_intel = @import("jobs/threat_intel.zig");
 const reputation = @import("jobs/reputation.zig");
@@ -290,6 +291,10 @@ fn runJobs(
         })) |_| {} else |err| {
             std.debug.print("release check failed: {s}\n", .{@errorName(err)});
         }
+        // Gated ring promotion (#58).
+        if (releases.promote(allocator, conn, now, .{})) |n| {
+            if (n > 0) std.debug.print("promoted {d} release ring(s)\n", .{n});
+        } else |err| std.debug.print("release promotion failed: {s}\n", .{@errorName(err)});
     }
     if (now - last_stale.* >= 60) {
         last_stale.* = now;
@@ -298,6 +303,13 @@ fn runJobs(
         stale.mark(conn, stamp) catch |err| {
             std.debug.print("stale job failed: {s}\n", .{@errorName(err)});
         };
+        // #58: offline without a clean shutdown notice, and quiet sensors.
+        if (agent_alerts.raiseSilentAgents(allocator, io, conn, stamp)) |n| {
+            if (n > 0) std.debug.print("raised {d} Agent silent alert(s)\n", .{n});
+        } else |err| std.debug.print("agent silent job failed: {s}\n", .{@errorName(err)});
+        if (agent_alerts.raiseQuietSensors(allocator, io, conn, now)) |n| {
+            if (n > 0) std.debug.print("raised {d} Sensor silent alert(s)\n", .{n});
+        } else |err| std.debug.print("quiet sensor job failed: {s}\n", .{@errorName(err)});
     }
     if (now - last_ai.* >= 30) {
         last_ai.* = now;
@@ -481,6 +493,7 @@ comptime {
     _ = @import("jobs/deliver.zig");
     _ = @import("jobs/purge.zig");
     _ = @import("jobs/stale.zig");
+    _ = @import("jobs/agent_alerts.zig");
     _ = @import("jobs/hunts.zig");
     _ = @import("hunts/query.zig");
     _ = @import("jobs/threat_intel.zig");
