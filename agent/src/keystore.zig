@@ -4,9 +4,15 @@
 //! - macOS: Security.framework generic passwords, service
 //!   `dev.jusso.tawny-agent`, account = secret name. Root (LaunchDaemon) uses
 //!   the System keychain; a per-user LaunchAgent uses the login keychain.
-//! - Everything else (and macOS with `TAWNY_KEYSTORE=file`): `file`, meaning
-//!   callers keep the legacy plaintext files (state.toml / `.devicekey`).
-//!   Windows DPAPI and Linux keyring/TPM are later phases.
+//! - Windows: `windows_dpapi` (#58). DPAPI machine scope with fixed entropy,
+//!   one `<state dir>\<account>.dpapi` file per secret, ACL SYSTEM and
+//!   Administrators only, wrapped by a TPM key in the Platform Crypto
+//!   Provider when one is usable (platform/windows/dpapi.zig).
+//!   `TAWNY_KEYSTORE_TPM=off` keeps DPAPI alone.
+//! - Linux and everything else (and any OS with `TAWNY_KEYSTORE=file`):
+//!   `file`, meaning callers keep the plaintext files (state.toml /
+//!   `.devicekey`), owner-only 0600 under a root-owned 0750 state directory.
+//!   tpm2-tss sealing is not done yet (docs/production-agent-hardening.md).
 //!
 //! File precedence: when a plaintext copy exists it is authoritative, because
 //! it is only ever written as a fallback after a keystore write failed, or by
@@ -18,6 +24,7 @@ const builtin = @import("builtin");
 const env = @import("env.zig");
 const iox = @import("io_compat.zig");
 const keychain = if (builtin.target.os.tag == .macos) @import("platform/macos/keychain.zig") else struct {};
+const dpapi = @import("platform/windows/dpapi.zig");
 
 pub const default_service = "dev.jusso.tawny-agent";
 pub const seed_len = std.crypto.sign.Ed25519.KeyPair.seed_length;
@@ -53,6 +60,8 @@ pub const Backend = enum {
     macos_system_keychain,
     /// The calling user's default (login) keychain.
     macos_user_keychain,
+    /// DPAPI machine scope files, TPM-wrapped when available (Windows).
+    windows_dpapi,
     /// In-memory store for tests.
     test_vault,
 };
@@ -61,6 +70,10 @@ pub const Store = struct {
     backend: Backend = .file,
     service: []const u8 = default_service,
     vault: ?*TestVault = null,
+    /// windows_dpapi: directory holding the `.dpapi` files (state dir).
+    dir: []const u8 = "",
+    /// windows_dpapi: try the TPM wrap first.
+    use_tpm: bool = true,
 
     /// True when secrets go to an OS keystore rather than plaintext files.
     pub fn isOs(self: Store) bool {
@@ -72,7 +85,22 @@ pub const Store = struct {
             .file => "plaintext state files",
             .macos_system_keychain => "macOS System keychain",
             .macos_user_keychain => "macOS login keychain",
+            .windows_dpapi => if (self.use_tpm) "Windows DPAPI (TPM-wrapped when available)" else "Windows DPAPI",
             .test_vault => "test vault",
+        };
+    }
+
+    /// `key_protection` for agent_health: keychain, dpapi, tpm or file.
+    /// For DPAPI this reads which wrap the device seed actually has.
+    pub fn protection(self: Store) []const u8 {
+        return switch (self.backend) {
+            .file, .test_vault => "file",
+            .macos_system_keychain, .macos_user_keychain => "keychain",
+            .windows_dpapi => blk: {
+                if (comptime builtin.target.os.tag != .windows) break :blk "dpapi";
+                if (last_wrap) |w| break :blk if (w == .tpm) "tpm" else "dpapi";
+                break :blk "dpapi";
+            },
         };
     }
 
@@ -85,6 +113,12 @@ pub const Store = struct {
                 if (comptime builtin.target.os.tag != .macos) return error.KeystoreUnavailable;
                 return keychain.get(alloc, self.location(), self.service, secret.account()) catch |err| mapKeychainError(err);
             },
+            .windows_dpapi => {
+                var w: dpapi.Wrap = .dpapi;
+                const got = dpapi.get(alloc, self.dir, secret.account(), &w) catch |err| return mapDpapiError(err);
+                if (got != null and secret == .device_seed) last_wrap = w;
+                return got;
+            },
         };
     }
 
@@ -95,6 +129,11 @@ pub const Store = struct {
             .macos_system_keychain, .macos_user_keychain => {
                 if (comptime builtin.target.os.tag != .macos) return error.KeystoreUnavailable;
                 return keychain.put(self.location(), self.service, secret.account(), value) catch |err| mapKeychainError(err);
+            },
+            .windows_dpapi => {
+                const alloc = std.heap.page_allocator;
+                const w = dpapi.put(alloc, self.dir, secret.account(), value, if (self.use_tpm) .auto else .dpapi_only) catch |err| return mapDpapiError(err);
+                if (secret == .device_seed) last_wrap = w;
             },
         };
     }
@@ -108,6 +147,7 @@ pub const Store = struct {
                 if (comptime builtin.target.os.tag != .macos) return error.KeystoreUnavailable;
                 return keychain.delete(self.location(), self.service, secret.account()) catch |err| mapKeychainError(err);
             },
+            .windows_dpapi => dpapi.delete(std.heap.page_allocator, self.dir, secret.account()) catch |err| return mapDpapiError(err),
         };
     }
 
@@ -137,22 +177,49 @@ fn mapKeychainError(err: anyerror) Error {
     };
 }
 
-/// OSStatus of the last failing keychain call (0 elsewhere), for log lines.
+/// Wrap of the device seed last read or written through DPAPI.
+var last_wrap: ?dpapi.Wrap = null;
+
+fn mapDpapiError(err: dpapi.Error) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.KeystoreUnavailable, error.TpmUnavailable => error.KeystoreUnavailable,
+        error.DpapiFailed, error.TpmFailed, error.CorruptBlob => error.KeystoreFailure,
+    };
+}
+
+/// OSStatus of the last failing keychain call, or the Win32 / NCrypt code of
+/// the last failing DPAPI or TPM call (0 elsewhere), for log lines.
 pub fn lastOsStatus() i32 {
+    if (comptime builtin.target.os.tag == .windows) return @bitCast(dpapi.last_error);
     if (comptime builtin.target.os.tag != .macos) return 0;
     return keychain.last_status;
 }
 
 /// Store for this process. macOS: System keychain when running as root
-/// (LaunchDaemon), login keychain otherwise (LaunchAgent). `TAWNY_KEYSTORE=file`
-/// forces the plaintext-file backend (containers, debugging).
+/// (LaunchDaemon), login keychain otherwise (LaunchAgent). Windows: DPAPI
+/// files in `state_dir`. `TAWNY_KEYSTORE=file` forces the plaintext-file
+/// backend (containers, debugging). `state_dir` must outlive the Store.
 pub fn platformDefault(alloc: std.mem.Allocator) Store {
+    return platformDefaultIn(alloc, "");
+}
+
+pub fn platformDefaultIn(alloc: std.mem.Allocator, state_dir: []const u8) Store {
     if (env.getEnvVarOwned(alloc, "TAWNY_KEYSTORE")) |value| {
         defer alloc.free(value);
         if (std.ascii.eqlIgnoreCase(value, "file")) return .{ .backend = .file };
     } else |_| {}
     if (comptime builtin.target.os.tag == .macos) {
         return .{ .backend = if (std.c.geteuid() == 0) .macos_system_keychain else .macos_user_keychain };
+    }
+    if (comptime builtin.target.os.tag == .windows) {
+        if (state_dir.len == 0) return .{ .backend = .file };
+        var use_tpm = true;
+        if (env.getEnvVarOwned(alloc, "TAWNY_KEYSTORE_TPM")) |value| {
+            defer alloc.free(value);
+            if (std.ascii.eqlIgnoreCase(value, "off") or std.mem.eql(u8, value, "0")) use_tpm = false;
+        } else |_| {}
+        return .{ .backend = .windows_dpapi, .dir = state_dir, .use_tpm = use_tpm };
     }
     return .{ .backend = .file };
 }

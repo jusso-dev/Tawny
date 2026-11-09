@@ -184,7 +184,9 @@ pub fn loadWith(alloc: std.mem.Allocator, options: LoadOptions) !Config {
     }
 
     try validate(&cfg);
-    cfg.secret_store = keystore.platformDefault(alloc);
+    // The DPAPI files sit next to state.toml. dirname is a slice of
+    // cfg.state_path, which lives as long as cfg.
+    cfg.secret_store = keystore.platformDefaultIn(alloc, std.fs.path.dirname(cfg.state_path) orelse ".");
     const state = try loadState(&cfg);
     if (state == .missing and cfg.agent_id != null and cfg.agent_jwt != null) {
         // One-time migration from legacy config files which stored mutable
