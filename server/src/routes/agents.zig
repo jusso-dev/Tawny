@@ -4,6 +4,7 @@ const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
+const batch_sig = @import("../crypto/batch_sig.zig");
 const detect = @import("../jobs/detect.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
@@ -577,17 +578,16 @@ pub fn ingestEvents(
     const device_key = arows[0].cols[0];
     const last_seq: i64 = if (arows[0].cols[1]) |s| std.fmt.parseInt(i64, s, 10) catch 0 else 0;
     const hostname = arows[0].cols[2] orelse "";
+    var batch_buf: [36]u8 = undefined;
 
-    if (device_key != null and device_key.?.len > 0) {
-        if (parsed.value.signature == null or parsed.value.signature.?.len == 0) {
+    const batch_id: []const u8 = switch (checkBatchSignature(allocator, agent.agent_id, device_key, body, parsed.value)) {
+        .verified => |id| id,
+        .unsigned_allowed => parsed.value.batch_id orelse util.newUuid(io, &batch_buf),
+        .rejected => {
             try audit.add(allocator, io, conn, agent.tenant_id, null, "telemetry.signature_rejected", agent.agent_id, null);
             return util.problem(request, allocator, .unauthorized, "Invalid or missing device batch signature.");
-        }
-        // Full verify deferred; missing signature path is required.
-    }
-
-    var batch_buf: [36]u8 = undefined;
-    const batch_id = parsed.value.batch_id orelse util.newUuid(io, &batch_buf);
+        },
+    };
     const now = util.nowUnix(io);
     var tbuf: [32]u8 = undefined;
     const received = util.formatRfc3339(&tbuf, now);
@@ -1244,6 +1244,64 @@ pub fn streamAgentEvents(
             }
         }
     }
+}
+
+const SigCheck = union(enum) {
+    verified: []const u8,
+    unsigned_allowed,
+    rejected,
+};
+
+/// Check the device signature on a telemetry batch.
+/// An agent with a stored key must sign every batch and send its batch_id.
+/// An agent without a key may send unsigned batches only when
+/// TAWNY_REQUIRE_SIGNED_BATCHES is off.
+fn checkBatchSignature(allocator: std.mem.Allocator, agent_id: []const u8, device_key: ?[]const u8, body: []const u8, req: anytype) SigCheck {
+    const key = device_key orelse "";
+    if (key.len == 0) {
+        return if (state.requireSignedBatches()) .rejected else .unsigned_allowed;
+    }
+    const sig = req.signature orelse return .rejected;
+    if (sig.len == 0) return .rejected;
+    const batch_id = req.batch_id orelse return .rejected;
+    if (batch_id.len == 0) return .rejected;
+    const raws = batch_sig.rawEvents(allocator, body) catch return .rejected;
+    defer allocator.free(raws);
+    if (raws.len != req.events.len) return .rejected;
+    const evs = allocator.alloc(batch_sig.Event, raws.len) catch return .rejected;
+    defer allocator.free(evs);
+    for (req.events, raws, 0..) |ev, raw, i| {
+        evs[i] = .{
+            .client_event_id = ev.client_event_id orelse return .rejected,
+            .sequence = ev.sequence orelse return .rejected,
+            .type = ev.type,
+            .occurred_at_raw = raw.occurred_at,
+            .payload_raw = raw.payload,
+        };
+    }
+    const msg = batch_sig.canonical(allocator, agent_id, batch_id, evs) catch return .rejected;
+    defer allocator.free(msg);
+    batch_sig.verify(key, msg, sig) catch return .rejected;
+    return .{ .verified = batch_id };
+}
+
+test "unsigned batch from an agent with no key follows TAWNY_REQUIRE_SIGNED_BATCHES" {
+    const Ev = struct { type: []const u8, client_event_id: ?[]const u8 = null, sequence: ?i64 = null };
+    const Req = struct { events: []const Ev, batch_id: ?[]const u8 = null, signature: ?[]const u8 = null };
+    const req: Req = .{ .events = &.{.{ .type = "system_info" }} };
+    const body = "{\"events\":[{\"type\":\"system_info\",\"occurred_at\":1,\"payload\":{}}]}";
+    const saved = state.require_signed_batches;
+    defer state.require_signed_batches = saved;
+
+    state.require_signed_batches = true;
+    try std.testing.expect(checkBatchSignature(std.testing.allocator, "a", null, body, req) == .rejected);
+    try std.testing.expect(checkBatchSignature(std.testing.allocator, "a", "", body, req) == .rejected);
+    state.require_signed_batches = false;
+    try std.testing.expect(checkBatchSignature(std.testing.allocator, "a", null, body, req) == .unsigned_allowed);
+    // A stored key always needs a signature, whatever the setting.
+    try std.testing.expect(checkBatchSignature(std.testing.allocator, "a", "AAAA", body, req) == .rejected);
+    const signed_no_batch: Req = .{ .events = req.events, .signature = "AAAA" };
+    try std.testing.expect(checkBatchSignature(std.testing.allocator, "a", "AAAA", body, signed_no_batch) == .rejected);
 }
 
 test "enroll token prefix" {

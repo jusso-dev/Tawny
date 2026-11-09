@@ -15,27 +15,67 @@ const RateBucket = struct {
 var enroll_rates: std.StringHashMap(RateBucket) = undefined;
 var enroll_rates_init = false;
 
+pub const SeedError = error{ AgentJwtSeedMissing, AgentJwtSeedMalformed };
+
+/// Agent JWT seed, set once at startup by `configureAgentKey`.
 pub fn ensureAgentKey(io: std.Io) !Ed25519.KeyPair {
     if (agent_kp) |kp| return kp;
+    // Reached only when serve didn't configure a key (tests, one-off commands).
+    // Use a random seed so nothing ever signs with a value from the repo.
     var seed: [32]u8 = undefined;
-    if (std.c.getenv("TAWNY_AGENT_JWT_SEED")) |hex_z| {
-        const hex = std.mem.span(hex_z);
-        if (hex.len == 64) {
-            _ = std.fmt.hexToBytes(&seed, hex) catch {
-                io.random(&seed);
-            };
-        } else {
-            io.random(&seed);
-        }
-    } else {
-        // Deterministic dev default so restarts keep verifying issued tokens.
-        @memset(&seed, 0x71);
-        const label = "tawny-agent-jwt-dev";
-        @memcpy(seed[0..label.len], label);
-    }
+    io.random(&seed);
+    defer std.crypto.secureZero(u8, &seed);
     const kp = try Ed25519.KeyPair.generateDeterministic(seed);
     agent_kp = kp;
     return kp;
+}
+
+pub const SeedSource = enum { configured, dev_random };
+
+/// Decide the agent JWT key from TAWNY_AGENT_JWT_SEED. A missing or malformed
+/// seed is an error unless dev mode is on, in which case a random seed is used
+/// and agents must re-enrol after every restart.
+pub fn agentSeed(seed_text: ?[]const u8, dev: bool, random: [32]u8) SeedError!struct { seed: [32]u8, source: SeedSource } {
+    const text = seed_text orelse "";
+    if (text.len == 0) {
+        if (dev) return .{ .seed = random, .source = .dev_random };
+        return error.AgentJwtSeedMissing;
+    }
+    var seed: [32]u8 = undefined;
+    if (text.len != 64) {
+        if (dev) return .{ .seed = random, .source = .dev_random };
+        return error.AgentJwtSeedMalformed;
+    }
+    _ = std.fmt.hexToBytes(&seed, text) catch {
+        if (dev) return .{ .seed = random, .source = .dev_random };
+        return error.AgentJwtSeedMalformed;
+    };
+    return .{ .seed = seed, .source = .configured };
+}
+
+pub fn configureAgentKey(io: std.Io, seed_text: ?[]const u8, dev: bool) !SeedSource {
+    var random: [32]u8 = undefined;
+    io.random(&random);
+    defer std.crypto.secureZero(u8, &random);
+    var chosen = try agentSeed(seed_text, dev, random);
+    defer std.crypto.secureZero(u8, &chosen.seed);
+    agent_kp = try Ed25519.KeyPair.generateDeterministic(chosen.seed);
+    return chosen.source;
+}
+
+/// Set from TAWNY_REQUIRE_SIGNED_BATCHES at startup. On unless set to 0, false or off.
+pub var require_signed_batches: bool = true;
+
+pub fn requireSignedBatches() bool {
+    return require_signed_batches;
+}
+
+pub fn flagOn(text: ?[]const u8, default: bool) bool {
+    const t = text orelse return default;
+    if (t.len == 0) return default;
+    if (std.ascii.eqlIgnoreCase(t, "0") or std.ascii.eqlIgnoreCase(t, "false") or std.ascii.eqlIgnoreCase(t, "off") or std.ascii.eqlIgnoreCase(t, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(t, "1") or std.ascii.eqlIgnoreCase(t, "true") or std.ascii.eqlIgnoreCase(t, "on") or std.ascii.eqlIgnoreCase(t, "yes")) return true;
+    return default;
 }
 
 var rs256_n: ?[]u8 = null;
@@ -137,4 +177,40 @@ test "principal and agent-events partitions do not collapse" {
     try std.testing.expect(!tooMany(io, "test-rule-imports", user_a, 1));
     try std.testing.expect(!tooMany(io, "test-hunts", user_a, 1));
     try std.testing.expect(!tooMany(io, "test-search", user_a, 1));
+}
+
+test "agent seed refuses missing and malformed values outside dev mode" {
+    const random: [32]u8 = @splat(0x5a);
+    try std.testing.expectError(error.AgentJwtSeedMissing, agentSeed(null, false, random));
+    try std.testing.expectError(error.AgentJwtSeedMissing, agentSeed("", false, random));
+    try std.testing.expectError(error.AgentJwtSeedMalformed, agentSeed("abcd", false, random));
+    try std.testing.expectError(error.AgentJwtSeedMalformed, agentSeed("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", false, random));
+}
+
+test "agent seed accepts 64 hex characters" {
+    const random: [32]u8 = @splat(0x5a);
+    const got = try agentSeed("00000000000000000000000000000000000000000000000000000000000000ff", false, random);
+    try std.testing.expectEqual(SeedSource.configured, got.source);
+    try std.testing.expectEqual(@as(u8, 0xff), got.seed[31]);
+    try std.testing.expectEqual(@as(u8, 0), got.seed[0]);
+}
+
+test "dev flag uses a random seed, never a fixed one" {
+    const random: [32]u8 = @splat(0x5a);
+    const missing = try agentSeed(null, true, random);
+    try std.testing.expectEqual(SeedSource.dev_random, missing.source);
+    try std.testing.expectEqualSlices(u8, &random, &missing.seed);
+    const short = try agentSeed("abcd", true, random);
+    try std.testing.expectEqual(SeedSource.dev_random, short.source);
+    // A valid seed still wins in dev mode.
+    const valid = try agentSeed("1111111111111111111111111111111111111111111111111111111111111111", true, random);
+    try std.testing.expectEqual(SeedSource.configured, valid.source);
+}
+
+test "flag parsing" {
+    try std.testing.expect(flagOn(null, true));
+    try std.testing.expect(!flagOn("off", true));
+    try std.testing.expect(!flagOn("0", true));
+    try std.testing.expect(flagOn("1", false));
+    try std.testing.expect(flagOn("junk", true));
 }

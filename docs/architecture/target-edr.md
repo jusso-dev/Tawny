@@ -342,6 +342,13 @@ Operators: eq, neq, contains, startswith, endswith, wildcard, regex (RE2-safe,
 timeout), in, cidr, gt/lt, exists, base64/utf16 transforms. Case-insensitive
 by default.
 
+**Status (#53, Nov 2026):** atomic rules and suppressions now match one field
+by dotted path, with array fan-out, through `server/src/detect/match.zig`.
+Operators in use today: `exists`, `equals`, `contains`, `startswith`,
+`endswith`, `greater_than`, `less_than`. The old whole-payload text fallback is
+gone. The rest of the list above arrives with the Sigma compiler (#56). See
+`docs/detections.md`.
+
 Each detection outputs **evidence items**: `{rule_id, key, weight, confidence,
 severity, attack[], entity_ids[], event_ids[], explanation}`.
 
@@ -486,6 +493,12 @@ copy is fsynced and its hash verified.
    (macOS), root-only 0600 file + optional TPM (Linux).
 3. Server binds key to agent record; JWT refresh requires a signed challenge
    (proof of possession). Batch signatures mandatory for v2.
+
+   **Status (#53, Nov 2026):** batch signatures are verified now, not only
+   checked for presence (`server/src/crypto/batch_sig.zig`). An agent with a
+   stored key must sign every batch. Unsigned batches from keyless agents are
+   refused while `TAWNY_REQUIRE_SIGNED_BATCHES` is on (the default). The
+   server also refuses to start without a valid `TAWNY_AGENT_JWT_SEED`.
 4. Ingest checks `cv` (fixes current gap). Pinned server action key and
    release key delivered at enrollment.
 

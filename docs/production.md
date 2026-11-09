@@ -9,7 +9,8 @@
 | `POSTGRES_PASSWORD` | Random (`openssl rand -hex 24`). Only the compose network sees it. |
 | `TAWNY_DATABASE_URL` | `postgres://tawny:<password>@postgres:5432/tawny` |
 | `TAWNY_INTEGRATION_ENCRYPTION_KEY` | ≥ 32 random bytes. Losing it makes stored integration secrets unreadable. |
-| `TAWNY_AGENT_JWT_SEED` | 64 hex characters. Stable Ed25519 seed for newly issued agent JWTs. |
+| `TAWNY_AGENT_JWT_SEED` | 64 hex characters (`openssl rand -hex 32`). Stable Ed25519 seed for newly issued agent JWTs. `tawny-server serve` refuses to start when it's missing or malformed. `TAWNY_DEV=1` swaps that for a random seed per start, for local development only: every agent has to re-enrol after a restart. |
+| `TAWNY_REQUIRE_SIGNED_BATCHES` | On by default. Telemetry from an agent with no stored device key is refused with a 401. Set `off` only while older agents that enrolled without a key are re-enrolled. |
 | `TAWNY_AGENT_JWT_SIGNING_KEY_PEM` | RSA PEM used only to verify tokens issued before the Ed25519 cutover. |
 | `TAWNY_PUBLIC_URL` | `https://…` origin browsers and enrollment commands use. |
 
@@ -53,7 +54,11 @@ Agent JWTs are short-lived (default 60 minutes, rotate within 15). Heartbeats is
 
 At enrollment the agent generates an Ed25519 keypair and registers the base64 public key as `device_public_key`. The seed is stored in the OS keystore where one is implemented (macOS Keychain, see below); otherwise, or if the keystore write fails, in `{state_path}.devicekey` (`0600` when possible).
 
-Each telemetry flush includes optional `signature` (base64 Ed25519) over a deterministic canonical form (`tawny-batch-v1` + agent id + batch id + per-event digests). When `Tawny:TelemetryIntegrity:RequireSignatureWhenDeviceKeyPresent` is true (default), agents that registered a device key **must** present a valid signature. Agents enrolled without a device key remain accepted for compatibility.
+Each telemetry flush carries `batch_id` and `signature` (base64 Ed25519) over a canonical string: `tawny-batch-v1`, the agent id, the batch id, then one line per event with `client_event_id|sequence|type|occurred_at|sha256(payload bytes)`. The server hashes the payload bytes exactly as they appear in the request body, so a re-encoded payload fails.
+
+- An agent with a stored device key must send a valid signature and a `batch_id` on every batch. Anything else gets a 401 and a `telemetry.signature_rejected` audit row.
+- An agent with no stored key gets the same 401 while `TAWNY_REQUIRE_SIGNED_BATCHES` is on (the default).
+- Upgrading: agents that enrolled before device keys existed have no key. Check with `SELECT hostname FROM agents WHERE coalesce(device_public_key, '') = '' AND status <> 'revoked';`. Either re-enrol them, or set `TAWNY_REQUIRE_SIGNED_BATCHES=off` until you have, then turn it back on.
 
 
 Revoke immediately:

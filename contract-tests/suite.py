@@ -285,6 +285,55 @@ def enroll_host(
     }
 
 
+class DeviceKey:
+    """Test-only Ed25519 device key held by openssl in a temp dir. Python's stdlib has no Ed25519."""
+
+    def __init__(self) -> None:
+        import tempfile
+
+        self._dir = tempfile.mkdtemp(prefix="tawny-ct-key-")
+        self._pem = os.path.join(self._dir, "device.pem")
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", self._pem], check=True, capture_output=True)
+        der = subprocess.run(["openssl", "pkey", "-in", self._pem, "-pubout", "-outform", "DER"], check=True, capture_output=True).stdout
+        self.public_b64 = base64.b64encode(der[-32:]).decode("ascii")
+
+    def sign(self, message: bytes) -> str:
+        msg_path = os.path.join(self._dir, "msg")
+        with open(msg_path, "wb") as handle:
+            handle.write(message)
+        sig = subprocess.run(
+            ["openssl", "pkeyutl", "-sign", "-inkey", self._pem, "-rawin", "-in", msg_path],
+            check=True,
+            capture_output=True,
+        ).stdout
+        return base64.b64encode(sig).decode("ascii")
+
+    def close(self) -> None:
+        import shutil
+
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+
+def signed_batch(agent_id: str, key: DeviceKey, events: list[dict], batch_id: str) -> tuple[bytes, str]:
+    """Body and signature built the way agent/src/transport/http.zig builds them."""
+    parts: list[bytes] = []
+    lines = [f"tawny-batch-v1\n{agent_id}\n{batch_id}\n".encode()]
+    for ev in events:
+        payload = dumps(ev["payload"])
+        parts.append(
+            b'{"client_event_id":"' + ev["client_event_id"].encode() + b'","type":' + dumps(ev["type"])
+            + b',"occurred_at":' + str(ev["occurred_at"]).encode() + b',"sequence":' + str(ev["sequence"]).encode()
+            + b',"payload":' + payload + b"}"
+        )
+        lines.append(
+            f"{ev['client_event_id']}|{ev['sequence']}|{ev['type']}|{ev['occurred_at']}|{hashlib.sha256(payload).hexdigest()}\n".encode()
+        )
+    canonical = b"".join(lines)
+    signature = key.sign(canonical)
+    body = b'{"batch_id":"' + batch_id.encode() + b'","events":[' + b",".join(parts) + b'],"signature":"' + signature.encode() + b'"}'
+    return body, signature
+
+
 def windows_agent() -> dict:
     global _windows
     if _windows is None:
@@ -549,22 +598,61 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("agentId", row)
 
     def test_linux_enroll_device_public_key(self) -> None:
-        key = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
-        agent = enroll_host(
-            "lin",
-            "linux",
-            "6.12.0-aws",
-            "arm64",
-            device_public_key=key,
-            agent_version="0.1.0",
-        )
-        summary = agent["summary"]
-        self.assertEqual(summary.get("operating_system"), "linux")
-        self.assertEqual(summary.get("architecture"), "arm64")
-        self.assertEqual(summary.get("hostname"), agent["hostname"])
-        self.assertEqual(summary.get("status"), "online")
-        self.assertNotIn("device_public_key", summary)
-        self.assertNotIn("operatingSystem", summary)
+        # One enrolment covers both the device key summary and signed batches,
+        # because the suite has a fixed enrolment budget.
+        key = DeviceKey()
+        try:
+            agent = enroll_host(
+                "lin",
+                "linux",
+                "6.12.0-aws",
+                "arm64",
+                device_public_key=key.public_b64,
+                agent_version="0.1.0",
+            )
+            summary = agent["summary"]
+            self.assertEqual(summary.get("operating_system"), "linux")
+            self.assertEqual(summary.get("architecture"), "arm64")
+            self.assertEqual(summary.get("hostname"), agent["hostname"])
+            self.assertEqual(summary.get("status"), "online")
+            self.assertNotIn("device_public_key", summary)
+            self.assertNotIn("operatingSystem", summary)
+            self._check_signed_batches(agent, key)
+        finally:
+            key.close()
+
+    def _check_signed_batches(self, agent: dict, key: "DeviceKey") -> None:
+        events = [
+            event("system_info", {"hostname": agent["hostname"], "n": 1}, client_event_id=str(uuid.uuid4()), sequence=1),
+            event("process_snapshot", {"processes": [{"name": "a b", "pid": 2}]}, client_event_id=str(uuid.uuid4()), sequence=2),
+        ]
+        body, _sig = signed_batch(agent["agent_id"], key, events, str(uuid.uuid4()))
+        code, _p, raw = call("POST", "/api/agents/events", body, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 202, raw[:500])
+
+        tampered = body.replace(b'"n":1', b'"n":2')
+        self.assertNotEqual(tampered, body)
+        code, _p, raw = call("POST", "/api/agents/events", tampered, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 401, raw[:500])
+
+        other = DeviceKey()
+        try:
+            for ev in events:
+                ev["client_event_id"] = str(uuid.uuid4())
+            wrong, _ = signed_batch(agent["agent_id"], other, events, str(uuid.uuid4()))
+        finally:
+            other.close()
+        code, _p, raw = call("POST", "/api/agents/events", wrong, auth="agent", bearer=agent["jwt"])
+        self.assertEqual(code, 401, raw[:500])
+
+        code, _p, raw = post_events(agent, [event("system_info", {"x": 1})])
+        self.assertEqual(code, 401, raw[:500])
+
+        code, rows, raw = call("GET", "/api/audit-logs?action=telemetry.signature_rejected&limit=500")
+        self.assertEqual(code, 200, raw[:500])
+        assert isinstance(rows, list)
+        hits = [row for row in rows if isinstance(row, dict) and row.get("target") == agent["agent_id"]]
+        self.assertGreaterEqual(len(hits), 3, raw[:800])
 
     def test_enroll_rejects_control_hostname(self) -> None:
         code, _parsed, raw = self._rejected_enroll("host\ninjected", "linux", "arm64")

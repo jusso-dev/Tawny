@@ -1,6 +1,7 @@
 const std = @import("std");
 const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
+const match = @import("../detect/match.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const exposure_import = @import("../detect/exposure_import.zig");
@@ -87,6 +88,13 @@ pub fn createPredicate(
     defer parsed.deinit();
     if (parsed.value.name.len == 0 or parsed.value.name.len > 160) {
         return util.problem(request, allocator, .bad_request, "Rule name is required and must be 160 characters or fewer.");
+    }
+    if (match.Operator.fromText(parsed.value.operator) == null) {
+        return util.problem(request, allocator, .bad_request, "operator must be exists, equals, contains, startswith, endswith, greater_than or less_than.");
+    }
+    const rule_path: []const u8 = parsed.value.payload_path orelse "";
+    if (rule_path.len == 0) {
+        return util.problem(request, allocator, .bad_request, "payload_path is required. Rules match one field, never the whole payload.");
     }
 
     var id_buf: [36]u8 = undefined;
@@ -404,6 +412,11 @@ pub fn updateRule(
         return util.problem(request, allocator, .bad_request, "Invalid update body.");
     };
     defer parsed.deinit();
+    if (parsed.value.operator) |op| {
+        if (match.Operator.fromText(op) == null) {
+            return util.problem(request, allocator, .bad_request, "operator must be exists, equals, contains, startswith, endswith, greater_than or less_than.");
+        }
+    }
 
     const rows = try conn.exec(allocator, rule_select ++ " WHERE id = $1::uuid AND tenant_id = $2::uuid", &.{
         .{ .text = id },
