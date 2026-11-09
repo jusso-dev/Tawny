@@ -1,0 +1,15 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/><EventID>10</EventID><Version>5</Version><Level>4</Level><Task>10</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-11-09T01:12:49.5000000Z'/><EventRecordID>48260</EventRecordID><Correlation/><Execution ProcessID='3120' ThreadID='4012'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel><Computer>WIN-TAWNY01</Computer><Security UserID='S-1-5-18'/></System><EventData>
+<Data Name='RuleName'>technique_id=T1003,technique_name=Credential Dumping</Data>
+<Data Name='UtcTime'>2026-11-09 01:12:49.498</Data>
+<Data Name='SourceProcessGUID'>{4f3c6a1e-b7d0-672e-3001-000000001e00}</Data>
+<Data Name='SourceProcessId'>8012</Data>
+<Data Name='SourceThreadId'>8016</Data>
+<Data Name='SourceImage'>C:\Users\runneradmin\AppData\Local\Temp\inject.exe</Data>
+<Data Name='TargetProcessGUID'>{4f3c6a1e-b5a0-672e-0b00-000000001e00}</Data>
+<Data Name='TargetProcessId'>704</Data>
+<Data Name='TargetImage'>C:\Windows\system32\lsass.exe</Data>
+<Data Name='GrantedAccess'>0x1010</Data>
+<Data Name='CallTrace'>C:\Windows\SYSTEM32\ntdll.dll+9d4c4|C:\Windows\System32\KERNELBASE.dll+2c0fe|UNKNOWN(00007FF6A1B21234)</Data>
+<Data Name='SourceUser'>WIN-TAWNY01\runneradmin</Data>
+<Data Name='TargetUser'>NT AUTHORITY\SYSTEM</Data>
+</EventData></Event>

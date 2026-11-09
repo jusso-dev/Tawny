@@ -1,0 +1,25 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/><EventID>1</EventID><Version>5</Version><Level>4</Level><Task>1</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-11-09T01:12:44.5512031Z'/><EventRecordID>48211</EventRecordID><Correlation/><Execution ProcessID='3120' ThreadID='4012'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel><Computer>WIN-TAWNY01</Computer><Security UserID='S-1-5-18'/></System><EventData>
+<Data Name='RuleName'>-</Data>
+<Data Name='UtcTime'>2026-11-09 01:12:44.548</Data>
+<Data Name='ProcessGuid'>{4f3c6a1e-b7cc-672e-2c01-000000001e00}</Data>
+<Data Name='ProcessId'>6844</Data>
+<Data Name='Image'>C:\Windows\System32\whoami.exe</Data>
+<Data Name='FileVersion'>10.0.20348.1 (WinBuild.160101.0800)</Data>
+<Data Name='Description'>whoami - displays logged on user information</Data>
+<Data Name='Product'>Microsoft® Windows® Operating System</Data>
+<Data Name='Company'>Microsoft Corporation</Data>
+<Data Name='OriginalFileName'>whoami.exe</Data>
+<Data Name='CommandLine'>whoami  /all</Data>
+<Data Name='CurrentDirectory'>C:\Users\runneradmin\</Data>
+<Data Name='User'>WIN-TAWNY01\runneradmin</Data>
+<Data Name='LogonGuid'>{4f3c6a1e-b5a1-672e-8f2d-0a0000000000}</Data>
+<Data Name='LogonId'>0xa2d8f</Data>
+<Data Name='TerminalSessionId'>1</Data>
+<Data Name='IntegrityLevel'>High</Data>
+<Data Name='Hashes'>SHA1=8F5A2B1C9D0E3F4A5B6C7D8E9F0A1B2C3D4E5F6A,MD5=A1B2C3D4E5F60718293A4B5C6D7E8F90,SHA256=1D2C3B4A5F6E7D8C9B0A1F2E3D4C5B6A7F8E9D0C1B2A3F4E5D6C7B8A9F0E1D2C,IMPHASH=0E1D2C3B4A5F6E7D8C9B0A1F2E3D4C5B</Data>
+<Data Name='ParentProcessGuid'>{4f3c6a1e-b7cb-672e-2b01-000000001e00}</Data>
+<Data Name='ParentProcessId'>5532</Data>
+<Data Name='ParentImage'>C:\Windows\System32\cmd.exe</Data>
+<Data Name='ParentCommandLine'>"C:\Windows\system32\cmd.exe" /c whoami /all</Data>
+<Data Name='ParentUser'>WIN-TAWNY01\runneradmin</Data>
+</EventData></Event>

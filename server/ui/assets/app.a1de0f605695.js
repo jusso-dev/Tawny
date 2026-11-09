@@ -408,7 +408,11 @@
     ["PowerShell with EncodedCommand", "event_type:process_snapshot AND processes.command_line:\"-EncodedCommand\""],
     ["Connections to 1.1.1.1 in last 6h", "last:6h AND event_type:network_snapshot AND connections.remote_address:1.1.1.1"],
     ["Any cmd.exe or powershell.exe lineage", "processes.name:[cmd.exe, powershell.exe]"],
-    ["FIM events on /etc/ in last 24h", "event_type:file_integrity AND path:/etc/"]
+    ["FIM events on /etc/ in last 24h", "event_type:file_integrity AND path:/etc/"],
+    ["Windows process starts from Office", "event_type:process_start AND parent.name:[winword.exe, excel.exe, outlook.exe]"],
+    ["PowerShell script blocks with Invoke-Expression", "event_type:powershell_script_block AND script_block.text:*Invoke-Expression*"],
+    ["Failed Windows logons in last 24h", "last:24h AND event_type:user_logon_failed"],
+    ["Degraded Windows sensors", "event_type:sensor_health AND status:degraded"]
   ];
 
   function renderHunt(view) {

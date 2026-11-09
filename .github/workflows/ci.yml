@@ -179,6 +179,101 @@ jobs:
           printf '%s\n' "$out"
           printf '%s\n' "$out" | grep -F "tawny-agent 0.1.0 starting"
           test "$status" -ne 0
+      # Proves the wevtapi path on the hosted runner without Sysmon: Security
+      # 4688 (process creation auditing) and PowerShell 4104 (script block
+      # logging) are switched on, activity is generated, and the agent's
+      # --eventlog-dump reads, maps and bookmarks the channels. A second and
+      # third dump with the same state dir check that a restart neither
+      # repeats nor skips events. Sysmon is not installed on the runner.
+      - name: prove Windows event log telemetry (4688, 4104, bookmarks)
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          $agent = Join-Path $PWD "zig-out\bin\tawny-agent.exe"
+          $state = Join-Path $env:RUNNER_TEMP "tawny-eventlog-state"
+          Remove-Item -LiteralPath $state -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $state | Out-Null
+
+          auditpol /set /subcategory:"Process Creation" /success:enable | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "auditpol failed with $LASTEXITCODE" }
+          $audit = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"
+          New-Item -Path $audit -Force | Out-Null
+          New-ItemProperty -Path $audit -Name ProcessCreationIncludeCmdLine_Enabled -PropertyType DWord -Value 1 -Force | Out-Null
+          $sbl = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+          New-Item -Path $sbl -Force | Out-Null
+          New-ItemProperty -Path $sbl -Name EnableScriptBlockLogging -PropertyType DWord -Value 1 -Force | Out-Null
+
+          $script:run = 0
+          function Invoke-Dump {
+            $script:run += 1
+            $out = Join-Path $env:RUNNER_TEMP "eventlog-dump-$($script:run).out"
+            $err = Join-Path $env:RUNNER_TEMP "eventlog-dump-$($script:run).err"
+            $p = Start-Process -FilePath $agent -NoNewWindow -Wait -PassThru `
+              -ArgumentList @("--eventlog-dump", "--state-dir", $state, "--since-seconds", "900", "--wait-ms", "2000") `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+            $text = "$(Get-Content -Raw -LiteralPath $out)$(Get-Content -Raw -LiteralPath $err)"
+            if ($p.ExitCode -ne 0) { Write-Host $text; throw "eventlog dump exited with $($p.ExitCode)" }
+            $text -split "`r?`n" | Where-Object { $_ -match '^(channel |SUMMARY)' } | Out-Host
+            return ,@($text -split "`r?`n" | Where-Object { $_.StartsWith("EVENT`t") })
+          }
+          function Select-Events([object[]]$Lines, [string]$Type, [string]$Needle) {
+            return @($Lines | Where-Object { $_.StartsWith("EVENT`t$Type`t") -and $_.Contains($Needle) })
+          }
+          function New-Activity([string]$Marker) {
+            cmd.exe /c "whoami /user" | Out-Null
+            powershell.exe -NoProfile -NonInteractive -Command "Write-Output '$Marker'" | Out-Null
+          }
+          # Events reach the log asynchronously: dump until they show up.
+          function Wait-Events([string]$Marker) {
+            $all = @()
+            for ($i = 0; $i -lt 6; $i++) {
+              Start-Sleep -Seconds 3
+              $all += Invoke-Dump
+              if ((Select-Events $all "powershell_script_block" $Marker).Count -gt 0) { break }
+            }
+            return ,$all
+          }
+
+          $m1 = "tawny-ci-first-$([Guid]::NewGuid().ToString('N'))"
+          New-Activity $m1
+          $first = Wait-Events $m1
+          $starts = Select-Events $first "process_start" "whoami.exe"
+          if ($starts.Count -eq 0) { throw "no process_start for whoami.exe from Security 4688" }
+          Write-Host "process_start: $($starts[0].Substring(0, [Math]::Min(600, $starts[0].Length)))"
+          if (-not ($starts | Where-Object { $_.Contains('"sensor":"security"') })) { throw "process_start did not come from the Security channel" }
+          if (-not ($starts | Where-Object { $_.Contains('"command_line":"whoami /user"') })) {
+            Write-Warning "4688 command line not captured (ProcessCreationIncludeCmdLine_Enabled not applied yet)"
+          }
+          $blocks = Select-Events $first "powershell_script_block" $m1
+          if ($blocks.Count -eq 0) { throw "no powershell_script_block containing $m1" }
+          if (-not $blocks[0].Contains('"complete":true')) { throw "script block was not reassembled: $($blocks[0])" }
+          Write-Host "powershell_script_block: $($blocks[0])"
+
+          $sysmonPresent = $true
+          try { Get-WinEvent -ListLog "Microsoft-Windows-Sysmon/Operational" -ErrorAction Stop | Out-Null } catch { $sysmonPresent = $false }
+          if (-not $sysmonPresent) {
+            $health = Select-Events $first "sensor_health" '"state":"missing"'
+            if ($health.Count -eq 0) { throw "no sensor_health event for the missing Sysmon channel" }
+            if (-not $health[0].Contains('"status":"degraded"')) { throw "sensor_health is not degraded: $($health[0])" }
+            Write-Host "sensor_health: $($health[0])"
+          }
+          $bookmarks = @(Get-ChildItem -LiteralPath $state -Filter "eventlog-*.bookmark")
+          if ($bookmarks.Count -lt 2) { throw "expected Security and PowerShell bookmarks under $state" }
+          $bookmarks | ForEach-Object { Write-Host "bookmark $($_.Name) $($_.Length) bytes" }
+
+          # Restart with the saved bookmarks: nothing already read comes back.
+          $second = Invoke-Dump
+          if ((Select-Events $second "powershell_script_block" $m1).Count -ne 0) { throw "restart replayed $m1" }
+
+          # New activity after the restart is delivered, and the old marker stays gone.
+          $m2 = "tawny-ci-second-$([Guid]::NewGuid().ToString('N'))"
+          New-Activity $m2
+          $third = Wait-Events $m2
+          if ((Select-Events $third "powershell_script_block" $m2).Count -eq 0) { throw "event after restart was lost: $m2" }
+          if ((Select-Events $third "powershell_script_block" $m1).Count -ne 0) { throw "restart replayed $m1" }
+          Write-Host "event log telemetry and bookmarks OK"
       - name: test installer upgrade and recovery paths
         if: matrix.name == 'linux-x64'
         run: bash install/test-install.sh

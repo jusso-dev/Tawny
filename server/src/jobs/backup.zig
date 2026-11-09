@@ -126,9 +126,37 @@ fn eventTypeNumber(kind: []const u8) ?u8 {
         "editor_extension",
         "browser_extension",
         "mcp_config",
+        // Append only: the index is stored in backups.
+        "process_start",
+        "process_exit",
+        "network_connect",
+        "image_load",
+        "remote_thread",
+        "process_access",
+        "file_create",
+        "file_delete",
+        "registry_create",
+        "registry_set",
+        "registry_rename",
+        "registry_delete",
+        "user_logon",
+        "user_logon_failed",
+        "special_privileges",
+        "service_create",
+        "powershell_script_block",
+        "sensor_health",
     };
     for (names, 0..) |name, i| if (std.mem.eql(u8, name, kind)) return @intCast(i);
     return null;
+}
+
+test "event type numbers are stable and cover the Windows event log types" {
+    try std.testing.expectEqual(@as(?u8, 0), eventTypeNumber("process_snapshot"));
+    try std.testing.expectEqual(@as(?u8, 12), eventTypeNumber("mcp_config"));
+    try std.testing.expectEqual(@as(?u8, 13), eventTypeNumber("process_start"));
+    try std.testing.expectEqual(@as(?u8, 29), eventTypeNumber("powershell_script_block"));
+    try std.testing.expectEqual(@as(?u8, 30), eventTypeNumber("sensor_health"));
+    try std.testing.expectEqual(@as(?u8, null), eventTypeNumber("not_a_type"));
 }
 
 fn objectKey(allocator: std.mem.Allocator, prefix: []const u8, name: []const u8) ![]u8 {

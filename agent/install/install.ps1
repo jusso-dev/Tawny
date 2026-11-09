@@ -1,3 +1,118 @@
+# Sysmon is optional. Tawny ships no driver of its own; Sysmon loads a
+# Microsoft-signed driver. The binary is never bundled (the Sysinternals
+# licence restricts redistribution): it is downloaded at install time and
+# its Authenticode signature is checked before it runs.
+$script:TawnySysmonDownloadUrl = "https://download.sysinternals.com/files/Sysmon.zip"
+$script:TawnySysmonConfigUrl = "https://github.com/olafhartong/sysmon-modular/releases/download/configs-a45dedb13a43/sysmonconfig-with-filedelete.xml"
+$script:TawnySysmonConfigSha256 = "a7832f4423aae16e39342e08f3a2962291eafb7972eb9dfb070009781fde50d9"
+$script:TawnySysmonChannel = "Microsoft-Windows-Sysmon/Operational"
+
+function Get-TawnySysmonStatus {
+    [CmdletBinding()]
+    param()
+    $service = Get-Service -Name Sysmon64, Sysmon64a, Sysmon -ErrorAction SilentlyContinue | Select-Object -First 1
+    $channel = $null
+    try {
+        $channel = Get-WinEvent -ListLog $script:TawnySysmonChannel -ErrorAction Stop
+    } catch {
+    }
+    [pscustomobject]@{
+        Installed = [bool]$service
+        ServiceName = if ($service) { $service.Name } else { $null }
+        Status = if ($service) { [string]$service.Status } else { "NotInstalled" }
+        ChannelPresent = [bool]$channel
+        ChannelEnabled = if ($channel) { [bool]$channel.IsEnabled } else { $false }
+    }
+}
+
+function Assert-MicrosoftSignature([string]$Path) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Authenticode signature of $Path is $($signature.Status), not Valid."
+    }
+    $subject = [string]$signature.SignerCertificate.Subject
+    if ($subject -notlike "*Microsoft Corporation*") {
+        throw "Authenticode signer of $Path is '$subject', not Microsoft Corporation."
+    }
+}
+
+function Resolve-TawnySysmonConfig([string]$ConfigPath, [string]$WorkDir) {
+    if ($ConfigPath) {
+        if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+            throw "Sysmon config does not exist: $ConfigPath"
+        }
+        return $ConfigPath
+    }
+    if ($PSScriptRoot) {
+        $bundled = Join-Path $PSScriptRoot "sysmon\sysmonconfig.xml"
+        if (Test-Path -LiteralPath $bundled -PathType Leaf) {
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundled).Hash
+            if ($actual -ne $script:TawnySysmonConfigSha256) {
+                throw "Bundled Sysmon config hash $actual does not match the pinned $($script:TawnySysmonConfigSha256)."
+            }
+            return $bundled
+        }
+    }
+    # Piped installs (irm | iex) have no script directory: fetch the pinned
+    # upstream release asset and check it against the pinned hash.
+    $downloaded = Join-Path $WorkDir "sysmonconfig.xml"
+    Invoke-WebRequest -UseBasicParsing -Uri $script:TawnySysmonConfigUrl -OutFile $downloaded
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $downloaded).Hash
+    if ($actual -ne $script:TawnySysmonConfigSha256) {
+        throw "Downloaded Sysmon config hash $actual does not match the pinned $($script:TawnySysmonConfigSha256)."
+    }
+    return $downloaded
+}
+
+function Install-TawnySysmon {
+    [CmdletBinding()]
+    param(
+        [string]$ConfigPath,
+        [switch]$DryRun
+    )
+    $ErrorActionPreference = "Stop"
+    $prefix = if ($DryRun) { "[dry-run] " } else { "" }
+    $work = Join-Path ([IO.Path]::GetTempPath()) "tawny-sysmon-$([Guid]::NewGuid().ToString('N'))"
+    Write-Host "${prefix}Downloading Sysmon from $($script:TawnySysmonDownloadUrl) (installing it accepts the Sysinternals licence)"
+    if ($DryRun) {
+        Write-Host "${prefix}Verifying Sysmon Authenticode signer is Microsoft Corporation"
+        Write-Host "${prefix}Installing Sysmon with the pinned sysmon-modular config"
+        return
+    }
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    try {
+        $zip = Join-Path $work "Sysmon.zip"
+        Invoke-WebRequest -UseBasicParsing -Uri $script:TawnySysmonDownloadUrl -OutFile $zip
+        Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+        $exeName = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "Sysmon64a.exe" } else { "Sysmon64.exe" }
+        $exe = Join-Path $work $exeName
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Sysmon.zip did not contain $exeName."
+        }
+        Write-Host "Verifying Sysmon Authenticode signer is Microsoft Corporation"
+        Assert-MicrosoftSignature $exe
+        $config = Resolve-TawnySysmonConfig $ConfigPath $work
+        $status = Get-TawnySysmonStatus
+        if ($status.Installed) {
+            Write-Host "Sysmon is already installed ($($status.ServiceName)); applying the pinned config"
+            & $exe -accepteula -c $config | Out-Null
+        } else {
+            Write-Host "Installing Sysmon with the pinned sysmon-modular config"
+            & $exe -accepteula -i $config | Out-Null
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Sysmon exited with code $LASTEXITCODE."
+        }
+        $after = Get-TawnySysmonStatus
+        if (-not $after.Installed -or -not $after.ChannelPresent) {
+            throw "Sysmon install finished but the service or $($script:TawnySysmonChannel) channel is missing."
+        }
+        Write-Host "Sysmon $($after.ServiceName) is $($after.Status); channel $($script:TawnySysmonChannel) present."
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-TawnyAgent {
     [CmdletBinding()]
     param(
@@ -14,6 +129,11 @@ function Install-TawnyAgent {
         [string]$ServiceName = "TawnyAgent",
         [switch]$AllowInsecureHttp,
         [switch]$SkipAttestation,
+        # Download Sysmon from Sysinternals, check it is signed by Microsoft
+        # and install it with the pinned config. Without it, the installer
+        # only reports whether Sysmon is present.
+        [switch]$InstallSysmon,
+        [string]$SysmonConfigPath,
         [switch]$DryRun
     )
 
@@ -163,6 +283,17 @@ function Install-TawnyAgent {
         Remove-LegacyServiceAce $StateDir
     }
 
+    if ($InstallSysmon) {
+        Install-TawnySysmon -ConfigPath $SysmonConfigPath -DryRun:$DryRun
+    } else {
+        $sysmon = Get-TawnySysmonStatus
+        if ($sysmon.Installed) {
+            Write-Step "Sysmon is installed ($($sysmon.ServiceName), $($sysmon.Status)); the agent reads $($script:TawnySysmonChannel)."
+        } else {
+            Write-Step "Sysmon is not installed. The agent falls back to Security 4688 for process starts and reports sensor_health degraded. Re-run with -InstallSysmon to add it."
+        }
+    }
+
     try {
         Invoke-Step "Staging Tawny agent binary" {
             if ($LocalBinaryPath) {
@@ -211,6 +342,7 @@ system_interval_seconds = 3600
 fim_interval_seconds = 300
 fs_events_interval_seconds = 5
 dns_interval_seconds = 30
+eventlog_interval_seconds = 5
 supply_chain_interval_seconds = 21600
 max_in_memory_events = 1000
 max_spool_bytes = 268435456

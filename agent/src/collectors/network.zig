@@ -420,8 +420,12 @@ fn appendMacosNeighbors(alloc: std.mem.Allocator, w: *std.Io.Writer) !void {
 const NO_ERROR: u32 = 0;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const AF_INET: u32 = 2;
+const AF_INET6: u32 = 23;
 const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
 const UDP_TABLE_OWNER_PID: u32 = 1;
+/// Tables can grow between the size probe and the read; retry a few times.
+const max_table_attempts: usize = 4;
+const max_table_bytes: u32 = 64 * 1024 * 1024;
 
 extern "iphlpapi" fn GetExtendedTcpTable(
     pTcpTable: ?*anyopaque,
@@ -441,33 +445,198 @@ extern "iphlpapi" fn GetExtendedUdpTable(
     Reserved: u32,
 ) callconv(.c) u32;
 
-fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
-    const tcp_bytes = try tableSize(alloc, true);
-    const udp_bytes = try tableSize(alloc, false);
-    return alloc.print(
-        "{{\"source\":\"iphlpapi\",\"tcp_table_bytes\":{d},\"udp_table_bytes\":{d}}}",
-        .{ tcp_bytes, udp_bytes },
-    );
+/// Layout of the iphlpapi *_OWNER_PID tables: a u32 row count, then rows.
+/// Addresses and ports are in network byte order; ports use the low 16 bits
+/// of a u32. The IPv6 rows also carry a scope id after each address.
+pub const WindowsTable = enum {
+    tcp4,
+    tcp6,
+    udp4,
+    udp6,
+
+    fn rowSize(self: WindowsTable) usize {
+        return switch (self) {
+            .tcp4 => 24, // MIB_TCPROW_OWNER_PID: state, laddr, lport, raddr, rport, pid
+            .tcp6 => 56, // MIB_TCP6ROW_OWNER_PID: laddr[16], lscope, lport, raddr[16], rscope, rport, state, pid
+            .udp4 => 12, // MIB_UDPROW_OWNER_PID: laddr, lport, pid
+            .udp6 => 28, // MIB_UDP6ROW_OWNER_PID: laddr[16], lscope, lport, pid
+        };
+    }
+
+    fn protocol(self: WindowsTable) []const u8 {
+        return switch (self) {
+            .tcp4 => "tcp",
+            .tcp6 => "tcp6",
+            .udp4 => "udp",
+            .udp6 => "udp6",
+        };
+    }
+};
+
+/// MIB_TCP_STATE (1 CLOSED .. 12 DELETE_TCB) -> the Linux hex state code
+/// and name the other platforms emit, so one rule matches every OS.
+fn windowsTcpState(state: u32) macos_parse.State {
+    const code: u8 = switch (state) {
+        1 => 0x07, // CLOSED
+        2 => 0x0A, // LISTEN
+        3 => 0x02, // SYN_SENT
+        4 => 0x03, // SYN_RCVD
+        5 => 0x01, // ESTABLISHED
+        6 => 0x04, // FIN_WAIT1
+        7 => 0x05, // FIN_WAIT2
+        8 => 0x08, // CLOSE_WAIT
+        9 => 0x0B, // CLOSING
+        10 => 0x09, // LAST_ACK
+        11 => 0x06, // TIME_WAIT
+        else => 0x07, // DELETE_TCB and unknown
+    };
+    return macos_parse.linux_states[code - 1];
 }
 
-fn tableSize(alloc: std.mem.Allocator, comptime tcp: bool) !u32 {
-    var size: u32 = 0;
-    const first = if (tcp)
-        GetExtendedTcpTable(null, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0)
-    else
-        GetExtendedUdpTable(null, &size, 0, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    if (first != ERROR_INSUFFICIENT_BUFFER and first != NO_ERROR) return error.NetworkTableFailed;
-    if (size == 0) return 0;
+fn readU32(bytes: []const u8, off: usize) u32 {
+    return std.mem.readInt(u32, bytes[off..][0..4], .little);
+}
 
-    const bytes = try alloc.alloc(u8, size);
-    defer alloc.free(bytes);
-    const ptr: ?*anyopaque = @ptrCast(bytes.ptr);
-    const second = if (tcp)
-        GetExtendedTcpTable(ptr, &size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0)
-    else
-        GetExtendedUdpTable(ptr, &size, 0, AF_INET, UDP_TABLE_OWNER_PID, 0);
-    if (second != NO_ERROR) return error.NetworkTableFailed;
-    return size;
+/// Port fields hold the port in network order in the low two bytes.
+fn readPort(bytes: []const u8, off: usize) u16 {
+    return std.mem.readInt(u16, bytes[off..][0..2], .big);
+}
+
+fn ipv4Bytes(bytes: []const u8, off: usize) [16]u8 {
+    var out: [16]u8 = @splat(0);
+    @memcpy(out[12..16], bytes[off..][0..4]);
+    return out;
+}
+
+/// Append one `connections` row per table entry, in the Linux row shape
+/// plus the owning pid. Pure: `table` is the raw buffer the iphlpapi call
+/// filled. Returns false when the global row cap was hit.
+pub fn appendWindowsTableRows(w: *std.Io.Writer, kind: WindowsTable, table: []const u8, count: *usize) !bool {
+    if (table.len < 4) return true;
+    const rows = readU32(table, 0);
+    const size = kind.rowSize();
+    // Rows start at offset 4; every row type is made of 4-byte fields.
+    const available = (table.len - 4) / size;
+    const n = @min(rows, available);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        if (count.* >= max_connections) return false;
+        const r = table[4 + i * size ..][0..size];
+        const ipv6 = kind == .tcp6 or kind == .udp6;
+        var local: [16]u8 = undefined;
+        var remote: [16]u8 = @splat(0);
+        var local_port: u16 = 0;
+        var remote_port: u16 = 0;
+        var state: ?macos_parse.State = null;
+        var pid: u32 = 0;
+        switch (kind) {
+            .tcp4 => {
+                state = windowsTcpState(readU32(r, 0));
+                local = ipv4Bytes(r, 4);
+                local_port = readPort(r, 8);
+                remote = ipv4Bytes(r, 12);
+                remote_port = readPort(r, 16);
+                pid = readU32(r, 20);
+            },
+            .tcp6 => {
+                local = r[0..16].*;
+                local_port = readPort(r, 20);
+                remote = r[24..40].*;
+                remote_port = readPort(r, 44);
+                state = windowsTcpState(readU32(r, 48));
+                pid = readU32(r, 52);
+            },
+            .udp4 => {
+                local = ipv4Bytes(r, 0);
+                local_port = readPort(r, 4);
+                pid = readU32(r, 8);
+            },
+            .udp6 => {
+                local = r[0..16].*;
+                local_port = readPort(r, 20);
+                pid = readU32(r, 24);
+            },
+        }
+        if (count.* > 0) try w.writeByte(',');
+        count.* += 1;
+        var local_buf: [64]u8 = undefined;
+        var remote_buf: [64]u8 = undefined;
+        try w.writeAll("{\"protocol\":");
+        try std.json.Stringify.value(kind.protocol(), .{}, w);
+        try w.writeAll(",\"local_address\":");
+        try std.json.Stringify.value(macos_parse.formatAddress(local, ipv6, &local_buf), .{}, w);
+        try w.print(",\"local_port\":{d}", .{local_port});
+        try w.writeAll(",\"remote_address\":");
+        try std.json.Stringify.value(macos_parse.formatAddress(remote, ipv6, &remote_buf), .{}, w);
+        try w.print(",\"remote_port\":{d}", .{remote_port});
+        if (state) |s| {
+            try w.writeAll(",\"state\":");
+            try std.json.Stringify.value(s.hex, .{}, w);
+            try w.writeAll(",\"state_name\":");
+            try std.json.Stringify.value(s.name, .{}, w);
+        }
+        try w.print(",\"pid\":{d}}}", .{pid});
+    }
+    return true;
+}
+
+/// Windows: TCP and UDP owner-pid tables for IPv4 and IPv6, as
+/// `connections` rows matching the Linux and macOS shape (plus pid).
+fn collectWindows(alloc: std.mem.Allocator) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+
+    try w.writeAll("{\"source\":\"iphlpapi\",\"connections\":[");
+    var count: usize = 0;
+    var complete = true;
+    var failed: usize = 0;
+    inline for (.{ WindowsTable.tcp4, WindowsTable.tcp6, WindowsTable.udp4, WindowsTable.udp6 }) |kind| {
+        if (complete) {
+            if (readWindowsTable(alloc, kind)) |table| {
+                defer alloc.free(table);
+                complete = try appendWindowsTableRows(w, kind, table, &count);
+            } else |_| failed += 1;
+        }
+    }
+    if (failed == 4) return error.NetworkTableFailed;
+    try w.print("],\"truncated\":{any}}}", .{!complete});
+    return out.toOwnedSlice();
+}
+
+fn readWindowsTable(alloc: std.mem.Allocator, comptime kind: WindowsTable) ![]u8 {
+    if (comptime builtin.target.os.tag != .windows) return error.NetworkTableFailed;
+    const af = if (kind == .tcp4 or kind == .udp4) AF_INET else AF_INET6;
+    const is_tcp = kind == .tcp4 or kind == .tcp6;
+    var size: u32 = 0;
+    var attempt: usize = 0;
+    while (attempt < max_table_attempts) : (attempt += 1) {
+        const probe = if (is_tcp)
+            GetExtendedTcpTable(null, &size, 0, af, TCP_TABLE_OWNER_PID_ALL, 0)
+        else
+            GetExtendedUdpTable(null, &size, 0, af, UDP_TABLE_OWNER_PID, 0);
+        if (probe != ERROR_INSUFFICIENT_BUFFER and probe != NO_ERROR) return error.NetworkTableFailed;
+        if (size == 0) return alloc.alloc(u8, 0);
+        if (size > max_table_bytes) return error.NetworkTableFailed;
+        // Headroom for sockets opened between the two calls.
+        size += 4096;
+        const bytes = try alloc.alignedAlloc(u8, .of(u32), size);
+        errdefer alloc.free(bytes);
+        const ptr: ?*anyopaque = @ptrCast(bytes.ptr);
+        const result = if (is_tcp)
+            GetExtendedTcpTable(ptr, &size, 0, af, TCP_TABLE_OWNER_PID_ALL, 0)
+        else
+            GetExtendedUdpTable(ptr, &size, 0, af, UDP_TABLE_OWNER_PID, 0);
+        if (result == NO_ERROR) {
+            // Return a plain-aligned copy so the caller frees with alloc.free.
+            const copy = try alloc.dupe(u8, bytes[0..@min(size, bytes.len)]);
+            alloc.free(bytes);
+            return copy;
+        }
+        alloc.free(bytes);
+        if (result != ERROR_INSUFFICIENT_BUFFER) return error.NetworkTableFailed;
+    }
+    return error.NetworkTableFailed;
 }
 
 fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
@@ -479,6 +648,117 @@ fn readFileAbsoluteAlloc(alloc: std.mem.Allocator, path: []const u8, max_bytes: 
 
 test "network collector module loads" {
     _ = collect;
+}
+
+test "windows owner-pid table buffers become connection rows" {
+    const alloc = std.testing.allocator;
+    var tcp4: [4 + 2 * 24]u8 = @splat(0);
+    std.mem.writeInt(u32, tcp4[0..4], 2, .little);
+    // Row 0: ESTABLISHED 10.1.0.4:51544 -> 93.184.215.14:443, pid 7120.
+    std.mem.writeInt(u32, tcp4[4..8], 5, .little);
+    @memcpy(tcp4[8..12], &[_]u8{ 10, 1, 0, 4 });
+    std.mem.writeInt(u16, tcp4[12..14], 51544, .big);
+    @memcpy(tcp4[16..20], &[_]u8{ 93, 184, 215, 14 });
+    std.mem.writeInt(u16, tcp4[20..22], 443, .big);
+    std.mem.writeInt(u32, tcp4[24..28], 7120, .little);
+    // Row 1: LISTEN 0.0.0.0:135, pid 1000.
+    std.mem.writeInt(u32, tcp4[28..32], 2, .little);
+    std.mem.writeInt(u16, tcp4[36..38], 135, .big);
+    std.mem.writeInt(u32, tcp4[48..52], 1000, .little);
+
+    var tcp6: [4 + 56]u8 = @splat(0);
+    std.mem.writeInt(u32, tcp6[0..4], 1, .little);
+    tcp6[4 + 15] = 1; // ::1
+    std.mem.writeInt(u16, tcp6[4 + 20 ..][0..2], 5080, .big);
+    tcp6[4 + 24] = 0x20;
+    tcp6[4 + 25] = 0x01;
+    tcp6[4 + 26] = 0x0d;
+    tcp6[4 + 27] = 0xb8;
+    tcp6[4 + 39] = 0x05; // 2001:db8::5
+    std.mem.writeInt(u16, tcp6[4 + 44 ..][0..2], 22, .big);
+    std.mem.writeInt(u32, tcp6[4 + 48 ..][0..4], 11, .little); // TIME_WAIT
+    std.mem.writeInt(u32, tcp6[4 + 52 ..][0..4], 4, .little);
+
+    var udp4: [4 + 12]u8 = @splat(0);
+    std.mem.writeInt(u32, udp4[0..4], 1, .little);
+    @memcpy(udp4[4..8], &[_]u8{ 127, 0, 0, 1 });
+    std.mem.writeInt(u16, udp4[8..10], 53, .big);
+    std.mem.writeInt(u32, udp4[12..16], 2200, .little);
+
+    var udp6: [4 + 28]u8 = @splat(0);
+    std.mem.writeInt(u32, udp6[0..4], 1, .little);
+    std.mem.writeInt(u16, udp6[4 + 20 ..][0..2], 5353, .big);
+    std.mem.writeInt(u32, udp6[4 + 24 ..][0..4], 3300, .little);
+
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    const w = &out.writer;
+    var count: usize = 0;
+    try w.writeByte('[');
+    try std.testing.expect(try appendWindowsTableRows(w, .tcp4, &tcp4, &count));
+    try std.testing.expect(try appendWindowsTableRows(w, .tcp6, &tcp6, &count));
+    try std.testing.expect(try appendWindowsTableRows(w, .udp4, &udp4, &count));
+    try std.testing.expect(try appendWindowsTableRows(w, .udp6, &udp6, &count));
+    // A row count larger than the buffer is clamped, not over-read.
+    var lying: [4 + 12]u8 = udp4;
+    std.mem.writeInt(u32, lying[0..4], 1000, .little);
+    try std.testing.expect(try appendWindowsTableRows(w, .udp4, &lying, &count));
+    try w.writeByte(']');
+    try std.testing.expectEqual(@as(usize, 6), count);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
+    defer parsed.deinit();
+    const rows = parsed.value.array.items;
+    const est = rows[0].object;
+    try std.testing.expectEqualStrings("tcp", est.get("protocol").?.string);
+    try std.testing.expectEqualStrings("10.1.0.4", est.get("local_address").?.string);
+    try std.testing.expectEqual(@as(i64, 51544), est.get("local_port").?.integer);
+    try std.testing.expectEqualStrings("93.184.215.14", est.get("remote_address").?.string);
+    try std.testing.expectEqual(@as(i64, 443), est.get("remote_port").?.integer);
+    try std.testing.expectEqualStrings("01", est.get("state").?.string);
+    try std.testing.expectEqualStrings("ESTABLISHED", est.get("state_name").?.string);
+    try std.testing.expectEqual(@as(i64, 7120), est.get("pid").?.integer);
+    try std.testing.expectEqualStrings("LISTEN", rows[1].object.get("state_name").?.string);
+    try std.testing.expectEqualStrings("0.0.0.0", rows[1].object.get("local_address").?.string);
+    const v6 = rows[2].object;
+    try std.testing.expectEqualStrings("tcp6", v6.get("protocol").?.string);
+    try std.testing.expectEqualStrings("::1", v6.get("local_address").?.string);
+    try std.testing.expectEqual(@as(i64, 5080), v6.get("local_port").?.integer);
+    try std.testing.expectEqualStrings("2001:db8::5", v6.get("remote_address").?.string);
+    try std.testing.expectEqualStrings("TIME_WAIT", v6.get("state_name").?.string);
+    const udp_v4 = rows[3].object;
+    try std.testing.expectEqualStrings("udp", udp_v4.get("protocol").?.string);
+    try std.testing.expectEqual(@as(i64, 53), udp_v4.get("local_port").?.integer);
+    try std.testing.expect(udp_v4.get("state") == null);
+    try std.testing.expectEqual(@as(i64, 2200), udp_v4.get("pid").?.integer);
+    const udp_v6 = rows[4].object;
+    try std.testing.expectEqualStrings("udp6", udp_v6.get("protocol").?.string);
+    try std.testing.expectEqualStrings("::", udp_v6.get("local_address").?.string);
+    try std.testing.expectEqual(@as(i64, 5353), udp_v6.get("local_port").?.integer);
+    try std.testing.expectEqual(@as(i64, 3300), udp_v6.get("pid").?.integer);
+}
+
+test "windows snapshot lists live connections with owning pids" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+    const alloc = std.testing.allocator;
+    const out = try collect(alloc);
+    defer alloc.free(out);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try std.testing.expectEqualStrings("iphlpapi", root.get("source").?.string);
+    const rows = root.get("connections").?.array.items;
+    // Every Windows host listens on something (RPC 135 at least).
+    try std.testing.expect(rows.len > 0);
+    var saw_listen = false;
+    for (rows) |row| {
+        try std.testing.expect(row.object.get("pid") != null);
+        try std.testing.expect(row.object.get("local_address").?.string.len > 0);
+        if (row.object.get("state_name")) |s| {
+            if (std.mem.eql(u8, s.string, "LISTEN")) saw_listen = true;
+        }
+    }
+    try std.testing.expect(saw_listen);
 }
 
 test "procfs IPv6 endpoint is canonicalized" {

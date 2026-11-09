@@ -1,0 +1,7 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-PowerShell' Guid='{a0c1853b-5c40-4b15-8766-3cf1c58f985a}'/><EventID>4104</EventID><Version>1</Version><Level>3</Level><Task>2</Task><Opcode>15</Opcode><Keywords>0x0</Keywords><TimeCreated SystemTime='2026-11-09T01:12:55.1010000Z'/><EventRecordID>3302</EventRecordID><Correlation ActivityID='{e1a2b3c4-0f00-0001-a1b2-c3d4e5f60718}'/><Execution ProcessID='7120' ThreadID='7240'/><Channel>Microsoft-Windows-PowerShell/Operational</Channel><Computer>WIN-TAWNY01</Computer><Security UserID='S-1-5-21-1004336348-1177238915-682003330-500'/></System><EventData>
+<Data Name='MessageNumber'>2</Data>
+<Data Name='MessageTotal'>2</Data>
+<Data Name='ScriptBlockText'>Write-Output 'part two'</Data>
+<Data Name='ScriptBlockId'>{7c3c2f8e-1a2b-4c5d-9e0f-112233445566}</Data>
+<Data Name='Path'></Data>
+</EventData></Event>

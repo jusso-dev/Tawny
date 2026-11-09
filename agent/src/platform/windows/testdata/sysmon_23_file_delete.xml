@@ -1,0 +1,12 @@
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/><EventID>23</EventID><Version>5</Version><Level>4</Level><Task>23</Task><Opcode>0</Opcode><Keywords>0x8000000000000000</Keywords><TimeCreated SystemTime='2026-11-09T01:12:53.0000000Z'/><EventRecordID>48300</EventRecordID><Correlation/><Execution ProcessID='3120' ThreadID='4012'/><Channel>Microsoft-Windows-Sysmon/Operational</Channel><Computer>WIN-TAWNY01</Computer><Security UserID='S-1-5-18'/></System><EventData>
+<Data Name='RuleName'>-</Data>
+<Data Name='UtcTime'>2026-11-09 01:12:52.884</Data>
+<Data Name='ProcessGuid'>{4f3c6a1e-b7c0-672e-2901-000000001e00}</Data>
+<Data Name='ProcessId'>7120</Data>
+<Data Name='User'>WIN-TAWNY01\runneradmin</Data>
+<Data Name='Image'>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data>
+<Data Name='TargetFilename'>C:\Users\runneradmin\AppData\Local\Temp\tawny-test.exe</Data>
+<Data Name='Hashes'>SHA256=00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF</Data>
+<Data Name='IsExecutable'>true</Data>
+<Data Name='Archived'>true</Data>
+</EventData></Event>

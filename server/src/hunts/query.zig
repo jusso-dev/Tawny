@@ -782,6 +782,11 @@ test "hunt dsl keeps grammar and accepts every event type" {
     defer plan.deinit();
     try std.testing.expectEqualStrings("dns_query", plan.event_type.?);
     try std.testing.expectEqual(default_limit, plan.limit);
+
+    var windows = try parseOk(allocator, "event_type:PowerShell-Script-Block script_block.text:*Invoke-Expression*", null, now);
+    defer windows.deinit();
+    try std.testing.expectEqualStrings("powershell_script_block", windows.event_type.?);
+    try std.testing.expect(try matches(allocator, &windows, "{\"script_block\":{\"text\":\"x; Invoke-Expression $y\"}}"));
     try std.testing.expect(try matches(allocator, &plan, "{\"processes\":[{\"name\":\"Evil.exe\"}],\"pid\":42}"));
     try std.testing.expect(!(try matches(allocator, &plan, "{\"processes\":[{\"name\":\"Evil.exe\"}],\"pid\":3}")));
     try std.testing.expect(!(try matches(allocator, &plan, "{\"processes\":[{\"name\":\"ok.exe\"}],\"pid\":42}")));
