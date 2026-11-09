@@ -1,0 +1,30 @@
+id: tawny-builtin:encoded-powershell-then-connect
+title: Encoded PowerShell then an outbound connection
+description: PowerShell started with an encoded command (-enc, -EncodedCommand and short forms) and the same process then made an outbound network connection within 10 minutes.
+kind: sequence
+by: process.entity_id
+within: 10m
+level: high
+tags:
+  - attack.execution
+  - attack.t1059.001
+  - attack.command-and-control
+  - attack.t1071
+steps:
+  - name: encoded powershell
+    event_type: process_start
+    where:
+      Image|endswith:
+        - '\powershell.exe'
+        - '\pwsh.exe'
+      CommandLine|windash|contains:
+        - ' -e '
+        - ' -en '
+        - ' -enc '
+        - ' -enco'
+        - ' -encodedcommand '
+        - ' -ec '
+  - name: outbound connection
+    event_type: network_connect
+    where:
+      Initiated: 'true'

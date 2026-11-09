@@ -15,6 +15,7 @@ const backup = @import("jobs/backup.zig");
 const releases = @import("jobs/releases.zig");
 const http_get = @import("jobs/http_get.zig");
 const ai_reasoning = @import("jobs/ai_reasoning.zig");
+const builtin_rules = @import("detect/builtin.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -205,6 +206,9 @@ fn runJobs(
     last_release: *i64,
     last_ai: *i64,
 ) void {
+    builtin_rules.ensureSeededOnce(allocator, io, conn) catch |err| {
+        std.debug.print("builtin rule seed failed: {s}\n", .{@errorName(err)});
+    };
     if (detect.drain(allocator, io, conn)) |_| {} else |err| {
         std.debug.print("detect drain failed: {s}\n", .{@errorName(err)});
     }
@@ -451,6 +455,11 @@ comptime {
     _ = @import("detect/ast.zig");
     _ = @import("detect/sigma.zig");
     _ = @import("detect/sigma_compat.zig");
+    _ = @import("detect/tawny_rule.zig");
+    _ = @import("detect/sequence.zig");
+    _ = @import("detect/threshold.zig");
+    _ = @import("detect/builtin.zig");
+    _ = @import("detect/correlation_test.zig");
     _ = @import("routes/hunts.zig");
     _ = @import("routes/feeds.zig");
     _ = @import("routes/lookup.zig");

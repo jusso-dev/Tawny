@@ -1,10 +1,24 @@
 //! Daily retention. Alerts older than 365 days go first, then telemetry
-//! older than 30 days that no surviving alert references.
+//! older than 30 days that no surviving alert references. Sequence state
+//! and threshold counters past their window go too.
 const std = @import("std");
 const pg = @import("../db/pg/conn.zig");
 
 pub fn run(conn: *pg.Conn, now_rfc3339: []const u8) !void {
     try conn.execNoRows("SELECT tawny_purge_expired($1::timestamptz)", &.{.{ .text = now_rfc3339 }});
+    try purgeDetectionState(conn, now_rfc3339);
+}
+
+/// Expired sequence state and threshold counters. Windows run on event
+/// time, so a row is kept for an hour past its expiry in case late events
+/// for the same window still arrive.
+pub fn purgeDetectionState(conn: *pg.Conn, now_rfc3339: []const u8) !void {
+    try conn.execNoRows(
+        \\DELETE FROM sequence_state WHERE expires_at < $1::timestamptz - interval '1 hour'
+    , &.{.{ .text = now_rfc3339 }});
+    try conn.execNoRows(
+        \\DELETE FROM threshold_counters WHERE expires_at < $1::timestamptz - interval '1 hour'
+    , &.{.{ .text = now_rfc3339 }});
 }
 
 const default_tenant = "00000000-0000-0000-0000-000000000001";

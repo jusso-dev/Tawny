@@ -9,7 +9,7 @@ ALTER TABLE alert_rules ADD COLUMN compile_notes text[] NOT NULL DEFAULT '{}';
 
 ALTER TABLE alert_rules DROP CONSTRAINT IF EXISTS alert_rules_format_check;
 ALTER TABLE alert_rules ADD CONSTRAINT alert_rules_format_check
-    CHECK (format IN ('tawny_predicate', 'sigma', 'ioc', 'sequence', 'threshold', 'yara', 'package_exposure'));
+    CHECK (format IN ('tawny_predicate', 'sigma', 'ioc', 'sequence', 'threshold', 'atomic', 'yara', 'package_exposure'));
 
 -- Built-in rules from rules/builtin/ are seeded once per tenant and found
 -- again by external_id.

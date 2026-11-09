@@ -427,6 +427,15 @@ Operators in use today: `exists`, `equals`, `contains`, `startswith`,
 gone. The rest of the list above arrives with the Sigma compiler (#56). See
 `docs/detections.md`.
 
+**Status (#56):** sequence and threshold rules run in the detect job after
+atomic matching (`server/src/detect/sequence.zig`, `threshold.zig`). State
+is in `sequence_state` (keyed by rule and `by` key, with `expires_at`) and
+`threshold_counters` (one row per matching event), both on event time, so
+it survives a restart; the purge job removes expired rows. The rule format
+is in `rules/README.md` and the starter rules in `rules/builtin/` are
+seeded per tenant. Relationship and rarity rules are not built yet.
+Detections still produce alerts, not evidence items.
+
 Each detection outputs **evidence items**: `{rule_id, key, weight, confidence,
 severity, attack[], entity_ids[], event_ids[], explanation}`.
 

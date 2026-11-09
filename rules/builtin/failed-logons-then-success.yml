@@ -1,0 +1,16 @@
+id: tawny-builtin:failed-logons-then-success
+title: Five failed logons then a success for the same user
+description: Five failed logons (4625) followed by a successful logon (4624) for the same user name within 10 minutes. Often password guessing that worked.
+kind: sequence
+by: TargetUserName
+within: 10m
+level: high
+tags:
+  - attack.credential-access
+  - attack.t1110
+steps:
+  - name: failures
+    event_type: user_logon_failed
+    count: 5
+  - name: success
+    event_type: user_logon
