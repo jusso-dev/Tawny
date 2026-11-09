@@ -74,7 +74,8 @@ the installers as before. To turn self-update on:
   `TawnyAgent`. Other users can query it. Check with `sc.exe sdshow TawnyAgent`.
 - **systemd (Linux).** The unit's hardening in `install.sh` is unchanged
   (`NoNewPrivileges`, `ProtectSystem=strict` and the rest). Only root can stop
-  a system unit.
+  a system unit. Since #59 the unit grants five capabilities, listed in
+  [Linux capabilities](#linux-capabilities).
 
 ## Key protection
 
@@ -141,6 +142,54 @@ Linux kernels mounted with `hidepid`, SELinux/AppArmor policy, or restrictive
 file permissions can reduce process and FIM visibility for the unprivileged
 service. Grant only the specific read access required by the agreed collection
 scope; do not switch to root without a documented threat-model decision.
+
+### Linux capabilities
+
+The agent still runs as `User=tawny` with every other hardening line in the
+unit. It gets exactly these capabilities, through `AmbientCapabilities=` and
+`CapabilityBoundingSet=` (the bounding set holds nothing else, so the process
+can never gain more). `agent/install/test-install.sh` fails if the unit lists
+any other set.
+
+| Capability | Why the agent needs it | Without it |
+|---|---|---|
+| `CAP_AUDIT_CONTROL` | Register as the audit daemon over `NETLINK_AUDIT`, load the agent's rules (key `tawny`: `execve`, `execveat`, `connect`, `exit_group` and write watches on `fim_paths`) and remove them on stop | No rules of its own; the agent falls back to the multicast group, the audit log or `/proc` polling, and reports `sensor_health` degraded |
+| `CAP_AUDIT_READ` | Join the read-only audit multicast group when auditd already owns the socket | Falls back to `/var/log/audit/audit.log` if readable, else `/proc` polling |
+| `CAP_SYS_PTRACE` | Read the `/proc/<pid>/exe` link and `/proc/<pid>/fd` of other users' processes, for image paths and hashes. The agent never calls `ptrace` | Image path and hash are missing for processes owned by other users |
+| `CAP_DAC_READ_SEARCH` | Read other users' `/proc/<pid>` entries and files under watched folders for hashing and YARA, where file modes would refuse the `tawny` user | Those reads fail and the fields are left out |
+| `CAP_KILL` | The signed `kill_process` response action against processes owned by other users | `kill_process` only works on processes owned by `tawny` |
+
+Not granted: `CAP_NET_ADMIN` (nftables isolation is a follow-up and will be an
+opt-in flag), `CAP_SYS_ADMIN`, `CAP_BPF` and `CAP_PERFMON` (no eBPF in the
+agent). Tetragon, when used, runs as its own daemon and the agent only reads
+its export file.
+
+Audit notes:
+
+- Only one process can be the audit daemon. If auditd is running, leave it:
+  the agent reads its records read-only and does not touch its rules. Check
+  with `sudo auditctl -s` (`pid` is the owner) and the agent's
+  `sensor_health` event (`source` and `reason`).
+- Choose the source with `linux_sensor = auto | audit | audit_log | tetragon | proc`
+  in `config.toml`. `audit_log_path` and `tetragon_export_path` override the
+  default paths. With `audit_log` the `tawny` group needs read access to the
+  log (`log_group = tawny` in `auditd.conf`).
+- The agent's rules carry the key `tawny`. `sudo auditctl -l -k tawny` lists
+  them; a clean stop removes them.
+- Containers cannot use audit netlink (the kernel only allows it in the
+  initial namespaces), so a containerised agent falls back to polling.
+
+Check the running unit:
+
+```bash
+grep Cap /proc/$(systemctl show -p MainPID --value tawny-agent)/status
+# Same user and capabilities as the unit, without the server:
+sudo setpriv --reuid=tawny --regid=tawny --init-groups \
+  --inh-caps=+audit_control,+audit_read,+dac_read_search,+kill,+sys_ptrace \
+  --ambient-caps=+audit_control,+audit_read,+dac_read_search,+kill,+sys_ptrace \
+  --bounding-set=-all,+audit_control,+audit_read,+dac_read_search,+kill,+sys_ptrace \
+  /usr/local/tawny/tawny-agent --linux-sensor-dump --seconds 5
+```
 
 Use an instance role and IMDSv2-required EC2 metadata options. Do not place AWS
 access keys in agent config or service environment. Restrict backend egress with

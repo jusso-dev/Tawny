@@ -565,6 +565,61 @@ if [[ "$dry_run" -ne 1 ]]; then
   chmod 0755 "$binary_path"
 fi
 
+# Capabilities the Linux unit grants the tawny user, and nothing else:
+# audit netlink (CAP_AUDIT_READ, CAP_AUDIT_CONTROL), other users' /proc
+# entries (CAP_SYS_PTRACE, CAP_DAC_READ_SEARCH) and kill_process (CAP_KILL).
+linux_capabilities="CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_DAC_READ_SEARCH CAP_KILL CAP_SYS_PTRACE"
+
+write_systemd_unit() {
+  local dest="$1"
+  cat > "$dest" <<EOF
+[Unit]
+Description=Tawny endpoint agent
+Documentation=https://github.com/jusso-dev/Tawny
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tawny
+Group=tawny
+Environment="TAWNY_CONFIG=$config_path"
+Environment="TAWNY_STATE_PATH=$state_dir/state.toml"
+ExecStart="$binary_path"
+Restart=on-failure
+RestartSec=5
+UMask=0027
+# Kernel telemetry and response (#59, docs/production-agent-hardening.md).
+# Only these capabilities, as ambient capabilities for User=tawny; the
+# bounding set holds nothing else, so NoNewPrivileges stays meaningful.
+AmbientCapabilities=$linux_capabilities
+CapabilityBoundingSet=$linux_capabilities
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths="$state_dir"
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 if [[ "$os_family" == "macos" ]]; then
   if [[ "$dry_run" -eq 1 ]]; then
     plist_preview="$(mktemp "${TMPDIR:-/tmp}/tawny-agent.plist.XXXXXX")"
@@ -601,50 +656,14 @@ if [[ "$os_family" == "macos" ]]; then
 else
   service_path="/etc/systemd/system/tawny-agent.service"
   if [[ "$dry_run" -eq 1 ]]; then
-    printf '[dry-run] write and enable hardened systemd service %s\n' "$service_path"
+    printf '[dry-run] write and enable hardened systemd service %s:\n' "$service_path"
+    unit_preview="$(mktemp "${TMPDIR:-/tmp}/tawny-agent.service.XXXXXX")"
+    write_systemd_unit "$unit_preview"
+    sed 's/^/[dry-run]   /' "$unit_preview"
+    rm -f "$unit_preview"
   else
     service_candidate="$(mktemp --suffix=.service "$(dirname "$service_path")/tawny-agent.XXXXXX")"
-    cat > "$service_candidate" <<EOF
-[Unit]
-Description=Tawny endpoint agent
-Documentation=https://github.com/jusso-dev/Tawny
-After=network-online.target
-Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-Type=simple
-User=tawny
-Group=tawny
-Environment="TAWNY_CONFIG=$config_path"
-Environment="TAWNY_STATE_PATH=$state_dir/state.toml"
-ExecStart="$binary_path"
-Restart=on-failure
-RestartSec=5
-UMask=0027
-NoNewPrivileges=true
-PrivateDevices=true
-PrivateTmp=true
-ProtectClock=true
-ProtectControlGroups=true
-ProtectHome=read-only
-ProtectKernelLogs=true
-ProtectKernelModules=true
-ProtectKernelTunables=true
-ProtectSystem=strict
-ReadWritePaths="$state_dir"
-LockPersonality=true
-MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-SystemCallArchitectures=native
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    write_systemd_unit "$service_candidate"
     systemd-analyze verify "$service_candidate"
     chown root:root "$service_candidate"
     chmod 0644 "$service_candidate"
