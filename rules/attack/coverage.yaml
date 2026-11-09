@@ -1,0 +1,172 @@
+# ATT&CK coverage map (docs/architecture/target-edr.md section 6).
+#
+# For each technique: the event types whose telemetry can show it, and the
+# response actions that apply to it. Names and tactics come from
+# techniques.json, a subset of ATT&CK Enterprise 20.1 (see README.md).
+#
+# GET /api/attack/coverage reports three states per technique, each from
+# its own source and never from another state:
+#   telemetry  an agent seen in the last 15 minutes, with no failed sensor,
+#              sent one of these event types in the last 24 hours
+#   detection  an enabled rule lists the technique (mitre_techniques)
+#   response   one of the listed actions is supported on the platform
+#
+# Keep event types to schemas/events and actions to the ones the agent runs
+# (agent/src/response_actions.zig). Platforms limit where an action applies.
+attack_version: "20.1"
+actions:
+  kill_process: [windows, linux, macos]
+  suspend_process: [windows, linux, macos]
+  quarantine_file: [windows, linux, macos]
+  isolate_host: [windows]
+techniques:
+  - id: T1059.001
+    telemetry: [process_start, powershell_script_block]
+    response: [kill_process, suspend_process, isolate_host]
+  - id: T1059.003
+    telemetry: [process_start]
+    response: [kill_process, suspend_process]
+  - id: T1059.004
+    telemetry: [process_start]
+    response: [kill_process, suspend_process]
+  - id: T1059.005
+    telemetry: [process_start]
+    response: [kill_process, quarantine_file]
+  - id: T1059.007
+    telemetry: [process_start]
+    response: [kill_process, quarantine_file]
+  - id: T1204.002
+    telemetry: [process_start, file_create]
+    response: [kill_process, quarantine_file, isolate_host]
+  - id: T1566.001
+    telemetry: [file_create, process_start]
+    response: [quarantine_file, isolate_host]
+  - id: T1047
+    telemetry: [process_start]
+    response: [kill_process]
+  - id: T1053.005
+    telemetry: [process_start]
+    response: [kill_process]
+  - id: T1053.003
+    telemetry: [process_start, file_create]
+    response: [kill_process]
+  - id: T1543.003
+    telemetry: [service_create]
+    response: [quarantine_file, isolate_host]
+  - id: T1543.001
+    telemetry: [file_create]
+    response: [quarantine_file]
+  - id: T1543.004
+    telemetry: [file_create]
+    response: [quarantine_file]
+  - id: T1569.002
+    telemetry: [service_create, process_start]
+    response: [kill_process]
+  - id: T1547.001
+    telemetry: [registry_set, file_create]
+    response: [quarantine_file]
+  - id: T1112
+    telemetry: [registry_set]
+    response: []
+  - id: T1546.004
+    telemetry: [file_create]
+    response: []
+  - id: T1548.002
+    telemetry: [process_start, registry_set]
+    response: [kill_process]
+  - id: T1055
+    telemetry: []
+    response: [kill_process, isolate_host]
+  - id: T1027
+    telemetry: [process_start, powershell_script_block]
+    response: [kill_process]
+  - id: T1036
+    telemetry: [process_start]
+    response: [kill_process, quarantine_file]
+  - id: T1218
+    telemetry: [process_start]
+    response: [kill_process]
+  - id: T1218.011
+    telemetry: [process_start]
+    response: [kill_process]
+  - id: T1574.001
+    telemetry: [file_create]
+    response: [quarantine_file]
+  - id: T1070
+    telemetry: [process_start]
+    response: []
+  - id: T1685
+    telemetry: [sensor_health, agent_tamper, process_start]
+    response: [isolate_host]
+  - id: T1685.001
+    telemetry: [sensor_health, agent_tamper]
+    response: [isolate_host]
+  - id: T1003.001
+    telemetry: [process_start]
+    response: [kill_process, isolate_host]
+  - id: T1003.008
+    telemetry: [process_start]
+    response: [kill_process]
+  - id: T1110
+    telemetry: [user_logon]
+    response: [isolate_host]
+  - id: T1110.001
+    telemetry: [user_logon]
+    response: []
+  - id: T1110.003
+    telemetry: [user_logon]
+    response: []
+  - id: T1078
+    telemetry: [user_logon]
+    response: [isolate_host]
+  - id: T1078.003
+    telemetry: [user_logon]
+    response: []
+  - id: T1098
+    telemetry: []
+    response: []
+  - id: T1136.001
+    telemetry: [process_start]
+    response: []
+  - id: T1021.001
+    telemetry: [user_logon, network_connect]
+    response: [isolate_host]
+  - id: T1021.002
+    telemetry: [user_logon, network_connect]
+    response: [isolate_host]
+  - id: T1021.004
+    telemetry: [user_logon, network_connect]
+    response: [kill_process]
+  - id: T1046
+    telemetry: [network_connect]
+    response: [kill_process, isolate_host]
+  - id: T1082
+    telemetry: [process_start]
+    response: []
+  - id: T1033
+    telemetry: [process_start]
+    response: []
+  - id: T1071
+    telemetry: [network_connect, dns_query]
+    response: [kill_process, isolate_host]
+  - id: T1071.001
+    telemetry: [network_connect, dns_query]
+    response: [kill_process, isolate_host]
+  - id: T1071.004
+    telemetry: [dns_query]
+    response: [kill_process, isolate_host]
+  - id: T1568
+    telemetry: [dns_query]
+    response: [isolate_host]
+  - id: T1105
+    telemetry: [process_start, file_create, network_connect]
+    response: [kill_process, quarantine_file, isolate_host]
+  - id: T1219
+    telemetry: [process_start, network_connect]
+    response: [kill_process, quarantine_file]
+  - id: T1486
+    telemetry: [file_create]
+    response: [kill_process, isolate_host]
+  - id: T1490
+    telemetry: [process_start]
+    response: [kill_process, isolate_host]

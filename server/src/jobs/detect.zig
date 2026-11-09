@@ -9,6 +9,7 @@ const ast = @import("../detect/ast.zig");
 const tawny_rule = @import("../detect/tawny_rule.zig");
 const sequence = @import("../detect/sequence.zig");
 const threshold = @import("../detect/threshold.zig");
+const incidents = @import("../detect/incidents.zig");
 
 /// Compiled rule expressions, parsed once per drain. Keyed by rule id and
 /// updated_at so an edited rule is parsed again.
@@ -299,7 +300,11 @@ pub fn evaluateRules(
             , &.{ .{ .text = sid }, .{ .text = created } });
             continue;
         }
-        try raiseAlert(allocator, conn, e, row.cols[0].?, row.cols[1] orelse "rule", row.cols[2] orelse "medium", description, created);
+        try raiseAlert(allocator, conn, e, row.cols[0].?, row.cols[1] orelse "rule", row.cols[2] orelse "medium", description, created, .{
+            .format = format,
+            .root = root,
+            .now_unix = now,
+        });
     }
 }
 
@@ -338,6 +343,7 @@ fn raiseAlert(
     severity: []const u8,
     description: ?[]const u8,
     created: []const u8,
+    group: Group,
 ) !void {
     const title = try std.fmt.allocPrint(allocator, "{s} on {s}", .{ rule_name, e.hostname });
     defer allocator.free(title);
@@ -365,6 +371,53 @@ fn raiseAlert(
     enqueueSink(allocator, conn, e.tenant_id, inserted[0].cols[0].?) catch |err| {
         std.debug.print("sink enqueue failed: {s}\n", .{@errorName(err)});
     };
+    // Group into an incident (target-edr section 8). A grouping failure must
+    // not lose the alert, which is already stored.
+    const incident_id = incidents.attach(allocator, conn, .{
+        .tenant_id = e.tenant_id,
+        .agent_id = e.agent_id,
+        .alert_id = inserted[0].cols[0].?,
+        .rule_id = rule_id,
+        .rule_name = rule_name,
+        .rule_format = group.format,
+        .severity = severity,
+        .hostname = e.hostname,
+        .occurred_at = e.occurred_at,
+        .root = group.root,
+    }, group.now_unix) catch |err| {
+        if (conn.takeError()) |msg| {
+            defer conn.allocator.free(msg);
+            std.debug.print("incident grouping failed: {s}: {s}\n", .{ @errorName(err), msg });
+        } else std.debug.print("incident grouping failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer allocator.free(incident_id);
+    enqueueIncidentSink(allocator, conn, e.tenant_id, incident_id) catch |err| {
+        std.debug.print("incident sink enqueue failed: {s}\n", .{@errorName(err)});
+    };
+}
+
+const Group = struct {
+    format: []const u8,
+    root: std.json.Value,
+    now_unix: i64,
+};
+
+/// One pending Tawny-SOC update per incident: later alerts within the
+/// debounce reuse the queued row (target-edr section 8, "debounced").
+fn enqueueIncidentSink(allocator: std.mem.Allocator, conn: *pg.Conn, tenant_id: []const u8, incident_id: []const u8) !void {
+    const id_j = try util.escapeJson(allocator, incident_id);
+    defer allocator.free(id_j);
+    const payload = try std.fmt.allocPrint(allocator, "{{\"incident_id\":{s}}}", .{id_j});
+    defer allocator.free(payload);
+    try conn.execNoRows(
+        \\INSERT INTO work_queue (kind, tenant_id, payload, run_after)
+        \\SELECT 'incident_sink', $1::uuid, $2::jsonb, now() + interval '30 seconds'
+        \\WHERE NOT EXISTS (
+        \\  SELECT 1 FROM work_queue WHERE kind = 'incident_sink' AND payload->>'incident_id' = $3
+        \\    AND locked_until IS NULL
+        \\)
+    , &.{ .{ .text = tenant_id }, .{ .text = payload }, .{ .text = incident_id } });
 }
 
 fn matchingSuppression(rules: []const pg.Row, rule_id: []const u8, agent_id: []const u8, root: std.json.Value) ?[]const u8 {

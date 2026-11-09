@@ -462,6 +462,13 @@ comptime {
     _ = @import("http/dispatch.zig");
     _ = @import("http/state.zig");
     _ = @import("http/auth.zig");
+    _ = @import("http/permissions.zig");
+    _ = @import("routes/settings.zig");
+    _ = @import("routes/incidents.zig");
+    _ = @import("routes/attack.zig");
+    _ = @import("routes/oidc.zig");
+    _ = @import("detect/incidents.zig");
+    _ = @import("detect/incidents_test.zig");
     _ = @import("http/util.zig");
     _ = @import("http/static.zig");
     _ = @import("routes/admin_jobs.zig");

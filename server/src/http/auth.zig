@@ -7,7 +7,37 @@ const state = @import("state.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-pub const Role = enum { admin, viewer };
+pub const Role = enum { admin, analyst, viewer };
+
+/// What a route needs. The matrix is in `can` and in docs/api.md; each
+/// route file declares the permission of its routes (see http/permissions.zig).
+pub const Permission = enum {
+    /// No session needed (sign-in, health, enrolment). The handler checks its own credential.
+    public,
+    /// Agent JWT routes. Web roles never reach them.
+    agent,
+    /// Any signed-in user: read agents, alerts, incidents, rules, hunts, coverage.
+    read,
+    /// Acknowledge and resolve alerts, assign incidents and change their status.
+    triage,
+    /// Run ad hoc and saved hunts.
+    hunt_run,
+    /// Request response actions. Destructive ones may wait for admin approval.
+    respond,
+    /// Add an exception (suppression rule) with a reason.
+    exception_create,
+    /// Users, API tokens, enrolment, integrations, rules, feeds, tenant settings, approvals.
+    admin,
+};
+
+pub fn can(role: Role, perm: Permission) bool {
+    return switch (perm) {
+        .public, .read => true,
+        .agent => false,
+        .triage, .hunt_run, .respond, .exception_create => role == .admin or role == .analyst,
+        .admin => role == .admin,
+    };
+}
 
 pub const WebUser = struct {
     user_id: []const u8,
@@ -37,6 +67,7 @@ pub const session_cookie_name = "tawny_session";
 
 pub fn roleFromText(s: []const u8) ?Role {
     if (std.ascii.eqlIgnoreCase(s, "admin")) return .admin;
+    if (std.ascii.eqlIgnoreCase(s, "analyst")) return .analyst;
     if (std.ascii.eqlIgnoreCase(s, "viewer")) return .viewer;
     return null;
 }
@@ -44,6 +75,7 @@ pub fn roleFromText(s: []const u8) ?Role {
 pub fn roleText(r: Role) []const u8 {
     return switch (r) {
         .admin => "admin",
+        .analyst => "analyst",
         .viewer => "viewer",
     };
 }
@@ -515,5 +547,27 @@ test "parse session cookie" {
 test "role parse" {
     try std.testing.expect(roleFromText("Admin").? == .admin);
     try std.testing.expect(roleFromText("viewer").? == .viewer);
+    try std.testing.expect(roleFromText("Analyst").? == .analyst);
     try std.testing.expect(roleFromText("nope") == null);
+    for (std.meta.fieldNames(Role)) |name| {
+        const r = std.meta.stringToEnum(Role, name).?;
+        try std.testing.expectEqualStrings(name, roleText(r));
+        try std.testing.expect(roleFromText(name).? == r);
+    }
+}
+
+test "permission matrix: analyst triages and responds, never administers" {
+    try std.testing.expect(can(.analyst, .triage));
+    try std.testing.expect(can(.analyst, .hunt_run));
+    try std.testing.expect(can(.analyst, .respond));
+    try std.testing.expect(can(.analyst, .exception_create));
+    try std.testing.expect(!can(.analyst, .admin));
+    try std.testing.expect(can(.viewer, .read));
+    for ([_]Permission{ .triage, .hunt_run, .respond, .exception_create, .admin }) |p| {
+        try std.testing.expect(!can(.viewer, p));
+        try std.testing.expect(can(.admin, p));
+    }
+    for (std.meta.fieldNames(Role)) |name| {
+        try std.testing.expect(!can(std.meta.stringToEnum(Role, name).?, .agent));
+    }
 }

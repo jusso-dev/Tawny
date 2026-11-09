@@ -2,6 +2,7 @@ const std = @import("std");
 const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
+const settings = @import("settings.zig");
 const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
 const batch_sig = @import("../crypto/batch_sig.zig");
@@ -12,6 +13,26 @@ const ingest_entity = @import("../ingest/entity.zig");
 const legacy = @import("../ingest/legacy.zig");
 const process_store = @import("../ingest/process_store.zig");
 const agent_alerts = @import("../jobs/agent_alerts.zig");
+
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/enrollment-tokens", .perm = .admin },
+    .{ .method = .POST, .path = "/api/agents/enroll", .perm = .public },
+    .{ .method = .POST, .path = "/api/agents/heartbeat", .perm = .agent },
+    .{ .method = .POST, .path = "/api/agents/events", .perm = .agent },
+    .{ .method = .POST, .path = "/api/agents/:id/actions/:action/result", .perm = .agent },
+    .{ .method = .GET, .path = "/api/agents", .perm = .read },
+    .{ .method = .GET, .path = "/api/agents/:id", .perm = .read },
+    .{ .method = .POST, .path = "/api/agents/:id/revoke", .perm = .admin },
+    .{ .method = .GET, .path = "/api/agents/:id/events", .perm = .read },
+    .{ .method = .GET, .path = "/api/agents/:id/events/stream", .perm = .read },
+    .{ .method = .GET, .path = "/api/agents/:id/process-tree", .perm = .read },
+    .{ .method = .POST, .path = "/api/agents/:id/actions", .perm = .respond },
+    .{ .method = .GET, .path = "/api/agents/:id/actions", .perm = .read },
+    .{ .method = .GET, .path = "/api/agents/:id/actions/:action", .perm = .read },
+    .{ .method = .POST, .path = "/api/agents/:id/actions/:action/approve", .perm = .admin },
+};
+
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 pub fn createEnrollmentToken(
@@ -1009,6 +1030,11 @@ pub fn createAction(
         if (try respondIdempotent(allocator, conn, request, web.tenant_id, agent_id, k)) return;
     }
 
+    // An analyst's destructive action waits for an admin when the tenant asks
+    // for that (target-edr section 9.2). The agent only receives 'pending'.
+    const status: []const u8 = if (web.role != .admin and isDestructive(parsed.value.action_type) and
+        try settings.analystNeedsApproval(allocator, conn, web.tenant_id)) "awaiting_approval" else "pending";
+
     var payload_buf: std.ArrayList(u8) = .empty;
     defer payload_buf.deinit(allocator);
     const payload_tmp = try std.json.Stringify.valueAlloc(allocator, parsed.value.payload, .{});
@@ -1028,7 +1054,7 @@ pub fn createAction(
     conn.execNoRows(
         \\INSERT INTO response_actions (id, agent_id, tenant_id, action_type, status, requested_by_user_id,
         \\  requested_at, expires_at, payload_json, payload_hash, idempotency_key)
-        \\VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'pending', $5::uuid, $6::timestamptz, $7::timestamptz, $8::jsonb, $9, $10)
+        \\VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $11, $5::uuid, $6::timestamptz, $7::timestamptz, $8::jsonb, $9, $10)
     , &.{
         .{ .text = id },
         .{ .text = agent_id },
@@ -1040,6 +1066,7 @@ pub fn createAction(
         .{ .text = payload_buf.items },
         .{ .text = ph },
         if (idem_key) |k| .{ .text = k } else .{ .null = {} },
+        .{ .text = status },
     }) catch |err| {
         if (idem_key) |k| {
             if (err == error.QueryFailed) {
@@ -1067,10 +1094,73 @@ pub fn createAction(
     const ph_j = try util.escapeJson(allocator, ph);
     defer allocator.free(ph_j);
     const json = try std.fmt.allocPrint(allocator,
-        \\{{"id":{s},"agent_id":{s},"action_type":{s},"status":"pending","requested_at":{s},"expires_at":{s},"payload":{s},"payload_hash":{s}}}
-    , .{ id_j, aid_j, at_j, req_j, exp_j, payload_buf.items, ph_j });
+        \\{{"id":{s},"agent_id":{s},"action_type":{s},"status":"{s}","requested_at":{s},"expires_at":{s},"payload":{s},"payload_hash":{s}}}
+    , .{ id_j, aid_j, at_j, status, req_j, exp_j, payload_buf.items, ph_j });
     defer allocator.free(json);
     try util.respondJson(request, .created, json);
+}
+
+/// Isolation and quarantine cut a host off or move a file. Killing or
+/// suspending one process is not in this set.
+pub fn isDestructive(action_type: []const u8) bool {
+    const set = [_][]const u8{ "isolate_host", "isolate", "quarantine_file" };
+    for (set) |t| if (std.mem.eql(u8, t, action_type)) return true;
+    return false;
+}
+
+/// Admin approval for an action an analyst requested. The approver must not
+/// be the requester. The deadline restarts so the agent gets the full window.
+pub fn approveAction(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    conn: *pg.Conn,
+    request: *std.http.Server.Request,
+    web: auth.WebUser,
+    agent_id: []const u8,
+    action_id: []const u8,
+) !void {
+    if (web.session_id != null and !auth.checkCsrf(request, web)) {
+        try util.respondJson(request, .forbidden, "{\"error\":\"csrf\"}");
+        return;
+    }
+    var t1: [32]u8 = undefined;
+    var t2: [32]u8 = undefined;
+    const now = util.nowUnix(io);
+    const approved = util.formatRfc3339(&t1, now);
+    const expires = util.formatRfc3339(&t2, now + 15 * 60);
+    const rows = try conn.exec(allocator,
+        \\UPDATE response_actions SET status = 'pending', approved_by_user_id = $4::uuid,
+        \\  approved_at = $5::timestamptz, expires_at = $6::timestamptz
+        \\WHERE tenant_id = $1::uuid AND agent_id = $2::uuid AND id = $3::uuid
+        \\  AND status = 'awaiting_approval'
+        \\  AND requested_by_user_id IS DISTINCT FROM $4::uuid
+        \\RETURNING id::text
+    , &.{
+        .{ .text = web.tenant_id },
+        .{ .text = agent_id },
+        .{ .text = action_id },
+        .{ .text = web.user_id },
+        .{ .text = approved },
+        .{ .text = expires },
+    });
+    defer {
+        for (rows) |row| row.deinit(allocator);
+        allocator.free(rows);
+    }
+    if (rows.len == 0) return util.problem(request, allocator, .conflict, "No action awaiting approval by another admin.");
+    try audit.add(allocator, io, conn, web.tenant_id, web.user_id, "response_action.approve", action_id, null);
+    const id_j = try util.escapeJson(allocator, action_id);
+    defer allocator.free(id_j);
+    const json = try std.fmt.allocPrint(allocator, "{{\"id\":{s},\"status\":\"pending\"}}", .{id_j});
+    defer allocator.free(json);
+    try util.respondJson(request, .ok, json);
+}
+
+test "only isolation and quarantine are destructive" {
+    try std.testing.expect(isDestructive("isolate_host"));
+    try std.testing.expect(isDestructive("quarantine_file"));
+    try std.testing.expect(!isDestructive("kill_process"));
+    try std.testing.expect(!isDestructive("release_host"));
 }
 
 /// Parse then compact-serialize a JSON payload, matching the bytes the agent

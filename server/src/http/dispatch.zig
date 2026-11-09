@@ -18,6 +18,11 @@ const suppressions = @import("../routes/suppressions.zig");
 const lookup_http = @import("../routes/lookup.zig");
 const ai_http = @import("../routes/ai.zig");
 const state = @import("state.zig");
+const permissions = @import("permissions.zig");
+const incidents_http = @import("../routes/incidents.zig");
+const attack_http = @import("../routes/attack.zig");
+const oidc_http = @import("../routes/oidc.zig");
+const settings_http = @import("../routes/settings.zig");
 
 pub fn handle(
     allocator: std.mem.Allocator,
@@ -45,6 +50,15 @@ pub fn handle(
         return;
     };
 
+    // Role gate. Every route is declared with its permission in its route
+    // file; nothing undeclared reaches a handler.
+    const declared = permissions.lookup(method, parts[0..n]) orelse return notFound(request);
+    switch (permissions.decide(declared.perm, resolved)) {
+        .allow => {},
+        .unauthorized => return util.respondJson(request, .unauthorized, "{\"title\":\"Unauthorized.\",\"status\":401}"),
+        .forbidden => return util.respondJson(request, .forbidden, "{\"title\":\"Forbidden.\",\"status\":403}"),
+    }
+
     route(allocator, io, conn, request, method, target, parts[0..n], resolved, phase) catch |err| {
         if (conn.takeError()) |msg| {
             std.debug.print("route {s} {s} failed: {s}: {s}\n", .{ @tagName(method), path, @errorName(err), msg });
@@ -70,6 +84,15 @@ fn route(
     if (parts.len >= 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "auth")) {
         if (parts.len == 3 and std.mem.eql(u8, parts[2], "login") and method == .POST) {
             return session.login(allocator, io, conn, request);
+        }
+        if (parts.len == 3 and std.mem.eql(u8, parts[2], "methods") and method == .GET) {
+            return session.methods(allocator, conn, request, target);
+        }
+        if (parts.len == 4 and std.mem.eql(u8, parts[2], "oidc") and std.mem.eql(u8, parts[3], "start") and method == .GET) {
+            return oidc_http.start(allocator, io, conn, request, target);
+        }
+        if (parts.len == 4 and std.mem.eql(u8, parts[2], "oidc") and std.mem.eql(u8, parts[3], "callback") and method == .GET) {
+            return oidc_http.callback(allocator, io, conn, request, target);
         }
         if (parts.len == 4 and std.mem.eql(u8, parts[2], "github") and std.mem.eql(u8, parts[3], "start") and method == .GET) {
             return github.start(allocator, io, conn, request);
@@ -165,8 +188,13 @@ fn route(
             return agents.streamAgentEvents(allocator, io, conn, request, web, parts[2], phase);
         }
         if (parts.len == 4 and std.mem.eql(u8, parts[3], "actions") and method == .POST) {
-            const web = try needAdmin(request, resolved) orelse return;
+            const web = try needWeb(request, resolved) orelse return;
             return agents.createAction(allocator, io, conn, request, web, parts[2]);
+        }
+        if (parts.len == 6 and std.mem.eql(u8, parts[3], "actions") and std.mem.eql(u8, parts[5], "approve") and method == .POST) {
+            const web = try needAdmin(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_admin_mutate)) return;
+            return agents.approveAction(allocator, io, conn, request, web, parts[2], parts[4]);
         }
         if (parts.len == 4 and std.mem.eql(u8, parts[3], "actions") and method == .GET) {
             const web = try needWeb(request, resolved) orelse return;
@@ -301,8 +329,8 @@ fn route(
             return suppressions.list(allocator, conn, request, web);
         }
         if (parts.len == 2 and method == .POST) {
-            const web = try needAdmin(request, resolved) orelse return;
-            if (try stopLimited(request, io, web, policy_web_admin_mutate)) return;
+            const web = try needWeb(request, resolved) orelse return;
+            if (try stopLimited(request, io, web, policy_web_mutate)) return;
             return suppressions.create(allocator, io, conn, request, web);
         }
         if (parts.len == 3 and method == .PUT) {
@@ -328,6 +356,47 @@ fn route(
             if (try stopLimited(request, io, web, policy_web_read)) return;
             return alerts.getAlert(allocator, conn, request, web, parts[2]);
         }
+        if (parts.len == 4 and method == .POST and (std.mem.eql(u8, parts[3], "acknowledge") or std.mem.eql(u8, parts[3], "resolve"))) {
+            if (try stopLimited(request, io, web, policy_web_mutate)) return;
+            return incidents_http.setAlertStatus(allocator, io, conn, request, web, parts[2], parts[3]);
+        }
+        return notFound(request);
+    }
+
+    if (parts.len >= 2 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "incidents")) {
+        const web = try needWeb(request, resolved) orelse return;
+        if (parts.len == 2 and method == .GET) {
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return incidents_http.list(allocator, conn, request, web, target);
+        }
+        if (parts.len == 3 and method == .GET) {
+            if (try stopLimited(request, io, web, policy_web_read)) return;
+            return incidents_http.get(allocator, conn, request, web, parts[2]);
+        }
+        if (parts.len == 4 and method == .POST and std.mem.eql(u8, parts[3], "assign")) {
+            if (try stopLimited(request, io, web, policy_web_mutate)) return;
+            return incidents_http.assign(allocator, io, conn, request, web, parts[2]);
+        }
+        if (parts.len == 4 and method == .POST and std.mem.eql(u8, parts[3], "status")) {
+            if (try stopLimited(request, io, web, policy_web_mutate)) return;
+            return incidents_http.setStatus(allocator, io, conn, request, web, parts[2]);
+        }
+        return notFound(request);
+    }
+
+    if (parts.len == 3 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "attack") and std.mem.eql(u8, parts[2], "coverage") and method == .GET) {
+        const web = try needWeb(request, resolved) orelse return;
+        if (try stopLimited(request, io, web, policy_web_read)) return;
+        return attack_http.coverage(allocator, conn, request, web, target);
+    }
+
+    if (parts.len == 3 and std.mem.eql(u8, parts[0], "api") and std.mem.eql(u8, parts[1], "settings")) {
+        const web = try needAdmin(request, resolved) orelse return;
+        if (std.mem.eql(u8, parts[2], "tenant") and method == .GET) return settings_http.getTenant(allocator, conn, request, web);
+        if (std.mem.eql(u8, parts[2], "oidc") and method == .GET) return settings_http.getOidc(allocator, conn, request, web);
+        if (try stopLimited(request, io, web, policy_web_admin_mutate)) return;
+        if (std.mem.eql(u8, parts[2], "tenant") and method == .PUT) return settings_http.putTenant(allocator, io, conn, request, web);
+        if (std.mem.eql(u8, parts[2], "oidc") and method == .PUT) return settings_http.putOidc(allocator, io, conn, request, web);
         return notFound(request);
     }
 

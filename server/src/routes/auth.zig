@@ -3,6 +3,17 @@ const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 const passwords = @import("../crypto/passwords.zig");
+const settings = @import("settings.zig");
+
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/auth/login", .perm = .public },
+    .{ .method = .GET, .path = "/api/auth/methods", .perm = .public },
+    .{ .method = .POST, .path = "/api/auth/logout", .perm = .read },
+    .{ .method = .GET, .path = "/api/auth/session", .perm = .read },
+    .{ .method = .POST, .path = "/api/auth/password", .perm = .read },
+};
+
 
 pub fn login(
     allocator: std.mem.Allocator,
@@ -20,7 +31,7 @@ pub fn login(
     defer parsed.deinit();
 
     const rows = try conn.exec(allocator,
-        \\SELECT id::text, tenant_id::text, email, role, password_hash, disabled_at::text, name
+        \\SELECT id::text, tenant_id::text, email, role, password_hash, disabled_at::text, name, break_glass::text
         \\FROM users WHERE lower(email) = lower($1) LIMIT 1
     , &.{.{ .text = parsed.value.email }});
     defer {
@@ -33,6 +44,12 @@ pub fn login(
     const hash = c[4] orelse return util.problem(request, allocator, .unauthorized, "Invalid email or password.");
     const ok = try auth.verifyLoginPassword(allocator, io, hash, parsed.value.password);
     if (!ok) return util.problem(request, allocator, .unauthorized, "Invalid email or password.");
+    // Checked after the password so the answer does not reveal who is break-glass.
+    const policy = try settings.loadTenant(allocator, conn, c[1].?);
+    const glass = std.mem.eql(u8, c[7] orelse "false", "true");
+    if (!settings.passwordAllowed(policy, c[3] orelse "viewer", glass)) {
+        return util.problem(request, allocator, .forbidden, "Password sign-in is limited to break-glass admins. Sign in with Microsoft Entra ID.");
+    }
 
     // Rehash legacy scrypt on success
     if (!std.mem.startsWith(u8, hash, "$argon2")) {
@@ -165,6 +182,24 @@ pub fn changePassword(
 }
 
 /// Pure SQL-shaped login lookup helper used by unit tests (no network).
+/// Which sign-in methods the login page should offer. `?tenant=` picks the
+/// tenant; the default tenant otherwise. Public: it names no users.
+pub fn methods(allocator: std.mem.Allocator, conn: *pg.Conn, request: *std.http.Server.Request, target: []const u8) !void {
+    const tenant = util.queryParam(target, "tenant") orelse util.default_tenant;
+    if (tenant.len != 36) return util.problem(request, allocator, .bad_request, "tenant must be a UUID.");
+    const policy = try settings.loadTenant(allocator, conn, tenant);
+    const rows = try conn.exec(allocator, "SELECT 1 FROM tenant_oidc WHERE tenant_id = $1::uuid AND enabled", &.{.{ .text = tenant }});
+    defer {
+        for (rows) |row| row.deinit(allocator);
+        allocator.free(rows);
+    }
+    const json = try std.fmt.allocPrint(allocator,
+        \\{{"password":"{s}","entra":{s}}}
+    , .{ if (policy.password_login_break_glass_only) "break_glass" else "all", if (rows.len > 0) "true" else "false" });
+    defer allocator.free(json);
+    try util.respondJson(request, .ok, json);
+}
+
 pub fn loginLookupSql() []const u8 {
     return
         \\SELECT id::text, tenant_id::text, email, role, password_hash, disabled_at::text, name
