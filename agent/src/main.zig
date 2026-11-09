@@ -18,6 +18,8 @@ const extensions_collector = @import("collectors/extensions.zig");
 const mcp_collector = @import("collectors/mcp_config.zig");
 const windows_events = @import("collectors/windows_events.zig");
 const response_actions = @import("response_actions.zig");
+const action_key = @import("action_key.zig");
+const action_journal = @import("action_journal.zig");
 const yara_scanner = @import("yara_scanner.zig");
 const entity = @import("entity.zig");
 const iox = @import("io_compat.zig");
@@ -148,6 +150,24 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     defer yara.deinit();
     var yara_timer = try iox.Timer.start();
 
+    // Response actions (#57): pinned server action key, local journal and the
+    // quarantine directory. The action key is the one pinned at enrolment (or
+    // from config.yara_rule_key, same bytes); TOFU from a heartbeat pins it
+    // for agents enrolled before #57.
+    var action_pub_text = action_key.load(alloc, cfg.state_path);
+    defer if (action_pub_text) |k| alloc.free(k);
+    var action_pub: ?std.crypto.sign.Ed25519.PublicKey =
+        action_key.decode(action_pub_text orelse cfg.yara_rule_key);
+
+    var journal = action_journal.Journal.init(alloc, cfg.state_path) catch |err| blk: {
+        std.debug.print("action journal unavailable: {s}\n", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (journal) |*j| j.deinit();
+
+    const quarantine_dir = quarantineDir(alloc, cfg.state_path) catch try alloc.dupe(u8, "quarantine");
+    defer alloc.free(quarantine_dir);
+
     var inventory = inventory_collector.Scanner.init(alloc);
     var extensions = extensions_collector.Scanner.init(alloc);
     var mcp = mcp_collector.Scanner.init(alloc);
@@ -196,14 +216,36 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
                 if (heartbeat.yara_pack_version > yara.pack_version and yara.public_key != null) {
                     refreshYaraPack(alloc, &http, &yara);
                 }
+                // Trust on first use: an agent enrolled before #57 pins the
+                // action key from its first heartbeat that carries it.
+                if (action_pub == null) {
+                    if (heartbeat.action_public_key) |k| {
+                        action_key.pin(alloc, cfg.state_path, k) catch {};
+                        if (action_key.load(alloc, cfg.state_path)) |pinned| {
+                            if (action_pub_text) |old| alloc.free(old);
+                            action_pub_text = pinned;
+                            action_pub = action_key.decode(pinned);
+                            std.log.info("pinned the server action key (trust on first use)", .{});
+                        }
+                    }
+                }
                 for (heartbeat.actions) |action| {
                     if (std.mem.eql(u8, action.action_type, "yara_scan")) {
                         runYaraAction(alloc, &http, &yara, &buf, action);
                         continue;
                     }
-                    response_actions.execute(alloc, &http, action) catch |err| {
-                        std.debug.print("response action {s} failed: {s}\n", .{ action.id, @errorName(err) });
-                    };
+                    if (journal) |*j| {
+                        response_actions.execute(.{
+                            .alloc = alloc,
+                            .http = &http,
+                            .agent_id = cfg.agent_id orelse "",
+                            .public_key = action_pub,
+                            .journal = j,
+                            .quarantine_dir = quarantine_dir,
+                        }, action);
+                    } else {
+                        std.debug.print("response action {s} skipped: no journal\n", .{action.id});
+                    }
                 }
             } else |err| {
                 std.debug.print("heartbeat failed: {s}\n", .{@errorName(err)});
@@ -391,6 +433,20 @@ fn runAgent(alloc: std.mem.Allocator) anyerror!void {
     std.debug.print("tawny-agent stopping\n", .{});
 }
 
+/// Quarantine directory. `%ProgramData%\Tawny\Quarantine` on Windows,
+/// `/var/lib/tawny/quarantine` on Linux/macOS when writable, otherwise next to
+/// the state file so an unprivileged dev or CI agent still works.
+fn quarantineDir(alloc: std.mem.Allocator, state_path: []const u8) ![]u8 {
+    if (builtin.target.os.tag == .windows) {
+        const programdata = @import("env.zig").getEnvVarOwned(alloc, "PROGRAMDATA") catch
+            try alloc.dupe(u8, "C:\\ProgramData");
+        defer alloc.free(programdata);
+        return alloc.print("{s}\\Tawny\\Quarantine", .{programdata});
+    }
+    const state_dir = std.fs.path.dirname(state_path) orelse ".";
+    return std.fs.path.join(alloc, &.{ state_dir, "quarantine" });
+}
+
 fn scrubEnrollmentToken(alloc: std.mem.Allocator, config_path: []const u8) void {
     const removed = config_mod.removeEnrollmentToken(alloc, config_path) catch |err| {
         std.log.warn(
@@ -427,6 +483,12 @@ test "main module loads" {
     _ = @import("rule_pack.zig");
     _ = @import("yara_scanner.zig");
     _ = @import("yara_key.zig");
+    _ = @import("action_sig.zig");
+    _ = @import("action_key.zig");
+    _ = @import("action_journal.zig");
+    _ = @import("quarantine.zig");
+    _ = @import("platform/windows/wfp.zig");
+    _ = @import("platform/windows/process_control.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Windows event log parsing and mapping are pure too.

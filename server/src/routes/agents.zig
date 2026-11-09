@@ -5,6 +5,7 @@ const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
 const batch_sig = @import("../crypto/batch_sig.zig");
+const action_sig = @import("../crypto/action_sig.zig");
 const detect = @import("../jobs/detect.zig");
 const ingest_v2 = @import("../ingest/v2.zig");
 const ingest_entity = @import("../ingest/entity.zig");
@@ -170,13 +171,15 @@ pub fn enroll(
     defer allocator.free(jwt_j);
     const exp_j = try util.escapeJson(allocator, exp_s);
     defer allocator.free(exp_j);
-    // The agent pins this key and refuses YARA rule packs signed by any other.
-    const rule_kp = try state.rulePackKey(io);
+    // One action key signs response actions and YARA rule packs (#57). The
+    // agent pins this public key and refuses anything signed by another key.
+    // `yara_rule_key` is the same bytes, kept for agents enrolled before #57.
+    const act_kp = try state.actionKey(io);
     var rk_buf: [44]u8 = undefined;
-    const rule_key = std.base64.standard.Encoder.encode(&rk_buf, &rule_kp.public_key.bytes);
+    const action_key = std.base64.standard.Encoder.encode(&rk_buf, &act_kp.public_key.bytes);
     const json = try std.fmt.allocPrint(allocator,
-        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"yara_rule_key":"{s}","config":{{"heartbeat_interval_seconds":60}}}}
-    , .{ aid_j, jwt_j, exp_j, rule_key });
+        \\{{"agent_id":{s},"jwt":{s},"jwt_expires_at":{s},"action_public_key":"{s}","yara_rule_key":"{s}","config":{{"heartbeat_interval_seconds":60}}}}
+    , .{ aid_j, jwt_j, exp_j, action_key, action_key });
     defer allocator.free(json);
     try util.respondJson(request, .ok, json);
 }
@@ -455,10 +458,23 @@ pub fn heartbeat(
         const ph_j = try util.escapeJson(allocator, ph.?);
         defer allocator.free(ph_j);
         const payload = row.cols[2] orelse "{}";
+        // Sign the action so the agent can refuse anything the server did not
+        // authorise. The signed string pins the id, agent, type, deadline and
+        // the hash of the payload the agent receives.
+        const sig_b64 = try action_sig.sign(
+            allocator,
+            try state.actionKey(io),
+            row.cols[0].?,
+            agent.agent_id,
+            row.cols[1] orelse "",
+            exp_at.?,
+            ph.?,
+        );
+        defer allocator.free(sig_b64);
         {
-            const __tmp = try std.fmt.allocPrint(allocator, 
-            "{{\"id\":{s},\"action_type\":{s},\"payload\":{s},\"execution_token\":{s},\"expires_at\":{s},\"payload_hash\":{s}}}",
-            .{ id_j, at_j, payload, tok_j, exp_j, ph_j },
+            const __tmp = try std.fmt.allocPrint(allocator,
+            "{{\"id\":{s},\"action_type\":{s},\"payload\":{s},\"execution_token\":{s},\"expires_at\":{s},\"payload_hash\":{s},\"signature\":\"{s}\"}}",
+            .{ id_j, at_j, payload, tok_j, exp_j, ph_j, sig_b64 },
         );
             defer allocator.free(__tmp);
             try actions_json.appendSlice(allocator, __tmp);
@@ -514,6 +530,16 @@ pub fn heartbeat(
     {
         const yv = @import("yara_rules.zig").packVersion(allocator, conn, agent.tenant_id) catch 0;
         const __tmp = try std.fmt.allocPrint(allocator, "\"yara_pack_version\":{d},", .{yv});
+        defer allocator.free(__tmp);
+        try out.appendSlice(allocator, __tmp);
+    }
+    {
+        // Carry the action public key so agents enrolled before #57 pin it on
+        // their next heartbeat (trust on first use).
+        const act_kp = try state.actionKey(io);
+        var kb: [44]u8 = undefined;
+        const kb64 = std.base64.standard.Encoder.encode(&kb, &act_kp.public_key.bytes);
+        const __tmp = try std.fmt.allocPrint(allocator, "\"action_public_key\":\"{s}\",", .{kb64});
         defer allocator.free(__tmp);
         try out.appendSlice(allocator, __tmp);
     }

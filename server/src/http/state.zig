@@ -7,12 +7,11 @@ pub var peer_ip: []const u8 = "127.0.0.1";
 
 pub var agent_kp: ?Ed25519.KeyPair = null;
 
-/// Signs YARA rule packs for agents (#56). Set at startup from
-/// TAWNY_RULE_SIGNING_KEY like the JWT seed. Kept apart from `agent_kp`
-/// so a leaked JWT key can't sign rules. Issue #57 adds a server action key;
-/// that change can fold this key into it, keeping `rulePackKey` as the one
-/// accessor.
-pub var rule_kp: ?Ed25519.KeyPair = null;
+/// Server action key (#57). One Ed25519 key signs response actions and YARA
+/// rule packs (#56). Set at startup from TAWNY_ACTION_SIGNING_KEY (or the
+/// deprecated TAWNY_RULE_SIGNING_KEY). Kept apart from `agent_kp` so a leaked
+/// JWT key can't sign commands or rules.
+pub var action_kp: ?Ed25519.KeyPair = null;
 
 const RateBucket = struct {
     window_start: i64,
@@ -70,47 +69,56 @@ pub fn configureAgentKey(io: std.Io, seed_text: ?[]const u8, dev: bool) !SeedSou
     return chosen.source;
 }
 
-pub const RuleKeyError = error{RuleSigningKeyMalformed};
+pub const ActionKeyError = error{ActionSigningKeyMalformed};
 
-/// Rule-pack signing seed. TAWNY_RULE_SIGNING_KEY (64 hex characters) wins.
-/// When it is unset the seed is derived from the agent JWT seed with
-/// HKDF-SHA256 and a label of its own, so a deployment that only sets
-/// TAWNY_AGENT_JWT_SEED keeps the same rule key across restarts, and the two
-/// Ed25519 keys still differ. A malformed value is refused, never ignored.
-pub fn ruleSeed(rule_text: ?[]const u8, jwt_seed: [32]u8) RuleKeyError!struct { seed: [32]u8, derived: bool } {
-    const text = rule_text orelse "";
-    if (text.len == 0) {
-        const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
-        const prk = Hkdf.extract("tawny-rule-pack-v1", &jwt_seed);
-        var seed: [32]u8 = undefined;
-        Hkdf.expand(&seed, "tawny rule pack signing key", prk);
-        return .{ .seed = seed, .derived = true };
-    }
+pub const ActionKeySource = enum { configured, legacy_rule_alias, derived };
+
+/// Action signing seed. TAWNY_ACTION_SIGNING_KEY (64 hex characters) wins,
+/// then the deprecated TAWNY_RULE_SIGNING_KEY. When neither is set the seed
+/// is derived from the agent JWT seed with HKDF-SHA256 and its own label, so
+/// a deployment that only sets TAWNY_AGENT_JWT_SEED keeps the same action key
+/// across restarts and the two Ed25519 keys still differ. A malformed value
+/// is refused, never ignored.
+pub fn actionSeed(action_text: ?[]const u8, legacy_rule_text: ?[]const u8, jwt_seed: [32]u8) ActionKeyError!struct { seed: [32]u8, source: ActionKeySource } {
+    const a = action_text orelse "";
+    const r = legacy_rule_text orelse "";
+    const text, const source: ActionKeySource = if (a.len > 0) .{ a, .configured } else if (r.len > 0) .{ r, .legacy_rule_alias } else .{ "", .derived };
     var seed: [32]u8 = undefined;
-    if (text.len != 64) return error.RuleSigningKeyMalformed;
-    _ = std.fmt.hexToBytes(&seed, text) catch return error.RuleSigningKeyMalformed;
-    return .{ .seed = seed, .derived = false };
+    if (source == .derived) {
+        const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
+        const prk = Hkdf.extract("tawny-action-key-v1", &jwt_seed);
+        Hkdf.expand(&seed, "tawny server action signing key", prk);
+        return .{ .seed = seed, .source = .derived };
+    }
+    if (text.len != 64) return error.ActionSigningKeyMalformed;
+    _ = std.fmt.hexToBytes(&seed, text) catch return error.ActionSigningKeyMalformed;
+    return .{ .seed = seed, .source = source };
 }
 
 /// Call after `configureAgentKey`.
-pub fn configureRuleKey(rule_text: ?[]const u8) !bool {
+pub fn configureActionKey(action_text: ?[]const u8, legacy_rule_text: ?[]const u8) !ActionKeySource {
     const jwt = agent_kp orelse return error.AgentKeyNotConfigured;
     var jwt_seed = jwt.secret_key.seed();
     defer std.crypto.secureZero(u8, &jwt_seed);
-    var chosen = try ruleSeed(rule_text, jwt_seed);
+    var chosen = try actionSeed(action_text, legacy_rule_text, jwt_seed);
     defer std.crypto.secureZero(u8, &chosen.seed);
-    rule_kp = try Ed25519.KeyPair.generateDeterministic(chosen.seed);
-    return chosen.derived;
+    action_kp = try Ed25519.KeyPair.generateDeterministic(chosen.seed);
+    return chosen.source;
 }
 
-/// Rule-pack signing key. Tests and one-off commands get a random key.
-pub fn rulePackKey(io: std.Io) !Ed25519.KeyPair {
-    if (rule_kp) |kp| return kp;
+/// The server action key. Tests and one-off commands get a random key.
+pub fn actionKey(io: std.Io) !Ed25519.KeyPair {
+    if (action_kp) |kp| return kp;
     var seed: [32]u8 = undefined;
     io.random(&seed);
     defer std.crypto.secureZero(u8, &seed);
-    rule_kp = try Ed25519.KeyPair.generateDeterministic(seed);
-    return rule_kp.?;
+    action_kp = try Ed25519.KeyPair.generateDeterministic(seed);
+    return action_kp.?;
+}
+
+/// YARA rule packs are signed with the action key.
+pub fn rulePackKey(io: std.Io) !Ed25519.KeyPair {
+    return actionKey(io);
 }
 
 /// Set from TAWNY_REQUIRE_SIGNED_BATCHES at startup. On unless set to 0, false or off.
@@ -229,22 +237,26 @@ test "principal and agent-events partitions do not collapse" {
     try std.testing.expect(!tooMany(io, "test-search", user_a, 1));
 }
 
-test "rule signing key: configured, derived, or refused" {
+test "action signing key: configured, legacy alias, derived, or refused" {
     const jwt: [32]u8 = @splat(7);
-    try std.testing.expectError(error.RuleSigningKeyMalformed, ruleSeed("abc", jwt));
-    try std.testing.expectError(error.RuleSigningKeyMalformed, ruleSeed("zz00000000000000000000000000000000000000000000000000000000000000", jwt));
-    const a = try ruleSeed(null, jwt);
-    const b = try ruleSeed("", jwt);
-    try std.testing.expect(a.derived and b.derived);
+    try std.testing.expectError(error.ActionSigningKeyMalformed, actionSeed("abc", null, jwt));
+    try std.testing.expectError(error.ActionSigningKeyMalformed, actionSeed(null, "abc", jwt));
+    try std.testing.expectError(error.ActionSigningKeyMalformed, actionSeed("zz00000000000000000000000000000000000000000000000000000000000000", null, jwt));
+    const a = try actionSeed(null, null, jwt);
+    const b = try actionSeed("", "", jwt);
+    try std.testing.expect(a.source == .derived and b.source == .derived);
     try std.testing.expectEqualSlices(u8, &a.seed, &b.seed);
     // Derived seed is not the JWT seed itself.
     try std.testing.expect(!std.mem.eql(u8, &a.seed, &jwt));
     const other_jwt: [32]u8 = @splat(8);
-    const c = try ruleSeed(null, other_jwt);
+    const c = try actionSeed(null, null, other_jwt);
     try std.testing.expect(!std.mem.eql(u8, &a.seed, &c.seed));
-    const set = try ruleSeed("00000000000000000000000000000000000000000000000000000000000000ff", jwt);
-    try std.testing.expect(!set.derived);
+    const set = try actionSeed("00000000000000000000000000000000000000000000000000000000000000ff", "00000000000000000000000000000000000000000000000000000000000000ee", jwt);
+    try std.testing.expectEqual(ActionKeySource.configured, set.source);
     try std.testing.expectEqual(@as(u8, 0xff), set.seed[31]);
+    const legacy = try actionSeed(null, "00000000000000000000000000000000000000000000000000000000000000ee", jwt);
+    try std.testing.expectEqual(ActionKeySource.legacy_rule_alias, legacy.source);
+    try std.testing.expectEqual(@as(u8, 0xee), legacy.seed[31]);
 }
 
 test "agent seed refuses missing and malformed values outside dev mode" {
