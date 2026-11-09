@@ -17,6 +17,19 @@ const auth = @import("../http/auth.zig");
 const reasoning = @import("../ai/reasoning.zig");
 const ai_job = @import("../jobs/ai_reasoning.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/ai/config", .perm = .read },
+    .{ .method = .PUT, .path = "/api/ai/config", .perm = .admin },
+    .{ .method = .GET, .path = "/api/ai/findings", .perm = .read },
+    .{ .method = .GET, .path = "/api/ai/findings/:id", .perm = .read },
+    .{ .method = .GET, .path = "/api/ai/investigations", .perm = .read },
+    .{ .method = .GET, .path = "/api/ai/investigations/:id", .perm = .read },
+    .{ .method = .GET, .path = "/api/ai/metrics", .perm = .read },
+    .{ .method = .POST, .path = "/api/ai/observations", .perm = .admin },
+};
+
+
 /// GET /api/ai/config — Get current AI configuration.
 pub fn getConfig(
     allocator: std.mem.Allocator,

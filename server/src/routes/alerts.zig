@@ -7,6 +7,22 @@ const audit = @import("../http/audit.zig");
 const exposure_import = @import("../detect/exposure_import.zig");
 const sigma = @import("../detect/sigma.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/alert-rules", .perm = .read },
+    .{ .method = .POST, .path = "/api/alert-rules", .perm = .admin },
+    .{ .method = .POST, .path = "/api/alert-rules/exposures", .perm = .admin },
+    .{ .method = .POST, .path = "/api/alert-rules/sigma", .perm = .admin },
+    .{ .method = .POST, .path = "/api/alert-rules/iocs", .perm = .admin },
+    .{ .method = .PUT, .path = "/api/alert-rules/:id", .perm = .admin },
+    .{ .method = .DELETE, .path = "/api/alert-rules/:id", .perm = .admin },
+    .{ .method = .GET, .path = "/api/alerts", .perm = .read },
+    .{ .method = .GET, .path = "/api/alerts/:id", .perm = .read },
+    .{ .method = .POST, .path = "/api/alerts/:id/acknowledge", .perm = .triage },
+    .{ .method = .POST, .path = "/api/alerts/:id/resolve", .perm = .triage },
+};
+
+
 fn ruleResponseJson(allocator: std.mem.Allocator, cols: []const ?[]u8) ![]u8 {
     // id name format external_id description event_type severity operator payload_path match_value source_definition is_enabled mitre created updated
     const id = try util.escapeJson(allocator, cols[0] orelse "");

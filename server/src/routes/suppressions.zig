@@ -5,6 +5,15 @@ const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/suppression-rules", .perm = .read },
+    .{ .method = .POST, .path = "/api/suppression-rules", .perm = .exception_create },
+    .{ .method = .PUT, .path = "/api/suppression-rules/:id", .perm = .admin },
+    .{ .method = .DELETE, .path = "/api/suppression-rules/:id", .perm = .admin },
+};
+
+
 const rule_select =
     \\SELECT s.id::text, s.name, s.reason, s.scope, s.alert_rule_id::text, ar.name,
     \\       s.agent_id::text, ag.hostname, s.payload_path, s.operator, s.match_value,
@@ -57,6 +66,10 @@ pub fn create(
     };
     defer fields.deinit();
     if (try reject(request, allocator, fields.value)) return;
+    // Analysts may add exceptions, never without saying why (target-edr section 11).
+    if (web.role != .admin and blankToNull(fields.value.reason) == null) {
+        return util.problem(request, allocator, .bad_request, "reason is required.");
+    }
     var id_buf: [36]u8 = undefined;
     const id = util.newUuid(io, &id_buf);
     try write(io, conn, web, id, fields.value, true);

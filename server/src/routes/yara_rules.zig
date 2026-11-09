@@ -20,6 +20,14 @@ const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const state = @import("../http/state.zig");
+
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/agent/yara-rules", .perm = .agent },
+    .{ .method = .GET, .path = "/api/yara/rule-key", .perm = .read },
+    .{ .method = .POST, .path = "/api/alert-rules/yara", .perm = .admin },
+};
+
 const Ed25519 = std.crypto.sign.Ed25519;
 
 pub const pack_format = "tawny-yara-pack-v1";

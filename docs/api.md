@@ -10,7 +10,54 @@ Three schemes:
 
 - **Agent JWT.** `Authorization: Bearer <jwt>` on agent endpoints. New tokens are Ed25519 (EdDSA). Tokens signed with the previous RSA key still verify until the next heartbeat rotates them. Lifetime is 60 minutes. Claims include `agent_id`, `tenant_id`, `cv`, `jti`, `iss`, `aud`, `exp`, and `iat`. Revoked agents and a stale `cv` are rejected. Telemetry batches may include an Ed25519 `signature` when a device public key was registered at enroll.
 - **Session.** HttpOnly, Secure, SameSite=Lax cookie `tawny_session`. Idle 8 hours, absolute 7 days. `GET /api/auth/session` returns the CSRF secret. State-changing session requests send `X-CSRF-Token`. There is no HMAC hop and no separate web process.
-- **API token.** `Authorization: Bearer twny_...` on automation endpoints. Tokens inherit one tenant and an Admin or Viewer role. They do not send the session cookie or the CSRF header.
+- **API token.** `Authorization: Bearer twny_...` on automation endpoints. Tokens inherit one tenant and an admin, analyst or viewer role. They do not send the session cookie or the CSRF header.
+- **Microsoft Entra ID.** `GET /api/auth/oidc/start?tenant=<uuid>` and `/api/auth/oidc/callback` sign a user in and set the same session cookie. Setup is in [entra-sso.md](entra-sso.md). `GET /api/auth/methods?tenant=<uuid>` (public) says whether Entra ID is on and whether passwords are limited to break-glass admins.
+
+## Roles and permissions
+
+Three roles. Each route file in `server/src/routes/` declares its routes and the permission each needs (`pub const routes`). `server/src/http/permissions.zig` checks the permission before any handler runs, and its test checks every route below against each role. A route that is not declared answers 404. A signed-in user without the permission gets 403; no session gets 401.
+
+| Permission | admin | analyst | viewer |
+|---|---|---|---|
+| `read`: agents, events, process trees, alerts, incidents, rules, hunts, feeds, exceptions, audit log, ATT&CK coverage, AI findings | yes | yes | yes |
+| `triage`: acknowledge and resolve alerts, assign incidents, set incident status | yes | yes | no |
+| `hunt_run`: run ad hoc and saved hunts | yes | yes | no |
+| `respond`: request response actions | yes | yes, destructive ones may wait for approval | no |
+| `exception_create`: add a suppression rule, with a reason | yes | yes, reason required | no |
+| `admin`: users, API tokens, enrolment tokens, agent revoke, rules and rule imports, saved hunt changes, feeds, exception edit and delete, AI config, tenant settings, Entra ID config, jobs, approving actions | yes | no | no |
+
+Per route:
+
+| Route | Permission |
+|---|---|
+| `POST /api/auth/login`, `GET /api/auth/methods`, `GET /api/auth/github/start`, `GET /api/auth/github/callback`, `GET /api/auth/oidc/start`, `GET /api/auth/oidc/callback`, `POST /api/agents/enroll` | public |
+| `POST /api/agents/heartbeat`, `POST /api/agents/events`, `POST /api/agents/actions/{id}/result`, `POST /api/agent/yara-rules`, `POST /api/agent/update-check` | agent JWT |
+| `POST /api/auth/logout`, `GET /api/auth/session`, `POST /api/auth/password` | read |
+| `GET /api/agents`, `GET /api/agents/{id}`, `GET /api/agents/{id}/events`, `GET /api/agents/{id}/events/stream`, `GET /api/agents/{id}/process-tree`, `GET /api/agents/{id}/actions`, `GET /api/agents/{id}/actions/{actionId}` | read |
+| `GET /api/alerts`, `GET /api/alerts/{id}`, `GET /api/incidents`, `GET /api/incidents/{id}`, `GET /api/attack/coverage` | read |
+| `GET /api/alert-rules`, `GET /api/hunts`, `GET /api/hunts/{id}`, `GET /api/hunts/{id}/runs`, `GET /api/threat-intel-feeds`, `GET /api/suppression-rules`, `POST /api/threat-intel/lookup` | read |
+| `GET /api/api-tokens`, `GET /api/audit-logs`, `GET /api/releases/latest`, `GET /api/yara/rule-key`, `GET /api/ai/config`, `GET /api/ai/findings[/{id}]`, `GET /api/ai/investigations[/{id}]`, `GET /api/ai/metrics` | read |
+| `POST /api/alerts/{id}/acknowledge`, `POST /api/alerts/{id}/resolve`, `POST /api/incidents/{id}/assign`, `POST /api/incidents/{id}/status` | triage |
+| `POST /api/hunts/run`, `POST /api/hunts/{id}/run` | hunt_run |
+| `POST /api/agents/{id}/actions` | respond |
+| `POST /api/suppression-rules` | exception_create |
+| `GET/POST /api/users`, `PUT/DELETE /api/users/{id}`, `POST /api/api-tokens`, `POST /api/enrollment-tokens`, `POST /api/agents/{id}/revoke`, `POST /api/agents/{id}/actions/{actionId}/approve` | admin |
+| `POST /api/alert-rules`, `POST /api/alert-rules/{sigma,iocs,yara,exposures}`, `PUT/DELETE /api/alert-rules/{id}`, `POST /api/hunts`, `PUT/DELETE /api/hunts/{id}` | admin |
+| `POST /api/threat-intel-feeds`, `PUT/DELETE /api/threat-intel-feeds/{id}`, `POST /api/threat-intel-feeds/{id}/run`, `PUT/DELETE /api/suppression-rules/{id}` | admin |
+| `PUT /api/ai/config`, `POST /api/ai/observations`, `GET /api/admin/jobs`, `GET/PUT /api/settings/tenant`, `GET/PUT /api/settings/oidc` | admin |
+
+### Tenant settings
+
+`GET` and `PUT /api/settings/tenant`:
+
+```json
+{"password_login": "all", "analyst_destructive_needs_approval": false}
+```
+
+- `password_login`: `all`, or `break_glass` to allow passwords only for admins marked break-glass (`PUT /api/users/{id}` with `{"break_glass": true}`). Setting `break_glass` is refused while no active admin with a password is marked. The bootstrap admin is marked when it is created.
+- `analyst_destructive_needs_approval`: when true, `isolate_host` and `quarantine_file` requested by an analyst are stored as `awaiting_approval`. The agent does not receive them until a different admin calls `POST /api/agents/{id}/actions/{actionId}/approve`, which sets `pending` and restarts the 15 minute deadline.
+
+`GET` and `PUT /api/settings/oidc` hold the Entra ID configuration; see [entra-sso.md](entra-sso.md). The client secret is write only: `GET` returns `client_secret_set`.
 
 ## Agent endpoints
 
@@ -437,6 +484,41 @@ reports `failed` with a clear reason until nftables isolation lands (#59).
 ### GET `/api/agents/{id}/actions` and `/api/agents/{id}/actions/{actionId}`
 
 Web user or any `twny_` API token (Viewer can read action history and status).
+
+### POST `/api/alerts/{id}/acknowledge` and `/api/alerts/{id}/resolve`
+
+Triage. Return `{"id": 7, "status": "acknowledged"}` or `"resolved"`. Acknowledging a resolved alert leaves it resolved.
+
+### Incidents
+
+Detection groups each new alert into an incident (`server/src/detect/incidents.zig`, target-edr section 8). An alert joins an open incident (`new` or `investigating`) last seen within 4 hours when:
+
+1. `lineage`: same agent and the same lineage root, the oldest ancestor in `process_entities` below a session root such as `explorer.exe` or `services.exe`;
+2. `artefact`: same agent and same user, and a shared file sha256, domain or public IP;
+3. `indicator`: any agent, the same IOC rule or the same file sha256.
+
+Otherwise it opens a new incident (`grouping` is `alert` when there was nothing to group on).
+
+Risk is the section 7 noisy-OR: each distinct rule is one evidence item scored `weight × confidence × context`, and `risk = 100 × (1 − Π(1 − points/100))`. Weights come from rule severity (critical 60, high 30, medium 20, low 10) and IOC rules count 50. Severity is `critical` at 85 or more, `high` at 65, `medium` at 40, else `low`, and never lower than a critical alert in the incident. `risk_items` lists every item and its points.
+
+- `GET /api/incidents?status=open|new|investigating|resolved|false_positive&limit=100`: newest first.
+- `GET /api/incidents/{id}`: the incident plus `alerts`, its timeline, with each alert's event payload.
+- `POST /api/incidents/{id}/assign` `{"owner_user_id": "<uuid>" | null}`: owner must be an active admin or analyst. Assigning a `new` incident moves it to `investigating`.
+- `POST /api/incidents/{id}/status` `{"status": "new" | "investigating" | "resolved" | "false_positive"}`: resolving or marking false positive also resolves its open alerts.
+
+Incident fields: `id`, `title`, `status`, `severity`, `risk`, `risk_items`, `owner_user_id`, `owner_email`, `grouping`, `root_entity_id`, `agent_ids`, `users`, `techniques`, `first_seen_at`, `last_seen_at`, `created_at`, `updated_at`, `alert_count`, `soc_case_status`.
+
+When the Tawny-SOC sink is on (`TAWNY_SOC_ENABLED`, `TAWNY_SOC_ENDPOINT_URL`, `TAWNY_SOC_API_TOKEN`; `TAWNY_SOC_INCIDENTS_ENABLED=false` turns incidents off), each incident and each later change is posted to Tawny-SOC's `POST /api/ingest/tawny` as one alert with a stable `alert_id` and an `incident` object (risk, items, techniques, agents, link). Tawny-SOC's `/api/v1/cases` is read only, so the case itself is opened in Tawny-SOC.
+
+### GET `/api/attack/coverage?platform=windows|linux|macos`
+
+ATT&CK Enterprise 20.1 techniques (from `rules/attack/techniques.json`) by tactic, each with three states worked out separately:
+
+- `telemetry.available`: an agent on the platform that heartbeated in the last 15 minutes, with no sensor failed, missing or denied, sent one of the technique's event types (from `rules/attack/coverage.yaml`) in the last 24 hours. `sources` names them; `expected` lists what the map wants.
+- `detection.available`: an enabled rule lists the exact technique id. `rules` names them. A rule on `T1059` does not count for `T1059.001`.
+- `response.available`: an action listed for the technique runs on the platform. `actions` names them.
+
+None is read from another: a rule with no telemetry shows detection without telemetry. `mapped` is false for techniques with no coverage map entry.
 
 ### GET `/api/alerts/{id}`
 

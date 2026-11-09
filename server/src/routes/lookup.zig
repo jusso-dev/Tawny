@@ -5,6 +5,12 @@ const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/threat-intel/lookup", .perm = .read },
+};
+
+
 pub fn lookup(
     allocator: std.mem.Allocator,
     conn: *pg.Conn,

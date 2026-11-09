@@ -9,6 +9,16 @@ const audit = @import("../http/audit.zig");
 const secrets = @import("../crypto/secret_box.zig");
 const threat_intel = @import("../jobs/threat_intel.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/threat-intel-feeds", .perm = .read },
+    .{ .method = .POST, .path = "/api/threat-intel-feeds", .perm = .admin },
+    .{ .method = .PUT, .path = "/api/threat-intel-feeds/:id", .perm = .admin },
+    .{ .method = .DELETE, .path = "/api/threat-intel-feeds/:id", .perm = .admin },
+    .{ .method = .POST, .path = "/api/threat-intel-feeds/:id/run", .perm = .admin },
+};
+
+
 const feed_select =
     \\SELECT id::text, name, kind, url, auth_header_name, default_severity,
     \\       interval_minutes::text, is_enabled::text, status,

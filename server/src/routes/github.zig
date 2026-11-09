@@ -2,6 +2,13 @@ const std = @import("std");
 const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
+
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/auth/github/start", .perm = .public },
+    .{ .method = .GET, .path = "/api/auth/github/callback", .perm = .public },
+};
+
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 fn envSpan(name: [*:0]const u8) ?[]const u8 {
