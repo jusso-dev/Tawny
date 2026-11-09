@@ -6,6 +6,19 @@ const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const query = @import("../hunts/query.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/hunts/run", .perm = .hunt_run },
+    .{ .method = .GET, .path = "/api/hunts", .perm = .read },
+    .{ .method = .POST, .path = "/api/hunts", .perm = .admin },
+    .{ .method = .GET, .path = "/api/hunts/:id", .perm = .read },
+    .{ .method = .PUT, .path = "/api/hunts/:id", .perm = .admin },
+    .{ .method = .DELETE, .path = "/api/hunts/:id", .perm = .admin },
+    .{ .method = .POST, .path = "/api/hunts/:id/run", .perm = .hunt_run },
+    .{ .method = .GET, .path = "/api/hunts/:id/runs", .perm = .read },
+};
+
+
 const hunt_select =
     \\SELECT id::text, name, description, query, is_scheduled::text, schedule_cron,
     \\       alert_on_match::text, alert_severity, mitre_techniques::text, is_shared::text,

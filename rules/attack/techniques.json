@@ -1,0 +1,3119 @@
+{
+ "attack_spec": "enterprise-attack",
+ "attack_version": "20.1",
+ "source": "https://github.com/mitre-attack/attack-stix-data/blob/master/enterprise-attack/enterprise-attack-20.1.json",
+ "source_sha256": "539a843a7b53ed9749740b2123dddae3726b1a4831841c32aca740b011b910b5",
+ "note": "Subset: only techniques named by Tawny rules or rules/attack/coverage.yaml. Regenerate with rules/attack/subset.py.",
+ "tactics": [
+  {
+   "shortname": "reconnaissance",
+   "name": "Reconnaissance",
+   "id": "TA0043"
+  },
+  {
+   "shortname": "resource-development",
+   "name": "Resource Development",
+   "id": "TA0042"
+  },
+  {
+   "shortname": "initial-access",
+   "name": "Initial Access",
+   "id": "TA0001"
+  },
+  {
+   "shortname": "execution",
+   "name": "Execution",
+   "id": "TA0002"
+  },
+  {
+   "shortname": "persistence",
+   "name": "Persistence",
+   "id": "TA0003"
+  },
+  {
+   "shortname": "privilege-escalation",
+   "name": "Privilege Escalation",
+   "id": "TA0004"
+  },
+  {
+   "shortname": "stealth",
+   "name": "Stealth",
+   "id": "TA0005"
+  },
+  {
+   "shortname": "defense-impairment",
+   "name": "Defense Impairment",
+   "id": "TA0112"
+  },
+  {
+   "shortname": "credential-access",
+   "name": "Credential Access",
+   "id": "TA0006"
+  },
+  {
+   "shortname": "discovery",
+   "name": "Discovery",
+   "id": "TA0007"
+  },
+  {
+   "shortname": "lateral-movement",
+   "name": "Lateral Movement",
+   "id": "TA0008"
+  },
+  {
+   "shortname": "collection",
+   "name": "Collection",
+   "id": "TA0009"
+  },
+  {
+   "shortname": "command-and-control",
+   "name": "Command and Control",
+   "id": "TA0011"
+  },
+  {
+   "shortname": "exfiltration",
+   "name": "Exfiltration",
+   "id": "TA0010"
+  },
+  {
+   "shortname": "impact",
+   "name": "Impact",
+   "id": "TA0040"
+  }
+ ],
+ "techniques": [
+  {
+   "id": "T1003",
+   "name": "OS Credential Dumping",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.001",
+   "name": "OS Credential Dumping: LSASS Memory",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.002",
+   "name": "OS Credential Dumping: Security Account Manager",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.003",
+   "name": "OS Credential Dumping: NTDS",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.004",
+   "name": "OS Credential Dumping: LSA Secrets",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.005",
+   "name": "OS Credential Dumping: Cached Domain Credentials",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows",
+    "Linux"
+   ]
+  },
+  {
+   "id": "T1003.006",
+   "name": "OS Credential Dumping: DCSync",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1003.008",
+   "name": "OS Credential Dumping: /etc/passwd and /etc/shadow",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux"
+   ]
+  },
+  {
+   "id": "T1005",
+   "name": "Data from Local System",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1007",
+   "name": "System Service Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1012",
+   "name": "Query Registry",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1016",
+   "name": "System Network Configuration Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1018",
+   "name": "Remote System Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1021",
+   "name": "Remote Services",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "IaaS",
+    "ESXi"
+   ]
+  },
+  {
+   "id": "T1021.001",
+   "name": "Remote Services: Remote Desktop Protocol",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1021.002",
+   "name": "Remote Services: SMB/Windows Admin Shares",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1021.003",
+   "name": "Remote Services: Distributed Component Object Model",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1021.004",
+   "name": "Remote Services: SSH",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1021.005",
+   "name": "Remote Services: VNC",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1021.006",
+   "name": "Remote Services: Windows Remote Management",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027",
+   "name": "Obfuscated Files or Information",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027.003",
+   "name": "Obfuscated Files or Information: Steganography",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027.004",
+   "name": "Obfuscated Files or Information: Compile After Delivery",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027.005",
+   "name": "Obfuscated Files or Information: Indicator Removal from Tools",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027.009",
+   "name": "Obfuscated Files or Information: Embedded Payloads",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1027.010",
+   "name": "Obfuscated Files or Information: Command Obfuscation",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1033",
+   "name": "System Owner/User Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036",
+   "name": "Masquerading",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036.002",
+   "name": "Masquerading: Right-to-Left Override",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036.003",
+   "name": "Masquerading: Rename Legitimate Utilities",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036.004",
+   "name": "Masquerading: Masquerade Task or Service",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036.005",
+   "name": "Masquerading: Match Legitimate Resource Name or Location",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1036.007",
+   "name": "Masquerading: Double File Extension",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1037.001",
+   "name": "Boot or Logon Initialization Scripts: Logon Script (Windows)",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1039",
+   "name": "Data from Network Shared Drive",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1040",
+   "name": "Network Sniffing",
+   "tactics": [
+    "credential-access",
+    "discovery"
+   ],
+   "platforms": [
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1046",
+   "name": "Network Service Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Containers",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1047",
+   "name": "Windows Management Instrumentation",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1048",
+   "name": "Exfiltration Over Alternative Protocol",
+   "tactics": [
+    "exfiltration"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1048.001",
+   "name": "Exfiltration Over Alternative Protocol: Exfiltration Over Symmetric Encrypted Non-C2 Protocol",
+   "tactics": [
+    "exfiltration"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "ESXi"
+   ]
+  },
+  {
+   "id": "T1048.003",
+   "name": "Exfiltration Over Alternative Protocol: Exfiltration Over Unencrypted Non-C2 Protocol",
+   "tactics": [
+    "exfiltration"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1049",
+   "name": "System Network Connections Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1053",
+   "name": "Scheduled Task/Job",
+   "tactics": [
+    "execution",
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1053.002",
+   "name": "Scheduled Task/Job: At",
+   "tactics": [
+    "execution",
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows",
+    "Linux",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1053.003",
+   "name": "Scheduled Task/Job: Cron",
+   "tactics": [
+    "execution",
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "ESXi"
+   ]
+  },
+  {
+   "id": "T1053.005",
+   "name": "Scheduled Task/Job: Scheduled Task",
+   "tactics": [
+    "execution",
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1055",
+   "name": "Process Injection",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1055.001",
+   "name": "Process Injection: Dynamic-link Library Injection",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1055.012",
+   "name": "Process Injection: Process Hollowing",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1056.002",
+   "name": "Input Capture: GUI Input Capture",
+   "tactics": [
+    "collection",
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1057",
+   "name": "Process Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1059",
+   "name": "Command and Scripting Interpreter",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1059.001",
+   "name": "Command and Scripting Interpreter: PowerShell",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Windows",
+    "Linux",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1059.003",
+   "name": "Command and Scripting Interpreter: Windows Command Shell",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1059.004",
+   "name": "Command and Scripting Interpreter: Unix Shell",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices"
+   ]
+  },
+  {
+   "id": "T1059.005",
+   "name": "Command and Scripting Interpreter: Visual Basic",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1059.006",
+   "name": "Command and Scripting Interpreter: Python",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1059.007",
+   "name": "Command and Scripting Interpreter: JavaScript",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1068",
+   "name": "Exploitation for Privilege Escalation",
+   "tactics": [
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Containers",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1069",
+   "name": "Permission Groups Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Containers",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1069.001",
+   "name": "Permission Groups Discovery: Local Groups",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1069.002",
+   "name": "Permission Groups Discovery: Domain Groups",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1070",
+   "name": "Indicator Removal",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1070.003",
+   "name": "Indicator Removal: Clear Command History",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1070.004",
+   "name": "Indicator Removal: File Deletion",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1070.005",
+   "name": "Indicator Removal: Network Share Connection Removal",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1071",
+   "name": "Application Layer Protocol",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "Network Devices",
+    "ESXi"
+   ]
+  },
+  {
+   "id": "T1071.001",
+   "name": "Application Layer Protocol: Web Protocols",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1071.004",
+   "name": "Application Layer Protocol: DNS",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1072",
+   "name": "Software Deployment Tools",
+   "tactics": [
+    "execution",
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1074.001",
+   "name": "Data Staged: Local Data Staging",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1078",
+   "name": "Valid Accounts",
+   "tactics": [
+    "stealth",
+    "persistence",
+    "privilege-escalation",
+    "initial-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1078.002",
+   "name": "Valid Accounts: Domain Accounts",
+   "tactics": [
+    "stealth",
+    "persistence",
+    "privilege-escalation",
+    "initial-access"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1078.003",
+   "name": "Valid Accounts: Local Accounts",
+   "tactics": [
+    "stealth",
+    "persistence",
+    "privilege-escalation",
+    "initial-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1082",
+   "name": "System Information Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1083",
+   "name": "File and Directory Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1087",
+   "name": "Account Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1087.001",
+   "name": "Account Discovery: Local Account",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1087.002",
+   "name": "Account Discovery: Domain Account",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1090",
+   "name": "Proxy",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1090.001",
+   "name": "Proxy: Internal Proxy",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1090.003",
+   "name": "Proxy: Multi-hop Proxy",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1095",
+   "name": "Non-Application Layer Protocol",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1098",
+   "name": "Account Manipulation",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1102",
+   "name": "Web Service",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1102.002",
+   "name": "Web Service: Bidirectional Communication",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1105",
+   "name": "Ingress Tool Transfer",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1106",
+   "name": "Native API",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1110",
+   "name": "Brute Force",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1110.001",
+   "name": "Brute Force: Password Guessing",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1110.002",
+   "name": "Brute Force: Password Cracking",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Office Suite",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1110.003",
+   "name": "Brute Force: Password Spraying",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Identity Provider",
+    "Linux",
+    "Network Devices",
+    "Office Suite",
+    "SaaS",
+    "Windows",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1112",
+   "name": "Modify Registry",
+   "tactics": [
+    "defense-impairment",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1113",
+   "name": "Screen Capture",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1114",
+   "name": "Email Collection",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Windows",
+    "macOS",
+    "Linux",
+    "Office Suite"
+   ]
+  },
+  {
+   "id": "T1115",
+   "name": "Clipboard Data",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1119",
+   "name": "Automated Collection",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1120",
+   "name": "Peripheral Device Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1123",
+   "name": "Audio Capture",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1124",
+   "name": "System Time Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1127",
+   "name": "Trusted Developer Utilities Proxy Execution",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1132.001",
+   "name": "Data Encoding: Standard Encoding",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1133",
+   "name": "External Remote Services",
+   "tactics": [
+    "persistence",
+    "initial-access"
+   ],
+   "platforms": [
+    "Containers",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1134",
+   "name": "Access Token Manipulation",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1134.001",
+   "name": "Access Token Manipulation: Token Impersonation/Theft",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1134.002",
+   "name": "Access Token Manipulation: Create Process with Token",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1134.003",
+   "name": "Access Token Manipulation: Make and Impersonate Token",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1134.004",
+   "name": "Access Token Manipulation: Parent PID Spoofing",
+   "tactics": [
+    "stealth",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1135",
+   "name": "Network Share Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1136.001",
+   "name": "Create Account: Local Account",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1136.002",
+   "name": "Create Account: Domain Account",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1140",
+   "name": "Deobfuscate/Decode Files or Information",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1176.001",
+   "name": "Software Extensions: Browser Extensions",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1185",
+   "name": "Browser Session Hijacking",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1187",
+   "name": "Forced Authentication",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1190",
+   "name": "Exploit Public-Facing Application",
+   "tactics": [
+    "initial-access"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1195.002",
+   "name": "Supply Chain Compromise: Compromise Software Supply Chain",
+   "tactics": [
+    "initial-access"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1197",
+   "name": "BITS Jobs",
+   "tactics": [
+    "stealth",
+    "persistence",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1201",
+   "name": "Password Policy Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Windows",
+    "Linux",
+    "macOS",
+    "IaaS",
+    "Network Devices",
+    "Identity Provider",
+    "SaaS",
+    "Office Suite"
+   ]
+  },
+  {
+   "id": "T1202",
+   "name": "Indirect Command Execution",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1203",
+   "name": "Exploitation for Client Execution",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1204",
+   "name": "User Execution",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS",
+    "IaaS",
+    "Containers"
+   ]
+  },
+  {
+   "id": "T1204.001",
+   "name": "User Execution: Malicious Link",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1204.002",
+   "name": "User Execution: Malicious File",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1204.004",
+   "name": "User Execution: Malicious Copy and Paste",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1210",
+   "name": "Exploitation of Remote Services",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS",
+    "ESXi"
+   ]
+  },
+  {
+   "id": "T1211",
+   "name": "Exploitation for Stealth",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS",
+    "SaaS",
+    "IaaS"
+   ]
+  },
+  {
+   "id": "T1212",
+   "name": "Exploitation for Credential Access",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows",
+    "macOS",
+    "Identity Provider"
+   ]
+  },
+  {
+   "id": "T1216",
+   "name": "System Script Proxy Execution",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1216.001",
+   "name": "System Script Proxy Execution: PubPrn",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1217",
+   "name": "Browser Information Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218",
+   "name": "System Binary Proxy Execution",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.001",
+   "name": "System Binary Proxy Execution: Compiled HTML File",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.002",
+   "name": "System Binary Proxy Execution: Control Panel",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.003",
+   "name": "System Binary Proxy Execution: CMSTP",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.005",
+   "name": "System Binary Proxy Execution: Mshta",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.007",
+   "name": "System Binary Proxy Execution: Msiexec",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.008",
+   "name": "System Binary Proxy Execution: Odbcconf",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.009",
+   "name": "System Binary Proxy Execution: Regsvcs/Regasm",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.010",
+   "name": "System Binary Proxy Execution: Regsvr32",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.011",
+   "name": "System Binary Proxy Execution: Rundll32",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.013",
+   "name": "System Binary Proxy Execution: Mavinject",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1218.014",
+   "name": "System Binary Proxy Execution: MMC",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1219",
+   "name": "Remote Access Tools",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1219.002",
+   "name": "Remote Access Tools: Remote Desktop Software",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1220",
+   "name": "XSL Script Processing",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1222.001",
+   "name": "File and Directory Permissions Modification: Windows Permissions",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1482",
+   "name": "Domain Trust Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1484.001",
+   "name": "Domain or Tenant Policy Modification: Group Policy Modification",
+   "tactics": [
+    "defense-impairment",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1485",
+   "name": "Data Destruction",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1486",
+   "name": "Data Encrypted for Impact",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1489",
+   "name": "Service Stop",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1490",
+   "name": "Inhibit System Recovery",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1491.001",
+   "name": "Defacement: Internal Defacement",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1496",
+   "name": "Resource Hijacking",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "Windows",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Containers",
+    "SaaS"
+   ]
+  },
+  {
+   "id": "T1505.002",
+   "name": "Server Software Component: Transport Agent",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1505.003",
+   "name": "Server Software Component: Web Shell",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1505.004",
+   "name": "Server Software Component: IIS Components",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1505.005",
+   "name": "Server Software Component: Terminal Services DLL",
+   "tactics": [
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1518",
+   "name": "Software Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1518.001",
+   "name": "Software Discovery: Security Software Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1526",
+   "name": "Cloud Service Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "IaaS",
+    "Identity Provider",
+    "Office Suite",
+    "SaaS"
+   ]
+  },
+  {
+   "id": "T1528",
+   "name": "Steal Application Access Token",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Containers",
+    "IaaS",
+    "Identity Provider",
+    "Office Suite",
+    "SaaS"
+   ]
+  },
+  {
+   "id": "T1529",
+   "name": "System Shutdown/Reboot",
+   "tactics": [
+    "impact"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1539",
+   "name": "Steal Web Session Cookie",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1542.001",
+   "name": "Pre-OS Boot: System Firmware",
+   "tactics": [
+    "stealth",
+    "persistence"
+   ],
+   "platforms": [
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1542.003",
+   "name": "Pre-OS Boot: Bootkit",
+   "tactics": [
+    "stealth",
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1543",
+   "name": "Create or Modify System Process",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Containers",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1543.001",
+   "name": "Create or Modify System Process: Launch Agent",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1543.003",
+   "name": "Create or Modify System Process: Windows Service",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1543.004",
+   "name": "Create or Modify System Process: Launch Daemon",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1546",
+   "name": "Event Triggered Execution",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "SaaS",
+    "IaaS",
+    "Office Suite"
+   ]
+  },
+  {
+   "id": "T1546.001",
+   "name": "Event Triggered Execution: Change Default File Association",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.002",
+   "name": "Event Triggered Execution: Screensaver",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.003",
+   "name": "Event Triggered Execution: Windows Management Instrumentation Event Subscription",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.004",
+   "name": "Event Triggered Execution: Unix Shell Configuration Modification",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS"
+   ]
+  },
+  {
+   "id": "T1546.007",
+   "name": "Event Triggered Execution: Netsh Helper DLL",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.008",
+   "name": "Event Triggered Execution: Accessibility Features",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.011",
+   "name": "Event Triggered Execution: Application Shimming",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1546.015",
+   "name": "Event Triggered Execution: Component Object Model Hijacking",
+   "tactics": [
+    "privilege-escalation",
+    "persistence"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1547",
+   "name": "Boot or Logon Autostart Execution",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "Network Devices"
+   ]
+  },
+  {
+   "id": "T1547.001",
+   "name": "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1547.002",
+   "name": "Boot or Logon Autostart Execution: Authentication Package",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1547.010",
+   "name": "Boot or Logon Autostart Execution: Port Monitors",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1547.014",
+   "name": "Boot or Logon Autostart Execution: Active Setup",
+   "tactics": [
+    "persistence",
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1548",
+   "name": "Abuse Elevation Control Mechanism",
+   "tactics": [
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows",
+    "IaaS",
+    "Office Suite",
+    "Identity Provider"
+   ]
+  },
+  {
+   "id": "T1548.002",
+   "name": "Abuse Elevation Control Mechanism: Bypass User Account Control",
+   "tactics": [
+    "privilege-escalation"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1550.003",
+   "name": "Use Alternate Authentication Material: Pass the Ticket",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1552",
+   "name": "Unsecured Credentials",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows",
+    "SaaS",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Containers",
+    "Network Devices",
+    "Office Suite",
+    "Identity Provider"
+   ]
+  },
+  {
+   "id": "T1552.001",
+   "name": "Unsecured Credentials: Credentials In Files",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Containers",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1552.002",
+   "name": "Unsecured Credentials: Credentials in Registry",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1552.004",
+   "name": "Unsecured Credentials: Private Keys",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1552.006",
+   "name": "Unsecured Credentials: Group Policy Preferences",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1553",
+   "name": "Subvert Trust Controls",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1553.004",
+   "name": "Subvert Trust Controls: Install Root Certificate",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1553.005",
+   "name": "Subvert Trust Controls: Mark-of-the-Web Bypass",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1555",
+   "name": "Credentials from Password Stores",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1555.003",
+   "name": "Credentials from Password Stores: Credentials from Web Browsers",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1555.004",
+   "name": "Credentials from Password Stores: Windows Credential Manager",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1556.002",
+   "name": "Modify Authentication Process: Password Filter DLL",
+   "tactics": [
+    "defense-impairment",
+    "persistence",
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1557",
+   "name": "Adversary-in-the-Middle",
+   "tactics": [
+    "credential-access",
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1557.001",
+   "name": "Adversary-in-the-Middle: Name Resolution Poisoning and SMB Relay",
+   "tactics": [
+    "credential-access",
+    "collection"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1558.003",
+   "name": "Steal or Forge Kerberos Tickets: Kerberoasting",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1560",
+   "name": "Archive Collected Data",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1560.001",
+   "name": "Archive Collected Data: Archive via Utility",
+   "tactics": [
+    "collection"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1563.002",
+   "name": "Remote Service Session Hijacking: RDP Hijacking",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564",
+   "name": "Hide Artifacts",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564.001",
+   "name": "Hide Artifacts: Hidden Files and Directories",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564.002",
+   "name": "Hide Artifacts: Hidden Users",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564.003",
+   "name": "Hide Artifacts: Hidden Window",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564.004",
+   "name": "Hide Artifacts: NTFS File Attributes",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1564.006",
+   "name": "Hide Artifacts: Run Virtual Instance",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1566",
+   "name": "Phishing",
+   "tactics": [
+    "initial-access"
+   ],
+   "platforms": [
+    "Identity Provider",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1566.001",
+   "name": "Phishing: Spearphishing Attachment",
+   "tactics": [
+    "initial-access"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1567",
+   "name": "Exfiltration Over Web Service",
+   "tactics": [
+    "exfiltration"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Office Suite",
+    "SaaS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1567.002",
+   "name": "Exfiltration Over Web Service: Exfiltration to Cloud Storage",
+   "tactics": [
+    "exfiltration"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1568",
+   "name": "Dynamic Resolution",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1569",
+   "name": "System Services",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Windows",
+    "macOS",
+    "Linux"
+   ]
+  },
+  {
+   "id": "T1569.002",
+   "name": "System Services: Service Execution",
+   "tactics": [
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1570",
+   "name": "Lateral Tool Transfer",
+   "tactics": [
+    "lateral-movement"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1572",
+   "name": "Protocol Tunneling",
+   "tactics": [
+    "command-and-control"
+   ],
+   "platforms": [
+    "ESXi",
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574",
+   "name": "Hijack Execution Flow",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574.001",
+   "name": "Hijack Execution Flow: DLL",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574.005",
+   "name": "Hijack Execution Flow: Executable Installer File Permissions Weakness",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574.007",
+   "name": "Hijack Execution Flow: Path Interception by PATH Environment Variable",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574.008",
+   "name": "Hijack Execution Flow: Path Interception by Search Order Hijacking",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1574.011",
+   "name": "Hijack Execution Flow: Services Registry Permissions Weakness",
+   "tactics": [
+    "stealth",
+    "execution"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1587",
+   "name": "Develop Capabilities",
+   "tactics": [
+    "resource-development"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1587.001",
+   "name": "Develop Capabilities: Malware",
+   "tactics": [
+    "resource-development"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1588.002",
+   "name": "Obtain Capabilities: Tool",
+   "tactics": [
+    "resource-development"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1590.001",
+   "name": "Gather Victim Network Information: Domain Properties",
+   "tactics": [
+    "reconnaissance"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1593.003",
+   "name": "Search Open Websites/Domains: Code Repositories",
+   "tactics": [
+    "reconnaissance"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1595",
+   "name": "Active Scanning",
+   "tactics": [
+    "reconnaissance"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1608",
+   "name": "Stage Capabilities",
+   "tactics": [
+    "resource-development"
+   ],
+   "platforms": [
+    "PRE"
+   ]
+  },
+  {
+   "id": "T1614.001",
+   "name": "System Location Discovery: System Language Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1615",
+   "name": "Group Policy Discovery",
+   "tactics": [
+    "discovery"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1620",
+   "name": "Reflective Code Loading",
+   "tactics": [
+    "stealth"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1622",
+   "name": "Debugger Evasion",
+   "tactics": [
+    "stealth",
+    "discovery"
+   ],
+   "platforms": [
+    "Linux",
+    "macOS",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1649",
+   "name": "Steal or Forge Authentication Certificates",
+   "tactics": [
+    "credential-access"
+   ],
+   "platforms": [
+    "Windows",
+    "Linux",
+    "macOS",
+    "Identity Provider"
+   ]
+  },
+  {
+   "id": "T1685",
+   "name": "Disable or Modify Tools",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Containers",
+    "ESXi",
+    "IaaS",
+    "Linux",
+    "macOS",
+    "Network Devices",
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1685.001",
+   "name": "Disable or Modify Tools: Disable or Modify Windows Event Log",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1685.005",
+   "name": "Disable or Modify Tools: Clear Windows Event Logs",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1686.003",
+   "name": "Disable or Modify System Firewall: Windows Host Firewall",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "Windows"
+   ]
+  },
+  {
+   "id": "T1689",
+   "name": "Downgrade Attack",
+   "tactics": [
+    "defense-impairment"
+   ],
+   "platforms": [
+    "macOS",
+    "Windows",
+    "Linux"
+   ]
+  }
+ ]
+}

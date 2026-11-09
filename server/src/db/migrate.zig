@@ -15,6 +15,8 @@ const windows_response_sql = @embedFile("migrations/0006_windows_response.sql");
 const windows_response_version = "0006_windows_response";
 const agent_hardening_sql = @embedFile("migrations/0007_agent_hardening.sql");
 const agent_hardening_version = "0007_agent_hardening";
+const server_analyst_sql = @embedFile("migrations/0008_server_analyst.sql");
+const server_analyst_version = "0008_server_analyst";
 
 pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try conn.execSimple(
@@ -34,6 +36,7 @@ pub fn apply(allocator: std.mem.Allocator, conn: *pg.Conn) !void {
     try applyScript(allocator, conn, detection_engine_version, detection_engine_sql, true);
     try applyScript(allocator, conn, windows_response_version, windows_response_sql, true);
     try applyScript(allocator, conn, agent_hardening_version, agent_hardening_sql, true);
+    try applyScript(allocator, conn, server_analyst_version, server_analyst_sql, true);
     try conn.execSimple("GRANT EXECUTE ON FUNCTION tawny_purge_expired(timestamptz) TO tawny_jobs");
     try ensurePartitions(conn);
 }
@@ -170,7 +173,8 @@ pub fn migrationsCurrent(allocator: std.mem.Allocator, conn: *pg.Conn) !bool {
     return try migrationApplied(allocator, conn, migration_version) and
         try migrationApplied(allocator, conn, purge_version) and
         try migrationApplied(allocator, conn, ai_reasoning_version) and
-        try migrationApplied(allocator, conn, process_entities_version);
+        try migrationApplied(allocator, conn, process_entities_version) and
+        try migrationApplied(allocator, conn, server_analyst_version);
 }
 
 test "civil month of the zig 0.17 release day" {

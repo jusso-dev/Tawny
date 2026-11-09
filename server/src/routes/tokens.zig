@@ -4,6 +4,14 @@ const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .POST, .path = "/api/api-tokens", .perm = .admin },
+    .{ .method = .GET, .path = "/api/api-tokens", .perm = .read },
+    .{ .method = .GET, .path = "/api/audit-logs", .perm = .read },
+};
+
+
 pub fn createApiToken(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -31,7 +39,7 @@ pub fn createApiToken(
     }
     const role = parsed.value.role orelse "viewer";
     if (auth.roleFromText(role) == null) {
-        return util.problem(request, allocator, .bad_request, "role must be admin or viewer.");
+        return util.problem(request, allocator, .bad_request, "role must be admin, analyst or viewer.");
     }
 
     var raw: [32]u8 = undefined;

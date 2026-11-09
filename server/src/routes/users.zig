@@ -5,11 +5,21 @@ const auth = @import("../http/auth.zig");
 const audit = @import("../http/audit.zig");
 const passwords = @import("../crypto/passwords.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/users", .perm = .admin },
+    .{ .method = .POST, .path = "/api/users", .perm = .admin },
+    .{ .method = .PUT, .path = "/api/users/:id", .perm = .admin },
+    .{ .method = .DELETE, .path = "/api/users/:id", .perm = .admin },
+};
+
+
 pub fn normalizeRole(role: ?[]const u8) error{BadRole}![]const u8 {
     const raw = role orelse return "viewer";
     if (raw.len == 0) return "viewer";
     if (std.ascii.eqlIgnoreCase(raw, "viewer")) return "viewer";
     if (std.ascii.eqlIgnoreCase(raw, "admin")) return "admin";
+    if (std.ascii.eqlIgnoreCase(raw, "analyst")) return "analyst";
     return error.BadRole;
 }
 
@@ -126,7 +136,7 @@ pub fn create(
         return util.problem(request, allocator, .bad_request, "password is too short.");
     }
     const role = normalizeRole(parsed.value.role) catch {
-        return util.problem(request, allocator, .bad_request, "role must be admin or viewer.");
+        return util.problem(request, allocator, .bad_request, "role must be admin, analyst or viewer.");
     };
     const email = try std.ascii.allocLowerString(allocator, parsed.value.email);
     defer allocator.free(email);
@@ -192,6 +202,7 @@ pub fn update(
         role: ?[]const u8 = null,
         password: ?[]const u8 = null,
         disabled: ?bool = null,
+        break_glass: ?bool = null,
     };
     var parsed = std.json.parseFromSlice(Req, allocator, body, .{ .ignore_unknown_fields = true }) catch {
         return util.problem(request, allocator, .bad_request, "invalid user update.");
@@ -212,7 +223,7 @@ pub fn update(
     }
     if (parsed.value.role) |role_raw| {
         const role = normalizeRole(role_raw) catch {
-            return util.problem(request, allocator, .bad_request, "role must be admin or viewer.");
+            return util.problem(request, allocator, .bad_request, "role must be admin, analyst or viewer.");
         };
         if (std.mem.eql(u8, user_id, web.user_id) and !std.mem.eql(u8, role, "admin")) {
             return util.problem(request, allocator, .bad_request, "cannot remove your own admin role.");
@@ -247,6 +258,16 @@ pub fn update(
         } else {
             try conn.execNoRows("UPDATE users SET disabled_at = NULL WHERE id = $1::uuid", &.{.{ .text = user_id }});
         }
+    }
+    if (parsed.value.break_glass) |glass| {
+        // Break-glass keeps password sign-in when the tenant limits it. Only
+        // admins with a password can hold it.
+        const rows = try conn.exec(allocator,
+            \\UPDATE users SET break_glass = $2::boolean WHERE id = $1::uuid
+            \\  AND (NOT $2::boolean OR (role = 'admin' AND password_hash IS NOT NULL)) RETURNING id::text
+        , &.{ .{ .text = user_id }, .{ .text = if (glass) "true" else "false" } });
+        defer freeRows(allocator, rows);
+        if (rows.len == 0) return util.problem(request, allocator, .bad_request, "break_glass needs an admin with a password.");
     }
     try audit.add(allocator, io, conn, web.tenant_id, web.user_id, "user.update", user_id, null);
     return getOne(allocator, conn, request, web, user_id);
@@ -316,5 +337,6 @@ test "omitted role is viewer" {
     try std.testing.expectEqualStrings("viewer", try normalizeRole(null));
     try std.testing.expectEqualStrings("viewer", try normalizeRole(""));
     try std.testing.expectEqualStrings("admin", try normalizeRole("Admin"));
+    try std.testing.expectEqualStrings("analyst", try normalizeRole("ANALYST"));
     try std.testing.expectError(error.BadRole, normalizeRole("owner"));
 }

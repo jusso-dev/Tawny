@@ -270,6 +270,8 @@ const restart_agent = "00000000-0000-0000-0000-0000000c00a5";
 fn cleanupRestart(conn: *pg.Conn) void {
     const stmts = [_][]const u8{
         "DELETE FROM work_queue WHERE tenant_id = $1::uuid",
+        "DELETE FROM incident_alerts WHERE tenant_id = $1::uuid",
+        "DELETE FROM incidents WHERE tenant_id = $1::uuid",
         "DELETE FROM alerts WHERE tenant_id = $1::uuid",
         "DELETE FROM sequence_state WHERE tenant_id = $1::uuid",
         "DELETE FROM threshold_counters WHERE tenant_id = $1::uuid",

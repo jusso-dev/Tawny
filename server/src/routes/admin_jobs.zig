@@ -4,6 +4,12 @@ const pg = @import("../db/pg/conn.zig");
 const util = @import("../http/util.zig");
 const auth = @import("../http/auth.zig");
 
+/// Route permissions, enforced by http/permissions.zig before the handler runs.
+pub const routes = [_]@import("../http/permissions.zig").Route{
+    .{ .method = .GET, .path = "/api/admin/jobs", .perm = .admin },
+};
+
+
 pub fn list(
     allocator: std.mem.Allocator,
     conn: *pg.Conn,

@@ -6,6 +6,7 @@ const util = @import("http/util.zig");
 const state = @import("http/state.zig");
 const detect = @import("jobs/detect.zig");
 const deliver = @import("jobs/deliver.zig");
+const incident_sink = @import("jobs/incident_sink.zig");
 const purge = @import("jobs/purge.zig");
 const stale = @import("jobs/stale.zig");
 const agent_alerts = @import("jobs/agent_alerts.zig");
@@ -228,6 +229,9 @@ fn runJobs(
     if (deliver.drain(allocator, io, conn, sink_targets)) |_| {} else |err| {
         std.debug.print("sink drain failed: {s}\n", .{@errorName(err)});
     }
+    if (incident_sink.drain(allocator, io, conn, socIncidentConfig())) |_| {} else |err| {
+        std.debug.print("incident sink drain failed: {s}\n", .{@errorName(err)});
+    }
     const now = util.nowUnix(io);
     if (now - last_purge.* >= 3600) {
         last_purge.* = now;
@@ -351,6 +355,19 @@ fn envPort(key: [*:0]const u8, fallback: u16) u16 {
     return std.fmt.parseInt(u16, value, 10) catch fallback;
 }
 
+/// Incidents go to Tawny-SOC when TAWNY_SOC_ENABLED is on, an endpoint is
+/// set and TAWNY_SOC_INCIDENTS_ENABLED is not "false".
+fn socIncidentConfig() incident_sink.Config {
+    if (!envFlag("TAWNY_SOC_ENABLED")) return .{};
+    if (std.ascii.eqlIgnoreCase(envSpan("TAWNY_SOC_INCIDENTS_ENABLED"), "false")) return .{};
+    return .{
+        .endpoint = envSpan("TAWNY_SOC_ENDPOINT_URL"),
+        .token = envSpan("TAWNY_SOC_API_TOKEN"),
+        .public_url = envSpanDefault("TAWNY_PUBLIC_URL", ""),
+        .allow_private = envFlag("TAWNY_ALLOW_PRIVATE_EGRESS"),
+    };
+}
+
 fn envFlag(key: [*:0]const u8) bool {
     const value = envSpan(key);
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
@@ -462,6 +479,14 @@ comptime {
     _ = @import("http/dispatch.zig");
     _ = @import("http/state.zig");
     _ = @import("http/auth.zig");
+    _ = @import("http/permissions.zig");
+    _ = @import("routes/settings.zig");
+    _ = @import("routes/incidents.zig");
+    _ = @import("routes/attack.zig");
+    _ = @import("routes/oidc.zig");
+    _ = @import("detect/incidents.zig");
+    _ = @import("detect/incidents_test.zig");
+    _ = @import("jobs/incident_sink.zig");
     _ = @import("http/util.zig");
     _ = @import("http/static.zig");
     _ = @import("routes/admin_jobs.zig");

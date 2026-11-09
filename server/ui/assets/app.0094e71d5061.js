@@ -31,8 +31,8 @@
 
   function nav(active) {
     var groups = [
-      ["Operations", [["/", "Dashboard"], ["/agents", "Agents"], ["/alerts", "Alerts"]]],
-      ["Analysis", [["/hunt", "Hunt"]]],
+      ["Operations", [["/", "Dashboard"], ["/incidents", "Incidents"], ["/agents", "Agents"], ["/alerts", "Alerts"]]],
+      ["Analysis", [["/hunt", "Hunt"], ["/attack", "ATT&CK coverage"]]],
       ["Detection", [["/detections", "Detections"], ["/threat-intel", "Threat intel"], ["/suppressions", "Suppressions"]]],
       ["System", [["/audit", "Audit"], ["/api-tokens", "Tokens"], ["/enrollment", "Enrollment"], ["/users", "Users"], ["/admin/jobs", "Jobs"]]],
     ];
@@ -124,6 +124,24 @@
     var github = el("a", "Continue with GitHub");
     github.href = "/api/auth/github/start";
     form.appendChild(github);
+    var entra = el("a", "Sign in with Microsoft Entra ID");
+    entra.href = "/api/auth/oidc/start";
+    entra.hidden = true;
+    form.appendChild(entra);
+    var note = el("p", "", "muted");
+    note.hidden = true;
+    form.appendChild(note);
+    fetch("/api/auth/methods", { credentials: "same-origin", headers: { accept: "application/json" } })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (m) {
+        if (!m) return;
+        if (m.entra) entra.hidden = false;
+        if (m.password === "break_glass") {
+          note.hidden = false;
+          note.textContent = "Password sign-in is for break-glass admins only.";
+        }
+      })
+      .catch(function () {});
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       submit.disabled = true;
@@ -220,13 +238,25 @@
         listing.appendChild(table(
           ["Type", "Status", "Requested"],
           rows.map(function (a) {
-            return [a.action_type || "", a.status || "", a.requested_at || ""];
+            var status = a.status || "";
+            if (status === "awaiting_approval" && isAdmin()) {
+              var approve = el("button", "Approve", "linkish");
+              approve.type = "button";
+              approve.addEventListener("click", function () {
+                api("POST", "/api/agents/" + id + "/actions/" + a.id + "/approve", {}).then(function (res) {
+                  if (res.status !== 200) return alert((res.body && res.body.title) || ("HTTP " + res.status));
+                  reload();
+                });
+              });
+              status = approve;
+            }
+            return [a.action_type || "", status, a.requested_at || ""];
           })
         ));
       });
     }
 
-    if (isAdmin()) {
+    if (canTriage()) {
       var form = el("div");
       var select = document.createElement("select");
       ACTION_TYPES.forEach(function (t) {
@@ -252,6 +282,7 @@
           payload: body,
         }).then(function (res) {
           if (res.status !== 201) return alert("Action failed: HTTP " + res.status);
+          if (res.body && res.body.status === "awaiting_approval") alert("Queued. An admin must approve this action before the agent receives it.");
           payload.value = "";
           reload();
         });
@@ -278,7 +309,7 @@
     return text;
   }
 
-  function renderProcessTree(view, id) {
+  function renderProcessTree(view, id, initialEntity) {
     var card = el("div", null, "card");
     card.appendChild(el("p", "Process tree", "muted"));
     var picker = document.createElement("select");
@@ -335,20 +366,249 @@
         picker.appendChild(opt);
       });
       picker.addEventListener("change", function () { show(picker.value); });
-      show(list[0].entity_id);
+      if (initialEntity) {
+        if (!list.some(function (p) { return p.entity_id === initialEntity; })) {
+          var opt = document.createElement("option");
+          opt.value = initialEntity;
+          opt.textContent = "Incident root " + initialEntity;
+          picker.insertBefore(opt, picker.firstChild);
+        }
+        picker.value = initialEntity;
+        show(initialEntity);
+      } else show(list[0].entity_id);
     });
   }
 
+  function triageButtons(alertRow, done) {
+    var box = el("span", null, "row");
+    if (!canTriage() || alertRow.status === "resolved") return box;
+    [["acknowledge", "Acknowledge"], ["resolve", "Resolve"]].forEach(function (pair) {
+      if (pair[0] === "acknowledge" && alertRow.status === "acknowledged") return;
+      var b = el("button", pair[1], "linkish");
+      b.type = "button";
+      b.addEventListener("click", function () {
+        api("POST", "/api/alerts/" + alertRow.id + "/" + pair[0], {}).then(function (res) {
+          if (res.status !== 200) return alert((res.body && res.body.title) || ("HTTP " + res.status));
+          done();
+        });
+      });
+      box.appendChild(b);
+    });
+    return box;
+  }
+
   function renderAlerts(view) {
-    api("GET", "/api/alerts?limit=100").then(function (res) {
-      if (res.status !== 200 || !Array.isArray(res.body)) return showError(view.main, res);
+    var slot = el("div");
+    view.main.appendChild(slot);
+    function load() {
+      api("GET", "/api/alerts?limit=100").then(function (res) {
+        slot.textContent = "";
+        if (res.status !== 200 || !Array.isArray(res.body)) return showError(slot, res);
+        slot.appendChild(table(
+          ["Id", "Severity", "Status", "Title", "Host", "Created", ""],
+          res.body.map(function (row) {
+            return [row.id, row.severity, row.status, row.title, row.hostname, row.created_at, triageButtons(row, load)];
+          })
+        ));
+      });
+    }
+    load();
+  }
+
+  // Incidents (target-edr sections 7, 8 and 12).
+  var INCIDENT_STATUSES = ["new", "investigating", "resolved", "false_positive"];
+
+  function renderIncidents(view) {
+    var filter = document.createElement("select");
+    filter.setAttribute("aria-label", "Status");
+    [["open", "Open"], ["", "All"]].concat(INCIDENT_STATUSES.map(function (s) { return [s, s.replace("_", " ")]; })).forEach(function (pair) {
+      var opt = document.createElement("option");
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      filter.appendChild(opt);
+    });
+    var bar = el("div", null, "row");
+    bar.appendChild(filter);
+    view.main.appendChild(bar);
+    var slot = el("div");
+    view.main.appendChild(slot);
+    function load() {
+      var q = filter.value ? "?status=" + encodeURIComponent(filter.value) : "";
+      api("GET", "/api/incidents" + q).then(function (res) {
+        slot.textContent = "";
+        if (res.status !== 200 || !Array.isArray(res.body)) return showError(slot, res);
+        if (!res.body.length) {
+          slot.appendChild(el("p", "No incidents.", "card muted"));
+          return;
+        }
+        slot.appendChild(table(
+          ["Risk", "Severity", "Status", "Title", "Alerts", "Owner", "Techniques", "Last seen"],
+          res.body.map(function (inc) {
+            var link = el("a", inc.title);
+            link.href = "/incidents/" + inc.id;
+            return [String(inc.risk), inc.severity, inc.status.replace("_", " "), link, String(inc.alert_count),
+              inc.owner_email || "", (inc.techniques || []).join(", "), inc.last_seen_at];
+          })
+        ));
+      });
+    }
+    filter.addEventListener("change", load);
+    load();
+  }
+
+  function renderIncident(view, id) {
+    api("GET", "/api/incidents/" + id).then(function (res) {
+      if (res.status !== 200 || !res.body) return showError(view.main, res);
+      var inc = res.body;
+      var head = el("div", null, "card");
+      head.appendChild(el("h2", inc.title));
+      head.appendChild(el("p", "Risk " + inc.risk + " (" + inc.severity + ") · " + inc.status.replace("_", " ") +
+        " · grouped by " + inc.grouping + " · " + inc.alert_count + " alerts", "muted"));
+      head.appendChild(el("p", "First seen " + inc.first_seen_at + " · last seen " + inc.last_seen_at, "muted"));
+      if (inc.users && inc.users.length) head.appendChild(el("p", "Users: " + inc.users.join(", "), "muted"));
+      view.main.appendChild(head);
+
+      if (canTriage()) {
+        var controls = el("div", null, "card row");
+        var status = document.createElement("select");
+        status.setAttribute("aria-label", "Incident status");
+        INCIDENT_STATUSES.forEach(function (s) {
+          var opt = document.createElement("option");
+          opt.value = s;
+          opt.textContent = s.replace("_", " ");
+          if (s === inc.status) opt.selected = true;
+          status.appendChild(opt);
+        });
+        var setStatus = el("button", "Set status", "linkish");
+        setStatus.type = "button";
+        setStatus.addEventListener("click", function () {
+          api("POST", "/api/incidents/" + id + "/status", { status: status.value }).then(function (r) {
+            if (r.status !== 200) return alert((r.body && r.body.title) || ("HTTP " + r.status));
+            location.reload();
+          });
+        });
+        var mine = el("button", inc.owner_user_id === me.id ? "Unassign" : "Assign to me", "linkish");
+        mine.type = "button";
+        mine.addEventListener("click", function () {
+          var owner = inc.owner_user_id === me.id ? null : me.id;
+          api("POST", "/api/incidents/" + id + "/assign", { owner_user_id: owner }).then(function (r) {
+            if (r.status !== 200) return alert((r.body && r.body.title) || ("HTTP " + r.status));
+            location.reload();
+          });
+        });
+        controls.appendChild(status);
+        controls.appendChild(setStatus);
+        controls.appendChild(mine);
+        controls.appendChild(el("span", "Owner: " + (inc.owner_email || "none"), "muted"));
+        view.main.appendChild(controls);
+      }
+
+      // Why: every evidence item and its points (target-edr section 7).
+      view.main.appendChild(el("h2", "Risk breakdown"));
       view.main.appendChild(table(
-        ["Id", "Severity", "Status", "Title", "Host", "Created"],
-        res.body.map(function (alert) {
-          return [alert.id, alert.severity, alert.status, alert.title, alert.hostname, alert.created_at];
+        ["Evidence", "Kind", "Weight", "Confidence", "Context", "Points"],
+        (inc.risk_items || []).map(function (i) {
+          return [i.label, i.kind, String(i.weight), String(i.confidence), String(i.context), String(i.points)];
         })
       ));
+      view.main.appendChild(el("p", "Risk = 100 × (1 − Π(1 − points/100)), each item counted once.", "muted"));
+
+      view.main.appendChild(el("h2", "ATT&CK techniques"));
+      var techs = el("div", null, "row");
+      (inc.techniques || []).forEach(function (t) {
+        var a = el("a", t, "chip");
+        a.href = "https://attack.mitre.org/techniques/" + t.replace(".", "/") + "/";
+        a.rel = "noopener noreferrer";
+        a.target = "_blank";
+        techs.appendChild(a);
+      });
+      if (!(inc.techniques || []).length) techs.appendChild(el("span", "None mapped.", "muted"));
+      view.main.appendChild(techs);
+
+      view.main.appendChild(el("h2", "Timeline"));
+      var alerts = inc.alerts || [];
+      view.main.appendChild(table(
+        ["When", "Host", "Rule", "Severity", "Status", "Event", "Grouped by", ""],
+        alerts.map(function (a) {
+          var proc = (a.payload && a.payload.process) || {};
+          var what = a.event_type || "";
+          if (proc.image || proc.command_line) what += ": " + (proc.command_line || proc.image);
+          return [a.occurred_at, a.hostname, a.rule_name, a.severity, a.status, what, a.reason,
+            triageButtons(a, function () { location.reload(); })];
+        })
+      ));
+
+      // Process tree and response panel for each agent in the incident.
+      var agentIds = inc.agent_ids || [];
+      agentIds.forEach(function (agentId) {
+        var host = (alerts.find(function (a) { return a.agent_id === agentId; }) || {}).hostname || agentId;
+        view.main.appendChild(el("h2", host));
+        var link = el("a", "Open agent");
+        link.href = "/agents/" + agentId;
+        view.main.appendChild(link);
+        renderProcessTree(view, agentId, inc.root_entity_id);
+        renderActions(view, agentId);
+      });
     });
+  }
+
+  // ATT&CK coverage matrix: three separate states per technique (section 6).
+  function renderAttack(view) {
+    var platform = document.createElement("select");
+    platform.setAttribute("aria-label", "Platform");
+    [["", "All platforms"], ["windows", "Windows"], ["linux", "Linux"], ["macos", "macOS"]].forEach(function (pair) {
+      var opt = document.createElement("option");
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      platform.appendChild(opt);
+    });
+    var only = document.createElement("input");
+    only.type = "checkbox";
+    var onlyLabel = el("label", "Mapped techniques only", "row");
+    onlyLabel.appendChild(only);
+    var bar = el("div", null, "row");
+    bar.appendChild(platform);
+    bar.appendChild(onlyLabel);
+    view.main.appendChild(bar);
+    view.main.appendChild(el("p", "T telemetry from a healthy agent · D an enabled rule · R a response action applies. Each is checked on its own.", "muted"));
+    var slot = el("div", null, "attack-matrix");
+    view.main.appendChild(slot);
+    function load() {
+      var q = platform.value ? "?platform=" + platform.value : "";
+      api("GET", "/api/attack/coverage" + q).then(function (res) {
+        slot.textContent = "";
+        if (res.status !== 200 || !res.body) return showError(slot, res);
+        var data = res.body;
+        slot.appendChild(el("p", "ATT&CK Enterprise " + data.attack_version, "muted"));
+        var grid = el("div", null, "attack-grid");
+        (data.tactics || []).forEach(function (tactic) {
+          var col = el("div", null, "attack-col");
+          col.appendChild(el("h3", tactic.name));
+          (data.techniques || []).filter(function (t) {
+            return t.tactics.indexOf(tactic.shortname) >= 0 && (!only.checked || t.mapped || t.detection.available);
+          }).forEach(function (t) {
+            var cell = el("div", null, "attack-cell");
+            cell.title = t.id + " " + t.name +
+              "\nTelemetry: " + (t.telemetry.available ? t.telemetry.sources.join(", ") : "none (expects " + (t.telemetry.expected.join(", ") || "unmapped") + ")") +
+              "\nDetection: " + (t.detection.available ? t.detection.rules.join(", ") : "no enabled rule") +
+              "\nResponse: " + (t.response.available ? t.response.actions.join(", ") : "none");
+            cell.appendChild(el("span", t.id, "attack-id"));
+            cell.appendChild(el("span", t.name, "attack-name"));
+            var states = el("span", null, "attack-states");
+            [["T", t.telemetry.available], ["D", t.detection.available], ["R", t.response.available]].forEach(function (st) {
+              states.appendChild(el("span", st[0], st[1] ? "state on" : "state off"));
+            });
+            cell.appendChild(states);
+            col.appendChild(cell);
+          });
+          grid.appendChild(col);
+        });
+        slot.appendChild(grid);
+      });
+    }
+    platform.addEventListener("change", load);
+    only.addEventListener("change", load);
+    load();
   }
 
   function renderAudit(view) {
@@ -431,10 +691,19 @@
     password.type = "password";
     password.required = true;
     password.placeholder = "password";
-    var button = el("button", "Add viewer", "primary");
+    var role = document.createElement("select");
+    role.setAttribute("aria-label", "Role");
+    ["viewer", "analyst", "admin"].forEach(function (r) {
+      var opt = document.createElement("option");
+      opt.value = r;
+      opt.textContent = r;
+      role.appendChild(opt);
+    });
+    var button = el("button", "Add user", "primary");
     button.type = "submit";
     form.appendChild(email);
     form.appendChild(password);
+    form.appendChild(role);
     form.appendChild(button);
     view.main.appendChild(form);
     var slot = el("div");
@@ -451,7 +720,7 @@
     }
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      api("POST", "/api/users", { email: email.value, password: password.value, role: "viewer" }).then(function (res) {
+      api("POST", "/api/users", { email: email.value, password: password.value, role: role.value }).then(function (res) {
         if (res.status !== 200 && res.status !== 201) return showError(slot, res);
         email.value = "";
         password.value = "";
@@ -477,6 +746,11 @@
 
   function isAdmin() {
     return me && me.role === "admin";
+  }
+
+  // Analysts and admins triage, hunt, respond and add exceptions (docs/api.md).
+  function canTriage() {
+    return me && (me.role === "admin" || me.role === "analyst");
   }
 
   function textInput(value) {
@@ -943,7 +1217,7 @@
         ));
       });
     }
-    if (isAdmin()) {
+    if (canTriage()) {
       var form = el("form", null, "card");
       form.appendChild(el("h2", "Add suppression"));
       var name = textInput("");
@@ -1008,6 +1282,7 @@
       csrf = res.body.csrf_token || null;
       var view;
       var agent = path.match(/^\/agents\/([0-9a-f-]{36})$/i);
+      var incident = path.match(/^\/incidents\/([0-9a-f-]{36})$/i);
       if (path === "/" || path === "") {
         view = shell("/", "Dashboard", "Agents and open alerts.");
         renderAgents(view);
@@ -1021,6 +1296,15 @@
       } else if (path === "/alerts") {
         view = shell("/alerts", "Alerts", null);
         renderAlerts(view);
+      } else if (path === "/incidents") {
+        view = shell("/incidents", "Incidents", "Related alerts grouped by host, lineage and shared artefacts.");
+        renderIncidents(view);
+      } else if (incident) {
+        view = shell("/incidents", "Incident", null);
+        renderIncident(view, incident[1]);
+      } else if (path === "/attack") {
+        view = shell("/attack", "ATT&CK coverage", "Telemetry, detection and response for each technique.");
+        renderAttack(view);
       } else if (path === "/hunt") {
         view = shell("/hunt", "Hunt across telemetry", "Write a query, run it, then save or schedule it.");
         renderHunt(view);
@@ -1043,7 +1327,7 @@
         view = shell("/enrollment", "Enrollment", "Single-use wte_ tokens.");
         renderEnrollment(view);
       } else if (path === "/users") {
-        view = shell("/users", "Users", "Default role is viewer. No self-service signup.");
+        view = shell("/users", "Users", "Roles: admin, analyst, viewer. Default is viewer. No self-service signup.");
         renderUsers(view);
       } else if (path === "/admin/jobs") {
         view = shell("/admin/jobs", "Jobs", "In-process scheduler. Hangfire is gone.");
