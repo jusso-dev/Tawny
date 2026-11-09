@@ -289,6 +289,39 @@ pub fn tcpReachable(ipv4: []const u8, port: u16, timeout_ms: u32) bool {
     };
 }
 
+fn sdkGuid(d1: u32, d2: u16, d3: u16, d4: [8]u8) Guid {
+    return .{ .data1 = d1, .data2 = d2, .data3 = d3, .data4 = d4 };
+}
+
+// WFP layer and condition GUIDs from the Windows SDK fwpmu.h. Top level so
+// the pin test below runs on every OS.
+const sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V4 = sdkGuid(0xc38d57d1, 0x05a7, 0x4c33, .{ 0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82 });
+const sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V6 = sdkGuid(0x4a72393b, 0x319f, 0x44bc, .{ 0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4 });
+const sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4 = sdkGuid(0xe1cd9fe7, 0xf4b5, 0x4273, .{ 0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50 });
+const sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6 = sdkGuid(0xa3b42c97, 0x9f04, 0x4672, .{ 0xb8, 0x7e, 0xce, 0xe9, 0xc4, 0x83, 0x25, 0x7f });
+const sdk_FWPM_CONDITION_IP_REMOTE_ADDRESS = sdkGuid(0xb235ae9a, 0x1d64, 0x49b8, .{ 0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45 });
+const sdk_FWPM_CONDITION_IP_LOCAL_ADDRESS = sdkGuid(0xd9ee00de, 0xc1ef, 0x4617, .{ 0xbf, 0xe3, 0xff, 0xd8, 0xf5, 0xa0, 0x89, 0x57 });
+
+fn guidHex(x: Guid) [32]u8 {
+    var b: [16]u8 = undefined;
+    std.mem.writeInt(u32, b[0..4], x.data1, .big);
+    std.mem.writeInt(u16, b[4..6], x.data2, .big);
+    std.mem.writeInt(u16, b[6..8], x.data3, .big);
+    @memcpy(b[8..16], &x.data4);
+    return std.fmt.bytesToHex(b, .lower);
+}
+
+test "WFP layer and condition GUIDs match the Windows SDK" {
+    // Values from fwpmu.h as published in microsoft/windows-rs. A wrong layer
+    // GUID makes enumeration fail with FWP_E_LAYER_NOT_FOUND (0x80320004).
+    try std.testing.expectEqualStrings("c38d57d105a74c33904f7fbceee60e82", &guidHex(sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V4));
+    try std.testing.expectEqualStrings("4a72393b319f44bc84c3ba54dcb3b6b4", &guidHex(sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V6));
+    try std.testing.expectEqualStrings("e1cd9fe7f4b5427396c0592e487b8650", &guidHex(sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4));
+    try std.testing.expectEqualStrings("a3b42c979f044672b87ecee9c483257f", &guidHex(sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6));
+    try std.testing.expectEqualStrings("b235ae9a1d6449b8a44c5ff3d9095045", &guidHex(sdk_FWPM_CONDITION_IP_REMOTE_ADDRESS));
+    try std.testing.expectEqualStrings("d9ee00dec1ef4617bfe3ffd8f5a08957", &guidHex(sdk_FWPM_CONDITION_IP_LOCAL_ADDRESS));
+}
+
 const win = if (builtin.target.os.tag == .windows) struct {
     const WINAPI: std.lang.CallingConvention = .winapi;
     const HANDLE = *anyopaque;
@@ -314,12 +347,12 @@ const win = if (builtin.target.os.tag == .windows) struct {
     fn g(d1: u32, d2: u16, d3: u16, d4: [8]u8) G {
         return .{ .data1 = d1, .data2 = d2, .data3 = d3, .data4 = d4 };
     }
-    const FWPM_LAYER_ALE_AUTH_CONNECT_V4 = g(0xc38d57d1, 0x05a7, 0x4c33, .{ 0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82 });
-    const FWPM_LAYER_ALE_AUTH_CONNECT_V6 = g(0x4a72393b, 0x319f, 0x44bc, .{ 0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4 });
-    const FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4 = g(0xe1cd9fe7, 0xf4b5, 0x4273, .{ 0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50 });
-    const FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6 = g(0xa3b42c97, 0x9f04, 0x4672, .{ 0xb8, 0x7b, 0xca, 0xd7, 0xd3, 0xb2, 0xfa, 0x37 });
-    const FWPM_CONDITION_IP_REMOTE_ADDRESS = g(0xb235ae9a, 0x1d64, 0x49b8, .{ 0xa4, 0x4c, 0x5f, 0xf3, 0xd9, 0x09, 0x50, 0x45 });
-    const FWPM_CONDITION_IP_LOCAL_ADDRESS = g(0xd9ee00de, 0xc1ef, 0x4617, .{ 0xbf, 0xe3, 0xff, 0xd8, 0xf5, 0xa0, 0x89, 0x57 });
+    const FWPM_LAYER_ALE_AUTH_CONNECT_V4 = sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+    const FWPM_LAYER_ALE_AUTH_CONNECT_V6 = sdk_FWPM_LAYER_ALE_AUTH_CONNECT_V6;
+    const FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4 = sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4;
+    const FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6 = sdk_FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6;
+    const FWPM_CONDITION_IP_REMOTE_ADDRESS = sdk_FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    const FWPM_CONDITION_IP_LOCAL_ADDRESS = sdk_FWPM_CONDITION_IP_LOCAL_ADDRESS;
     // Our own provider key, distinct from the sublayer key.
     const provider_guid = g(0x7a3c1e54, 0x2b6d, 0x4f18, .{ 0x9c, 0x0a, 0x7a, 0x00, 0x00, 0x00, 0x00, 0x02 });
 
