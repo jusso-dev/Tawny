@@ -76,6 +76,11 @@ Auth: enrollment token (no JWT yet).
 }
 ```
 
+`os_version` is the endpoint's real OS version: Windows `major.minor.build`
+from `RtlGetVersion` (build ≥ 22000 is Windows 11), the macOS product
+version (e.g. `15.7.1`), or the Linux kernel release. It is `unknown` only
+when the platform query fails.
+
 Response `200`:
 
 ```json

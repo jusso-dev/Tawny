@@ -856,6 +856,9 @@ test "main module loads" {
     _ = @import("platform/windows/scm.zig");
     _ = @import("platform/windows/dpapi.zig");
     _ = @import("keystore_debug.zig");
+    // Platform version reporting is used from enrollment.run(); its tests
+    // (including the pure Windows wire-format helper) run on every host.
+    _ = @import("platform/version.zig");
     // Pure macOS parsers have no syscalls, so their tests run on every host.
     _ = @import("platform/macos/parse.zig");
     // Linux audit and Tetragon parsing and mapping are pure.

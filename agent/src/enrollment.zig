@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const Config = @import("config.zig").Config;
 const iox = @import("io_compat.zig");
 const keystore = @import("keystore.zig");
+const platform_version = @import("platform/version.zig");
 
 extern "kernel32" fn GetComputerNameA(
     name: [*]u8,
@@ -104,10 +105,20 @@ pub fn run(alloc: std.mem.Allocator, cfg: *Config, agent_version: []const u8) !v
     };
     defer if (device_pub) |p| alloc.free(p);
 
+    // A real OS version keeps the fleet's OS builds visible in the agents
+    // table (Windows 11 build >= 22000 is the WESP-eligibility fact);
+    // "unknown" only when the platform query itself fails.
+    const os_version = platform_version.osVersion(alloc) catch |err| blk: {
+        std.log.warn("os version unavailable ({s}); enrolling with \"unknown\"", .{@errorName(err)});
+        break :blk try alloc.dupe(u8, "unknown");
+    };
+    defer alloc.free(os_version);
+
     const body = try buildEnrollBody(alloc, .{
         .enrollment_token = token,
         .hostname = hostname,
         .os = os_str,
+        .os_version = os_version,
         .arch = arch_str,
         .agent_version = agent_version,
         .device_public_key = device_pub,
