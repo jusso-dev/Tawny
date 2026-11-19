@@ -1,6 +1,9 @@
 # Tawny — Target EDR Architecture
 
-Status: **proposal**, 2026-10-04. Baseline: [current-state.md](current-state.md).
+Status: **proposal**, 2026-10-04; updated 2026-11-19 after the Windows
+endpoint security platform GA announcement — see
+[windows-endpoint-security-platform.md](../windows-endpoint-security-platform.md).
+Baseline: [current-state.md](current-state.md).
 
 Goal: the smallest architecture that gives a small-business fleet useful
 endpoint protection — rich Windows telemetry, process lineage, behavioural and
@@ -272,6 +275,23 @@ falls back to Security 4688 and reports `sensor_health` degraded.
 The ETW design below is the later step. It stays the target for hosts where
 Sysmon cannot be installed and for data Sysmon does not give (token detail,
 Defender state).
+
+The Windows endpoint security platform (WESP) reached GA on Windows 11 in
+November 2026 and is the preferred source for file, process, registry,
+and Object Manager signal — plus user-mode blocking — wherever it is
+available. Unlike Sysmon, WESP needs no driver on the endpoint at all —
+not even a Microsoft-signed one — which is the direction the Driver
+Quality Initiative sets for the whole ecosystem. Where WESP is available
+it replaces the Sysmon-backed file/process/registry rows above; Sysmon,
+the Security log and the ETW design below stay the baseline for hosts
+without WESP (Windows 10, Server) and for sources WESP's initial release
+does not cover: DNS, PowerShell, authentication, services/tasks,
+Defender state, image loads. See
+[windows-endpoint-security-platform.md](../windows-endpoint-security-platform.md)
+for the event mapping, enforcement plan, resilience requirements, and the
+partner-access caveat. Envelope `sensor` ids are `wesp.file`,
+`wesp.process`, `wesp.registry`, `wesp.object` alongside the existing
+sources; one authoritative path per area, never double emission.
 
 | File | Source |
 |---|---|
@@ -598,8 +618,9 @@ shows the process tree at the root.
 
 `kill_process`, `suspend_process`, `resume_process`, `quarantine_file`,
 `restore_file`, `collect_file`, `collect_process_info`, `collect_timeline`,
-`block_indicator` (hash: deny execution via local check; IP/domain: WFP
-filter), `isolate`, `release`, `collect_bundle`.
+`block_indicator` (hash/path: WESP protection rule on WESP-capable Windows
+11 hosts, §9.5; local deny check elsewhere; IP/domain: WFP filter),
+`isolate`, `release`, `collect_bundle`.
 
 All process targeting by `entity_id` (agent verifies pid + start time before
 acting). All file targeting by path + sha256 (agent verifies hash).
@@ -667,6 +688,24 @@ verifies an HMAC of the agent id and the isolation nonce with a per-agent
 secret (`TAWNY_ISOLATION_SECRET`); the server-side UI that shows that secret is
 not in this change. DHCP and DNS-by-hostname permits are simplified to address
 permits for now. Linux nftables isolation lands in #59.
+
+### 9.5 Windows blocking via WESP
+
+On Windows 11 hosts where the Windows endpoint security platform is
+available (GA Nov 2026), pre-launch and write-time blocking are WESP
+protection rules, not a Tawny kernel component:
+
+- Blocking rules carry `max_duration` (default 24 h) stored beside the
+  action journal and expire locally, mirroring the isolation failsafe
+  (§9.3). The agent clears expired rules at startup and on a timer.
+- Rules are journaled and reconciled at startup against WESP state, so a
+  crash can neither orphan nor silently drop a rule.
+- The agent starts observe-only and enforces only after a healthy start
+  plus a successful heartbeat; a bad rule can never brick boot.
+- Network isolation is unchanged (§9.3): WESP is not a network filter.
+
+See
+[windows-endpoint-security-platform.md](../windows-endpoint-security-platform.md).
 
 ## 10. Agent identity, protection, updates, health
 
@@ -881,11 +920,11 @@ with current packages, agent on Zig 0.17.0, Windows service runs as
 |---|---|---|
 | 0 | Fixes in §16 | tests for each; CI green |
 | 1 | Event schema v2 + codegen; agent threading, priority rings, spool v2, gzip, durable seq, health; server v2 ingest + legacy normaliser + async ingest queue | v1 and v2 agents ingest side by side; spool fault-injection tests |
-| 2 | Windows service + ETW sensor (process, image, network, DNS, file, registry, auth, services, tasks, PowerShell, signatures) | Windows CI integration test sees spawned chain with correct entity IDs; budgets measured |
+| 2 | Windows service + ETW sensor (process, image, network, DNS, file, registry, auth, services, tasks, PowerShell, signatures); WESP signal for file/process/registry/Object Manager where available | Windows CI integration test sees spawned chain with correct entity IDs; budgets measured |
 | 3 | ProcessEntities/ActivityEdges, investigation APIs, endpoint timeline UI, process graph UI | reconstruct Office→PS→payload test chain from fixtures |
 | 4 | Detection engine (atomic/sequence/relationship/threshold/rarity), Sigma compiler + compat CI, Indicators table + IOC index, ATT&CK coverage | SigmaHQ windows stats published; detection fixtures pass |
 | 5 | Evidence → incidents → risk; incident UI; exceptions v2; alert triage | example chain yields single incident with explained score (#60: done except exceptions v2) |
-| 6 | Durable response queue, long-poll, signed commands; kill/suspend/quarantine/restore/collect on Windows; WFP isolation with failsafe | fault-injection: restart agent/server mid-action, duplicate delivery, offline isolation expiry |
+| 6 | Durable response queue, long-poll, signed commands; kill/suspend/quarantine/restore/collect on Windows; WFP isolation with failsafe (#57: live); WESP blocking (`block_indicator`, pre-launch deny) where available (§9.5) | fault-injection: restart agent/server mid-action, duplicate delivery, offline isolation expiry, blocking-rule local expiry and startup reconciliation |
 | 7 | Key protection (DPAPI/Keychain), PoP refresh, tamper detection, signed self-update with rings | update/rollback/downgrade-rejection tests |
 | 8 | Bench harness and budgets in CI; Linux/macOS parity work | budgets enforced |
 
@@ -895,9 +934,17 @@ with current packages, agent on Zig 0.17.0, Windows service runs as
    (Zig `tawny-server`, telemetry partitioned by month). Larger fleets would
    need a telemetry store change.
 2. **Windows service account.** Full sensor requires `LocalSystem`.
-3. **Kernel visibility gaps accepted for now.** User-mode ETW cannot block
-   execution pre-launch and can be tampered with by an admin-level attacker;
-   prevention is limited to post-launch kill/quarantine and WFP blocking.
+3. **Kernel visibility gap — largely closed by WESP; residual gaps
+   accepted.** The Windows endpoint security platform (GA on Windows 11,
+   Nov 2026) provides user-mode filtering, notification, and enforcement
+   across file, process, registry, and Object Manager, so pre-launch
+   blocking no longer requires a kernel component (§9.5). Residual gaps
+   accepted: hosts without WESP (Windows 10, Server) stay observe-only
+   with post-launch response plus WFP; user-mode sensors can still be
+   tampered with by an admin-level attacker; WESP access may be gated on a
+   Microsoft partner program, in which case Sysmon plus the Security log
+   remain the shipping baseline. See
+   [windows-endpoint-security-platform.md](../windows-endpoint-security-platform.md).
 4. **Code-signing certificates** (Authenticode, Apple Developer ID) — needed
    for production trust and SmartScreen; procurement is outside the repo.
    **Status (#58, Nov 2026):** release steps are ready and skip without

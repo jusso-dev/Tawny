@@ -213,7 +213,7 @@ One static binary keeps the operator surface small: PostgreSQL for state, Caddy 
 
 This is still a portfolio MVP. These areas are intentionally limited or deferred:
 
-- Kernel-level collection (ETW, EndpointSecurity)
+- Real-time event collection (Windows WESP/ETW, macOS Endpoint Security, Linux eBPF); the MVP ships polled snapshots only
 - Code signing and notarisation (ship SHA256 in releases, sign later)
 - Enterprise OIDC SSO and SCIM provisioning
 - Privileged packet-level DNS capture on hosts without a supported local resolver log
@@ -244,7 +244,7 @@ This is still a portfolio MVP. These areas are intentionally limited or deferred
 - [x] Multi-tenant persistence and request scoping
 - [x] Optional GitHub OAuth for dashboard login
 
-Post-MVP: Linux eBPF, kernel-level Windows/macOS collection, broader Sigma coverage, packet-level DNS telemetry, enforced host isolation, enterprise OIDC SSO.
+Post-MVP: Windows signal depth and user-mode enforcement via the Windows endpoint security platform (GA Nov 2026, [docs/windows-endpoint-security-platform.md](docs/windows-endpoint-security-platform.md)), with user-mode ETW as the always-available baseline; Linux eBPF; macOS Endpoint Security; broader Sigma coverage; packet-level DNS telemetry; enforced host isolation; enterprise OIDC SSO.
 
 ## Detection rules
 
