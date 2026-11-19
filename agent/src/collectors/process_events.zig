@@ -352,6 +352,13 @@ pub const HashCache = struct {
     }
 
     pub fn get(self: *HashCache, path: []const u8) ?[32]u8 {
+        // image_path can be relative: on macOS proc_pidpath can fail for a
+        // dying process and the KERN_PROCARGS2 exec path fallback is
+        // whatever the parent passed to execve. openFileAbsolute asserts
+        // (Debug/ReleaseSafe) or is UB (ReleaseSmall) on a relative path,
+        // so hashing is skipped instead; the launch event still carries
+        // the raw path.
+        if (!std.fs.path.isAbsolute(path)) return null;
         const io = iox.current();
         var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return null;
         defer file.close(io);
